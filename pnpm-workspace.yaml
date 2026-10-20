@@ -1,0 +1,7 @@
+packages:
+  - ui
+  - plugins/openclaw
+
+saveExact: true
+strictPeerDependencies: true
+minimumReleaseAge: 1440
