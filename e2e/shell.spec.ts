@@ -34,3 +34,14 @@ test("foundation renders, stays local, and supports keyboard interaction", async
   // Keep a visual artifact for local review without retaining passing CI artifacts.
   await page.screenshot({ path: testInfo.outputPath("foundation.png"), fullPage: true });
 });
+
+test("notification actions select a visible test result", async ({ page }) => {
+  await page.goto("/#/notification-test/review");
+  await expect(page.getByRole("heading", { name: "Review action received" })).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = "#/notification-test/expected";
+  });
+  await expect(
+    page.getByRole("heading", { name: "This was expected action received" }),
+  ).toBeVisible();
+});
