@@ -1,7 +1,8 @@
-//! Portable domain layer. Account access and monitoring are not implemented yet.
+//! Portable event store and synthetic alignment engine. Account collectors are not connected.
 
 use serde::Serialize;
 
+pub mod engine;
 pub mod event;
 pub mod store;
 

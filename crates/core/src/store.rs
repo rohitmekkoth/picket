@@ -268,9 +268,9 @@ impl Store {
         let mut latest = BTreeMap::new();
         let mut statement = self.connection.prepare(
             "SELECT seq, canonical FROM events
-             WHERE kind IN ('feedback', 'contact_observed', 'coverage', 'snapshot') ORDER BY seq",
+             WHERE seq <= ?1 AND kind IN ('feedback', 'contact_observed', 'coverage', 'policy', 'snapshot') ORDER BY seq",
         )?;
-        let rows = statement.query_map([], |row| {
+        let rows = statement.query_map([through_sequence], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
         for row in rows {
@@ -292,6 +292,11 @@ impl Store {
                     original_occurred_at: event.occurred_at,
                     value: SnapshotValue::Coverage(value),
                 },
+                EventPayload::Policy(value) => Snapshot {
+                    original_source: event.key.source,
+                    original_occurred_at: event.occurred_at,
+                    value: SnapshotValue::Policy(value),
+                },
                 EventPayload::Snapshot(value) => value,
                 _ => continue,
             };
@@ -308,14 +313,15 @@ impl Store {
                     snapshot.original_source.as_str(),
                     value.capability
                 ),
+                SnapshotValue::Policy(value) => {
+                    format!("policy/{}/{}", event.key.account, value.id)
+                }
             };
             latest.insert(identity, (sequence, event.key.account, snapshot));
         }
         Ok(latest
             .into_values()
-            .filter_map(|(sequence, account, snapshot)| {
-                (sequence <= through_sequence).then_some((account, snapshot))
-            })
+            .map(|(_, account, snapshot)| (account, snapshot))
             .collect())
     }
 }
@@ -426,7 +432,7 @@ mod tests {
 
     use super::*;
     use crate::event::{
-        Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
+        AccountPolicy, Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
     };
 
     fn event(resource: &str, revision: &str) -> Event {
@@ -618,6 +624,37 @@ mod tests {
                 if Some(value) == match &coverage.payload { EventPayload::Coverage(value) => Some(value), _ => None })));
         assert_eq!(store.retain_after(6)?, 3);
         assert_eq!(store.events()?.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn retention_preserves_policy_as_of_cutoff_even_with_later_revision() -> Result<()> {
+        let mut store = Store::memory()?;
+        let mut first = event("policy-1", "1");
+        first.key.source = Source::Picket;
+        first.payload = EventPayload::Policy(AccountPolicy {
+            id: "no-send".into(),
+            forbidden_actions: vec![Action::EmailSend],
+            forbidden_targets: vec![],
+            high_consequence: true,
+            enabled: true,
+        });
+        store.append(&first)?;
+        let mut later = first.clone();
+        later.key.revision = "2".into();
+        later.occurred_at += chrono::Duration::minutes(1);
+        later.ingested_at = later.occurred_at;
+        if let EventPayload::Policy(value) = &mut later.payload {
+            value.enabled = false;
+        }
+        store.append(&later)?;
+        store.retain_after(1)?;
+        let retained = store.events()?;
+        assert!(retained.iter().any(|row| matches!(&row.event.payload,
+            EventPayload::Snapshot(Snapshot { value: SnapshotValue::Policy(value), .. })
+                if value.id == "no-send" && value.enabled)));
+        assert!(retained.iter().any(|row| matches!(&row.event.payload,
+            EventPayload::Policy(value) if !value.enabled)));
         Ok(())
     }
 }

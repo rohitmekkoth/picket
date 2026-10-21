@@ -39,6 +39,16 @@ fn verify_reports_first_broken_sequence_to_the_user() -> Result<(), Box<dyn std:
         .output()?;
     assert!(clean.status.success());
     assert!(String::from_utf8_lossy(&clean.stdout).contains("through sequence 3"));
+    let replay = Command::new(env!("CARGO_BIN_EXE_picket"))
+        .args(["replay", "--database"])
+        .arg(&database)
+        .args(["--at", "2026-10-21T12:10:00Z"])
+        .output()?;
+    assert!(replay.status.success());
+    let summary = String::from_utf8_lossy(&replay.stdout);
+    assert!(summary.contains("replayed 3 effects"));
+    assert!(summary.contains("3 actor unknown"));
+    assert!(!summary.contains("person@example.test"));
 
     let connection = rusqlite::Connection::open(&database)?;
     connection.execute("DELETE FROM events WHERE seq=2", [])?;

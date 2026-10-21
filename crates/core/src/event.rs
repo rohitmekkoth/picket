@@ -71,6 +71,24 @@ pub enum ToolOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    Forwarding,
+    AppAccess,
+    Purchase,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AccountPolicy {
+    pub id: String,
+    pub forbidden_actions: Vec<Action>,
+    pub forbidden_targets: Vec<String>,
+    #[serde(default)]
+    pub high_consequence: bool,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Field<T> {
     Known(T),
     ExplicitAny,
@@ -103,6 +121,8 @@ pub struct Request {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Claim {
     pub agent: String,
+    #[serde(default)]
+    pub task: Option<String>,
     pub action: Action,
     pub targets: Vec<String>,
     pub provider_resource: Option<String>,
@@ -111,9 +131,13 @@ pub struct Claim {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub agent: String,
+    #[serde(default)]
+    pub task: Option<String>,
     pub action: Action,
     pub targets: Vec<String>,
     pub provider_resource: Option<String>,
+    #[serde(default)]
+    pub provider_revision: Option<String>,
     pub outcome: ToolOutcome,
 }
 
@@ -143,6 +167,7 @@ pub enum SnapshotValue {
     Contact(ContactObserved),
     Coverage(Coverage),
     Feedback(Feedback),
+    Policy(AccountPolicy),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -156,12 +181,14 @@ pub struct Snapshot {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
     Effect(Effect),
+    Notice { kind: NoticeKind },
     Request(Request),
     Claim(Claim),
     ToolResult(ToolResult),
     Coverage(Coverage),
     ContactObserved(ContactObserved),
     Feedback(Feedback),
+    Policy(AccountPolicy),
     Snapshot(Snapshot),
     Checkpoint { through_sequence: i64, hash: String },
 }
@@ -170,12 +197,14 @@ impl EventPayload {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Effect(_) => "effect",
+            Self::Notice { .. } => "notice",
             Self::Request(_) => "request",
             Self::Claim(_) => "claim",
             Self::ToolResult(_) => "tool_result",
             Self::Coverage(_) => "coverage",
             Self::ContactObserved(_) => "contact_observed",
             Self::Feedback(_) => "feedback",
+            Self::Policy(_) => "policy",
             Self::Snapshot(_) => "snapshot",
             Self::Checkpoint { .. } => "checkpoint",
         }
