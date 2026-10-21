@@ -11,7 +11,7 @@ The desktop app has one window and a menu-bar menu. Closing hides the window; re
 Next boundaries, in design milestone order:
 
 1. M2: typed events, canonical JSON, ordered writer, SQLite migrations, verification and retention.
-2. M3/M4: deterministic engine replay, findings, seeded scenarios, regression metrics.
+2. M3/M4: deterministic engine replay with separate observation quality, actor evidence, request constraints, coverage, findings and notification outbox; adversarial scenarios and per-mode safety/utility gates. See [the alignment plan](alignment-engine-plan.md) before finalizing the M2 evidence contract.
 3. M5/M6: allowlisted account collectors, Keychain authentication, Messages reader, verified OpenClaw adapter.
 4. M7: verified model download and a bounded in-process worker.
 5. M8/M9: complete user flows, permissions/notifications, packaging, and public release.
