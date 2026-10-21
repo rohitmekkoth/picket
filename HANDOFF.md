@@ -18,20 +18,34 @@ Read these files in order before changing code:
 
 - Repository: `https://github.com/rohitmekkoth/picket`.
 - Visibility: private. Do not make it public without the owner's explicit request.
-- Primary branch: `main`.
-- Foundation baseline: merge commit `482bc24`.
+- Primary branch: `main`. The M1 product work merged at `bf917f2`; fetch before starting new work.
+- M1 notification work: PR #5 merged with its two commits preserved. The post-merge [main CI run](https://github.com/rohitmekkoth/picket/actions/runs/39556842806) passed all three jobs.
 - Product implementation status: no collectors, event store, detection engine, Google access, Messages access, OpenClaw integration, local model, or production alerts are implemented.
 - Available scaffold: Rust workspace, portable core boundary, diagnostic CLI, Tauri v2 window and menu-bar shell, synthetic native notification probe, React UI, tests, CI, dependency audits, and macOS smoke test.
 - The browser preview intentionally cannot reach the Rust core. This is expected behavior.
 - Runtime data, credentials, personal messages, account fixtures, databases, and model files must never be committed.
 
-The runnable scaffold covers the M1 structure and acceptance checks. The M1 native notification investigation confirmed click-through and action callbacks in the packaged macOS app using `tauri-plugin-notification` 2.7. The test alert appeared in Notification Center, where tapping it and choosing This was expected opened the corresponding test views. A banner did not appear with the current macOS notification settings. Implementation now proceeds in the design's order from M2 through M9.
+The runnable scaffold covers the M1 structure and acceptance checks. The M1 native notification investigation confirmed click-through and action callbacks in the packaged macOS app using `tauri-plugin-notification` 2.7. The test alert appeared in Notification Center, where tapping it and choosing This was expected opened the corresponding test views. A banner was not observed and remains an M8 UX check.
 
-The M1 investigation is on `feature/m1-native-notifications` and must pass branch CI before merging. Local verification passed: `make check`, `make test`, `make e2e`, `make audit`, `make smoke-macos`, and the two manual Notification Center interactions. The native probe uses synthetic text only. After merge, fetch the updated `main` before starting M2.
+Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit`, `make smoke-macos`, and the two manual Notification Center interactions. The native probe uses synthetic text only.
+
+## Milestone checklist
+
+- [x] **M1 - Foundation:** Rust workspace, portable core boundary, CLI diagnostic, Tauri tray and window, React shell, CI, audits, macOS smoke test, and native notification feasibility.
+- [ ] **M2 - Event store:** Typed events, canonical JSON, SQLite migrations, ordered writer, hash chain, retention, and `picket verify` with exact broken-sequence reporting.
+- [ ] **M3 - Engine on mocks:** Rules, matching, attribution, incidents, mock model, and 20 labeled seed scenarios.
+- [ ] **M4 - Evaluation harness:** Scenario replay, metrics and report, plus a CI regression gate against a real baseline.
+- [ ] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and baseline import.
+- [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
+- [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging, and keyword fallback.
+- [ ] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and digest, export, and wipe. Recheck banner presentation.
+- [ ] **M9 - Release:** Packaging, release attestations, Homebrew tap, documentation, and fresh-Mac install test.
+
+The milestone scopes and acceptance criteria in `docs/design.md` remain authoritative.
 
 ## Next work
 
-Do not begin the next milestone until the owner requests it. When authorized, take the following M2 increment:
+The next product milestone is M2. Do not begin it until the owner requests it. When authorized:
 
 1. Fetch `origin/main` and confirm local `main` is synchronized and clean.
 2. Create a dedicated `feature/event-store` branch from current `main`.
@@ -41,14 +55,14 @@ Do not begin the next milestone until the owner requests it. When authorized, ta
 6. Inspect staged files and commit metadata for secrets and machine-specific data before every push.
 7. Push small, verified commits. Merge only after the branch is current with `main` and all configured CI checks pass.
 
-The four M2 questions are:
+Resolve these four schema questions before writing the M2 migration:
 
 - Calendar change identity for event deduplication.
 - Replayable, privacy-minimized contact observations.
 - Finding uniqueness when optional identifiers are absent.
 - Retention checkpoints and stable feedback identity.
 
-M2 must deliver the typed event schema, canonical JSON, SQLite migrations, one ordered writer, the hash chain, retention, and `picket verify`. Its acceptance test must demonstrate that editing or deleting a test row reports the exact first broken sequence number.
+Repository housekeeping is separate from M2: Dependabot PR #2 proposes Node 26 type definitions while this project pins Node 24, so review it before merging. Its red branch status combines three cancelled checks with three passing checks; `main` CI is green. Older merged feature branches still exist on GitHub and can be deleted when convenient. The repository currently has no `main` branch protection; consider requiring CI checks before future merges.
 
 ## Resume checklist
 
