@@ -4,7 +4,7 @@
 
 - Package names are `picket-core`, `picket-app`, and `picket-cli`; the CLI binary is `picket`. Prefixes avoid ambiguity with Rust's built-in core library.
 - Keep the original supplied design unchanged under ignored local storage. The repository copy is docs/design.md, with personal author metadata omitted and punctuation normalized. Product and package names use Picket.
-- The setup branch establishes an environment and a runnable shell, not the complete M1 acceptance criteria or later product features. Native notification action feasibility remains an M1 investigation.
+- The setup branch established the environment and runnable shell. The remaining M1 native notification action investigation was completed in PR #5; later product features remain outside the foundation.
 - Pin the installed Rust toolchain, Node, pnpm, direct frontend packages, lockfiles, and CI actions. Use a single pnpm workspace and a single Cargo workspace.
 - Do not create the OpenClaw package until real upstream hook names and payloads are verified in M6.
 - Keep the public project license undecided until the Messages decoder dependency is reviewed. Do not add a possibly GPL decoder while implying an MIT or Apache-only distribution.
