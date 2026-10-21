@@ -5,23 +5,28 @@ use tauri::{
 };
 use tracing_subscriber::EnvFilter;
 
+/// Exposes the portable, read-only diagnostic through the Tauri boundary.
 #[tauri::command]
 fn get_runtime_info() -> picket_core::RuntimeInfo {
     tracing::debug!("Runtime diagnostic requested through IPC");
     picket_core::runtime_info()
 }
 
+/// Restores the primary window and its normal macOS application presence.
 fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(target_os = "macos")]
-        app.set_activation_policy(tauri::ActivationPolicy::Regular)?;
-        window.show()?;
-        window.unminimize()?;
-        window.set_focus()?;
-    }
+    let Some(window) = app.get_webview_window("main") else {
+        tracing::error!("main window is unavailable");
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)?;
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
     Ok(())
 }
 
+/// Builds a monochrome template icon without loading a runtime asset.
 fn tray_image() -> tauri::image::Image<'static> {
     let mut rgba = vec![0; 18 * 18 * 4];
     for y in 3..15 {
@@ -35,6 +40,7 @@ fn tray_image() -> tauri::image::Image<'static> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Respect RUST_LOG while keeping normal startup output concise.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("picket_app=info")),
@@ -44,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("could not initialize diagnostics: {error}"))?;
 
     tauri::Builder::default()
+        // A second launch restores the existing process instead of duplicating it.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Err(error) = show_window(app) {
                 tracing::error!(%error, "failed to show existing window");
@@ -52,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .invoke_handler(tauri::generate_handler![get_runtime_info])
         .on_page_load(|_, _| tracing::debug!("App webview loaded"))
         .setup(|app| {
+            // Left click restores the window; the context menu also supports quit.
             let open = MenuItem::with_id(app, "open", "Open Picket", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Picket", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
@@ -89,6 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Only the primary window adopts the close-to-tray lifecycle.
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 match window.hide() {
                     Ok(()) => {

@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+/// Parses the diagnostic command without starting the desktop runtime.
 #[derive(Parser)]
 #[command(version, about = "Local diagnostics for Picket")]
 struct Args {
@@ -7,6 +8,7 @@ struct Args {
     command: Command,
 }
 
+/// Keeps diagnostics explicit as operational commands are added.
 #[derive(Subcommand)]
 enum Command {
     /// Print runtime information without accessing any account or personal data.

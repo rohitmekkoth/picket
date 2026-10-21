@@ -1,5 +1,4 @@
-@import "tailwindcss";
-
+/* Establish accessible global defaults without external font requests. */
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #20312c;
@@ -24,6 +23,8 @@ a:focus-visible {
   outline: 3px solid #397c62;
   outline-offset: 5px;
 }
+
+/* Constrain the desktop shell while preserving compact window support. */
 .shell {
   max-width: 1120px;
   margin: auto;
@@ -95,6 +96,8 @@ h1 {
   max-width: 490px;
   margin: 0;
 }
+
+/* Present the request, claim, and effect as equal evidence layers. */
 .layers {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -123,6 +126,8 @@ h2 {
   color: #59665f;
   margin: 0;
 }
+
+/* Keep runtime health visually separate from future monitoring results. */
 .runtime {
   padding: 22px 24px;
   display: flex;
@@ -173,6 +178,8 @@ footer {
   color: #647167;
   font-size: 10px;
 }
+
+/* Stack controls before the minimum supported window becomes cramped. */
 @media (max-width: 640px) {
   .shell {
     padding: 0 24px;
@@ -199,6 +206,8 @@ footer {
     gap: 6px;
   }
 }
+
+/* Follow the macOS appearance without requiring an app setting. */
 @media (prefers-color-scheme: dark) {
   :root {
     color: #edf1e9;

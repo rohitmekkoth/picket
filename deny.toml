@@ -1,4 +1,5 @@
 [graph]
+# Audit every platform shipped or exercised by CI.
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 all-features = true
 
@@ -14,6 +15,7 @@ allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", 
 ignore = true
 
 [bans]
+# Native frameworks currently require duplicate transitive versions.
 multiple-versions = "allow"
 wildcards = "deny"
 

@@ -4,6 +4,7 @@ test("foundation renders, stays local, and supports keyboard interaction", async
   page,
   browserName,
 }, testInfo) => {
+  // Treat console exceptions and non-local requests as end-user failures.
   const failures: string[] = [];
   const remoteRequests: string[] = [];
   page.on("pageerror", (error) => failures.push(error.message));
@@ -17,6 +18,7 @@ test("foundation renders, stays local, and supports keyboard interaction", async
     await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   }
   await expect(page.getByText(/No accounts are connected/)).toBeVisible();
+  // Safari uses Option-Tab for links when full keyboard access is disabled.
   const nextControl = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
   await page.keyboard.press(nextControl);
   await expect(page.getByRole("link", { name: "Picket home" })).toBeFocused();
@@ -29,5 +31,6 @@ test("foundation renders, stays local, and supports keyboard interaction", async
   );
   expect(failures).toEqual([]);
   expect(remoteRequests).toEqual([]);
+  // Keep a visual artifact for local review without retaining passing CI artifacts.
   await page.screenshot({ path: testInfo.outputPath("foundation.png"), fullPage: true });
 });

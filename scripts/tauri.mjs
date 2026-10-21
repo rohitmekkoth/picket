@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Run the workspace-local CLI from the app directory Tauri expects.
 const root = fileURLToPath(new URL("..", import.meta.url));
 const rustPaths = [
   resolve(homedir(), ".cargo/bin"),

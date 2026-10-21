@@ -33,7 +33,7 @@ Closing the window keeps Picket in the menu bar. Click the menu-bar icon to reop
 | `pnpm exec playwright install chromium webkit` | Install the smoke-test browser once |
 | `make e2e` | Browser smoke tests at desktop and compact sizes |
 | `make audit` | Rust dependency policy and production npm audit |
-| `make build` | Build the plugin scaffold and release-mode `.app` |
+| `make build` | Build the release-mode `.app` |
 | `make smoke-macos` | Build and exercise the packaged macOS app |
 | `cargo run -p picket-cli -- doctor` | Print local runtime information as JSON |
 
@@ -45,8 +45,7 @@ The app bundle is written to `target/release/bundle/macos/Picket.app`. It is ad 
 crates/core/       Portable domain logic; no desktop dependencies
 crates/app/        Tauri shell, tray, command boundary, app configuration
 crates/cli/        Diagnostic CLI; future verify/eval/export commands
-ui/               React 19, strict TypeScript, Vite, Tailwind, TanStack Query
-plugins/openclaw/  TypeScript package boundary; integration planned for M6
+ui/               React 19, strict TypeScript, Vite, plain CSS, TanStack Query
 e2e/              Browser smoke tests
 docs/             Setup, architecture, and decision records
 scripts/          Toolchain diagnostics and Tauri launcher

@@ -6,7 +6,7 @@
 - Keep the original supplied design unchanged under ignored local storage. The repository copy is docs/design.md, with personal author metadata omitted and punctuation normalized. Product and package names use Picket.
 - The setup branch establishes an environment and a runnable shell, not the complete M1 acceptance criteria or later product features. Native notification action feasibility remains an M1 investigation.
 - Pin the installed Rust toolchain, Node, pnpm, direct frontend packages, lockfiles, and CI actions. Use a single pnpm workspace and a single Cargo workspace.
-- Keep the OpenClaw package private and empty until real upstream hook names and payloads are verified. Do not invent an SDK contract.
+- Do not create the OpenClaw package until real upstream hook names and payloads are verified in M6.
 - Keep the public project license undecided until the Messages decoder dependency is reviewed. Do not add a possibly GPL decoder while implying an MIT or Apache-only distribution.
 - Delay model download and llama.cpp integration until the mock pipeline is evaluated, as required by the design's milestone order. CMake and Clang are available for that build.
 - Do not add empty subsystem source modules, fabricated evaluation metrics, or disabled CI gates. Document the directory's future boundary instead.
