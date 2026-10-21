@@ -7,6 +7,11 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+chrono = { version = "0.4.45", features = ["serde"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha2 = "0.10.9"
+thiserror = "2"
 
 [lints]
 workspace = true

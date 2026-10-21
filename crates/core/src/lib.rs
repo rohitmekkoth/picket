@@ -2,6 +2,9 @@
 
 use serde::Serialize;
 
+pub mod event;
+pub mod store;
+
 /// Read-only process details shared by the CLI and desktop shell.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

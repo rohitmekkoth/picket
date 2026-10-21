@@ -32,10 +32,7 @@
 
 ## Resolve before implementing the owning milestone
 
-1. **M2 event deduplication:** `UNIQUE(source, source_ref, kind)` cannot represent repeated changes to the same Calendar event if source_ref is only its event ID. Define a stable change identity including a source revision.
-2. **M2 replay completeness:** ordinary received-mail contacts are upserted without events, while the design says contacts can be rebuilt entirely from the log. Decide how privacy-minimized contact observations and baseline state are replayed.
-3. **M2 finding uniqueness:** SQLite UNIQUE constraints permit multiple NULL values. The proposed nullable finding key needs an explicit normalized identity or partial indexes.
-4. **M2 retention and feedback:** define the retained chain anchor and transactional checkpoint boundary precisely. Preserve user decisions by stable event/finding identities when derived incidents are rebuilt.
+1. **M2 source identity, contact replay, retention and feedback:** resolved for the initial event store below. Real Calendar adapters must supply meaningful revisions in M5. M3 finding keys must use explicit non-null identities.
 5. **M5 calendar synchronization:** verify that the chosen initial bounded query and subsequent sync-token requests meet Google's parameter restrictions without introducing gaps.
 6. **M6 decoder and plugin:** verify the current imessage-database license and the actual OpenClaw hooks before choosing dependencies.
 7. **M7 model integrity:** verify model name, license, exact GGUF revision, checksum, and download redirect hosts. The design's model claims are not yet independently validated.
@@ -44,3 +41,11 @@
 10. **Before M3:** review the explicit request-constraint and actor-evidence states, select bounded candidate/queue limits, and label uncertainty/adversarial seed scenarios before coding. Keep policy, extraction, coverage and attribution uncertainty separate.
 11. **M5/M6 attribution experiments:** test actual header separability, request-channel coverage, tool-result resource linkage and Calendar external changes. No claim of reliable Instinct/Muse attribution is established. Workspace requires a separately scoped integration decision.
 12. **M4/M7/release evidence:** operationalize the plan's denominators, held-out splits, uncertainty intervals and per-mode safety/utility gates. Do not publish the proposed thresholds as achieved performance.
+
+## Event store implementation, 2026-10-21
+
+- The M2 schema uses `(account, source, resource, revision, kind)` as a non-null event identity. An adapter must supply a stable revision for each distinct Calendar change; reusing an event ID alone would lose updates. Exact retries deduplicate, while conflicting content for the same key is rejected.
+- Events carry a schema version, typed payload, source and observation time. Source coverage changes and privacy-minimized received-contact observations are events, so they are available for replay. Collector adapters must validate and minimize their fields before submission; the store also caps event size and source identity lengths.
+- The hash chain includes canonical JSON, ordered sequence numbers, a stored head, and a retained-prefix anchor. A single mutable connection owns writes. `picket verify --database` uses a separate read-only connection and reports the first broken sequence, including a removed tail. This detects accidental or casual modification, not a full malicious rewrite of both rows and chain metadata.
+- Retention deletes a verified prefix in one transaction with an anchor update and a new checkpoint event. The latest feedback, contact and coverage records are copied forward as typed snapshot events, preserving their replayable current state. A retained checkpoint marks the limited historical horizon; absent older requests or effects cannot be inferred from it.
+- Finding identity remains an M3 concern: use stable, explicit, non-null observation/task/rule references instead of nullable SQLite UNIQUE columns. The current M2 migration deliberately contains only events and chain state, with no placeholder engine tables.
