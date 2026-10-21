@@ -7,7 +7,7 @@
 - Reproduce bugs through the closest available end-user flow before fixing them.
 - Inspect UI output carefully and fix clear visual defects, lint failures, failing tests, and flakiness encountered during work.
 - Ask before using a harness feature that launches a large swarm of agents; explain its tradeoffs first.
-- Read the root design document before product work. Record ambiguities in docs/decisions.md.
+- Read docs/design.md before product work. Record ambiguities in docs/decisions.md.
 - Keep crates/core portable and free of Tauri. Gate macOS integrations with cfg(target_os = "macos").
 - UI commands validate their input in Rust. Do not expose general filesystem, shell, or HTTP permissions to the webview.
 - Do not add network hosts, Google scopes, telemetry, or real account fixtures beyond the design.

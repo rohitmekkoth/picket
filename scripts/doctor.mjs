@@ -17,6 +17,8 @@ const checks = [
   ["cargo", "fmt", "--version"],
   ["cargo", "clippy", "--version"],
   ["cargo-deny", "--version"],
+  ["gitleaks", "version"],
+  ["actionlint", "-version"],
   ["cmake", "--version"],
   ["git", "--version"],
   ["gh", "--version"],
