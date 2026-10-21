@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Only the read-only Picket runtime diagnostic command is exposed.",
+  "windows": ["main"],
+  "permissions": ["allow-get-runtime-info"]
+}
