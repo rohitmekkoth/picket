@@ -52,7 +52,7 @@ scripts/          Toolchain diagnostics and Tauri launcher
 .github/          CI and dependency updates
 ```
 
-Read [development notes](docs/setup/development.md), [architecture](docs/architecture.md), and [decisions](docs/decisions.md). Read the [product design](docs/design.md) for the planned milestones. Runtime data and private local notes are excluded from Git.
+New Codex sessions should start with the [development handoff](HANDOFF.md). Read the [product design](docs/design.md) for the complete scope and planned milestones, then review the [development notes](docs/setup/development.md), [architecture](docs/architecture.md), and [decisions](docs/decisions.md). Runtime data and private local notes are excluded from Git.
 
 ## Privacy and contributions
 
