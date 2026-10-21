@@ -2,7 +2,7 @@
 
 The planned data flow is collectors -> append-only event log -> alignment engine -> findings/incidents -> desktop views and notifications. The Rust core owns data and decisions. The renderer reads views and submits validated user decisions through narrow Tauri commands.
 
-`picket-core` is portable and has no Tauri dependency. `picket-app` owns macOS lifecycle and the command boundary. `picket-cli` invokes the same core APIs without starting a webview. `ui` validates incoming diagnostic data before rendering it. `picket-openclaw` is a separate private TypeScript package with no invented hook contracts or transport behavior yet.
+`picket-core` is portable and has no Tauri dependency. `picket-app` owns macOS lifecycle and the command boundary. `picket-cli` invokes the same core APIs without starting a webview. `ui` validates incoming diagnostic data before rendering it. The OpenClaw adapter is deferred until its real upstream contract is verified in M6.
 
 The current native command is `get_runtime_info`; its capability is explicitly granted only to the main local window. A generated application command manifest makes that allowlist enforceable. No shell, filesystem, HTTP, or external URL plugin is exposed to JavaScript. Production CSP forbids remote scripts and resources. Development-only CSP allows the local Vite connection and development style injection.
 

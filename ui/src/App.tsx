@@ -2,7 +2,21 @@ import { useQuery } from "@tanstack/react-query";
 import { getRuntimeInfo } from "./lib/runtime";
 
 export function App() {
+  // The query is the single typed boundary between the renderer and Rust shell.
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
+  let runtimeHeading = "Checking runtime";
+  let runtimeDetail = "Waiting for the desktop runtime response.";
+
+  if (runtime.isError) {
+    runtimeHeading = "Core connection unavailable";
+    runtimeDetail = "The runtime check failed. Retry or inspect the development console.";
+  } else if (runtime.data) {
+    runtimeHeading = "Desktop core connected";
+    runtimeDetail = `v${runtime.data.version} / ${runtime.data.platform} / ${runtime.data.architecture}`;
+  } else if (!runtime.isPending) {
+    runtimeHeading = "Browser preview";
+    runtimeDetail = "Launch the desktop app to check the Rust core connection.";
+  }
 
   return (
     <div className="shell">
@@ -43,25 +57,12 @@ export function App() {
             <p>What changed in your account.</p>
           </article>
         </section>
+        {/* This panel proves the UI-to-Rust boundary before monitoring exists. */}
         <section className="runtime" aria-labelledby="runtime-heading">
           <div>
             <p className="eyebrow">Workspace status</p>
-            <h2 id="runtime-heading">
-              {runtime.isError
-                ? "Core connection unavailable"
-                : runtime.isPending
-                  ? "Checking runtime"
-                  : runtime.data
-                    ? "Desktop core connected"
-                    : "Browser preview"}
-            </h2>
-            <p role="status">
-              {runtime.isError
-                ? "The runtime check failed. Retry or inspect the development console."
-                : runtime.data
-                  ? `v${runtime.data.version} / ${runtime.data.platform} / ${runtime.data.architecture}`
-                  : "Launch the desktop app to check the Rust core connection."}
-            </p>
+            <h2 id="runtime-heading">{runtimeHeading}</h2>
+            <p role="status">{runtimeDetail}</p>
           </div>
           <button
             type="button"
@@ -71,6 +72,7 @@ export function App() {
             Check connection
           </button>
         </section>
+        {/* Keep the foundation explicit about capabilities that do not exist yet. */}
         <p className="disclosure">
           Monitoring is not implemented yet. No accounts are connected and no personal data is
           collected.

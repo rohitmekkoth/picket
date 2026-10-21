@@ -6,6 +6,7 @@ on run argv
 
 tell application "System Events"
     if not UI elements enabled then error "Enable Accessibility for your terminal before running native UI checks."
+    -- Wait for the packaged process and its webview-backed window.
     repeat 100 times
         if exists process "picket-app" then exit repeat
         delay 0.1
@@ -29,6 +30,7 @@ tell application "System Events"
         end repeat
         if labels does not contain "Desktop core connected" then error "Native Rust connection is not displayed."
 
+        -- Closing must preserve the process and its tray icon.
         click (first button of window "Picket" whose subrole is "AXCloseButton")
         repeat 50 times
             if not (exists window "Picket") then exit repeat
@@ -37,6 +39,7 @@ tell application "System Events"
         if exists window "Picket" then error "Closing the window did not hide it."
 
         if not (exists menu bar item 1 of menu bar 2) then error "The tray icon is missing."
+        -- A second launch must restore the existing single instance.
         do shell script quoted form of executablePath & " >/dev/null 2>&1 &"
         repeat 50 times
             if exists window "Picket" then exit repeat
@@ -46,6 +49,7 @@ tell application "System Events"
 
         keystroke "q" using command down
     end tell
+    -- Confirm Command-Q ends the process instead of leaving a tray orphan.
     repeat 50 times
         if not (exists process "picket-app") then exit repeat
         delay 0.1

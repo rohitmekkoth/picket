@@ -7,6 +7,7 @@ import "./styles.css";
 const root = document.getElementById("root");
 if (!root) throw new Error("Picket root element is missing");
 
+// Disable automatic retries so IPC failures remain visible and user-controlled.
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 createRoot(root).render(

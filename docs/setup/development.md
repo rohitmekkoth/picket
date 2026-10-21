@@ -27,7 +27,7 @@ These checks do not prove future macOS permissions, notifications, direct tray c
 
 Playwright artifacts are ignored under `test-results/`; failures keep traces and screenshots. CI runs without retries so flakes remain visible. The portable core and CLI run on Linux; the full desktop workspace compiles and tests on macOS.
 
-Mock-model evaluation gates will be introduced with a real replay engine and scenario baseline in M3/M4. The `mock-ai` feature is a reserved build boundary today, not an implemented model. Do not fabricate a baseline or report zero scenarios as a successful evaluation.
+Introduce mock-model evaluation gates with the real replay engine and scenario baseline in M3/M4. Do not add an empty feature gate, fabricate a baseline, or report zero scenarios as a successful evaluation.
 
 ## Dependency and release policy
 

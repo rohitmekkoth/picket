@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+/// Read-only process details shared by the CLI and desktop shell.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeInfo {
@@ -11,6 +12,7 @@ pub struct RuntimeInfo {
     pub monitoring: bool,
 }
 
+/// Reports local process metadata without touching accounts or personal data.
 pub fn runtime_info() -> RuntimeInfo {
     RuntimeInfo {
         version: env!("CARGO_PKG_VERSION"),

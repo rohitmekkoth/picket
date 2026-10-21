@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Verify the renderer in both supported browser engines and window sizes.
   frontend:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -30,6 +31,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm test:e2e
 
+  # Prove the domain and CLI remain independent of macOS frameworks.
   portable-core:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -39,9 +41,10 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - run: cargo test -p picket-core -p picket-cli --features mock-ai --locked
-      - run: cargo clippy -p picket-core -p picket-cli --all-targets --features mock-ai --locked -- -D warnings
+      - run: cargo test -p picket-core -p picket-cli --locked
+      - run: cargo clippy -p picket-core -p picket-cli --all-targets --locked -- -D warnings
 
+  # Exercise the complete native workspace and repository policy checks.
   macos:
     runs-on: macos-14
     timeout-minutes: 30
@@ -60,8 +63,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --features mock-ai --locked -- -D warnings
-      - run: cargo test --workspace --features mock-ai --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
       - run: brew install cargo-deny gitleaks actionlint
       - run: cargo deny check
       - run: gitleaks git --redact --no-banner

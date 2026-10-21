@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/core", "crates/app", "crates/cli"]
+# Keep default Cargo commands portable on hosts without desktop SDKs.
 default-members = ["crates/core", "crates/cli"]
 resolver = "3"
 
@@ -24,6 +25,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [profile.release]
+# Favor a smaller distributable binary over faster release compilation.
 codegen-units = 1
 lto = "thin"
 strip = "debuginfo"

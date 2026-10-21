@@ -1,6 +1,5 @@
 packages:
   - ui
-  - plugins/openclaw
 
 saveExact: true
 strictPeerDependencies: true

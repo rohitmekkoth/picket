@@ -12,14 +12,13 @@
     "dev": "pnpm tauri dev",
     "dev:ui": "pnpm --filter @picket/ui dev",
     "build:ui": "pnpm --filter @picket/ui build",
-    "build:plugin": "pnpm --filter picket-openclaw build",
-    "build": "pnpm build:plugin && pnpm tauri build",
+    "build": "pnpm tauri build",
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.tools.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:ui && pnpm build:plugin",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build:ui",
     "check:env": "node scripts/doctor.mjs"
   },
   "devDependencies": {

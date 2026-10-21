@@ -1,4 +1,5 @@
 fn main() {
+    // Generate the narrow capability for commands exposed to the webview.
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(&["get_runtime_info"])),
