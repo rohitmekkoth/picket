@@ -167,15 +167,7 @@ fn actor_for(events: &[Event], event: &Event, effect: &Effect, finding: &str) ->
             }
             EventPayload::Claim(claim)
                 if candidate.key.source == Source::Messages
-                    && claim.action == effect.action
-                    && same_targets(&claim.targets, &effect.targets)
-                    && (claim.provider_resource.as_deref()
-                        == Some(event.key.resource.as_str())
-                        || (claim.provider_resource.is_none()
-                            && (candidate.occurred_at - event.occurred_at)
-                                .num_seconds()
-                                .abs()
-                                <= CLAIM_WINDOW.num_seconds())) =>
+                    && claim_matches(events, candidate, claim, event, effect) =>
             {
                 reports.insert(claim.agent.clone());
             }
@@ -208,6 +200,43 @@ fn actor_for(events: &[Event], event: &Event, effect: &Effect, finding: &str) ->
         .into_iter()
         .next()
         .map_or(ActorEvidence::Unknown, ActorEvidence::Reported)
+}
+
+fn claim_matches(
+    events: &[Event],
+    report: &Event,
+    claim: &crate::event::Claim,
+    event: &Event,
+    effect: &Effect,
+) -> bool {
+    if claim.action != effect.action
+        || !effect.targets_complete
+        || !same_targets(&claim.targets, &effect.targets)
+    {
+        return false;
+    }
+    if let Some(resource) = &claim.provider_resource {
+        return resource == &event.key.resource;
+    }
+    if (report.occurred_at - event.occurred_at).num_seconds().abs() > CLAIM_WINDOW.num_seconds() {
+        return false;
+    }
+    // A report without a provider ID cannot identify one of two similar effects.
+    events
+        .iter()
+        .filter(|candidate| {
+            candidate.key.account == event.key.account
+                && (report.occurred_at - candidate.occurred_at)
+                    .num_seconds()
+                    .abs()
+                    <= CLAIM_WINDOW.num_seconds()
+                && matches!(&candidate.payload, EventPayload::Effect(other)
+                    if other.origin != Origin::Baseline && other.action == claim.action
+                        && other.targets_complete && same_targets(&other.targets, &claim.targets))
+        })
+        .take(2)
+        .count()
+        == 1
 }
 
 fn policy_violations(events: &[Event], event: &Event, effect: &Effect) -> Vec<(String, bool)> {
@@ -572,6 +601,34 @@ mod tests {
         assert_eq!(
             one(&[effect(), claim, tool()]).actor,
             ActorEvidence::RuntimeLinked("agent-1".into())
+        );
+    }
+
+    #[test]
+    fn body_only_claim_does_not_select_between_human_and_agent_sends() {
+        let claim = event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec!["a@example.test".into()],
+                provider_resource: None,
+            }),
+        );
+        assert_eq!(
+            one(&[effect(), claim.clone()]).actor,
+            ActorEvidence::Reported("agent-1".into())
+        );
+        let mut second = effect();
+        second.key.resource = "message-2".into();
+        let assessments = assess(&[effect(), second, claim], time(20));
+        assert!(
+            assessments
+                .iter()
+                .all(|item| item.actor == ActorEvidence::Unknown)
         );
     }
 
