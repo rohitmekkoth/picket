@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Picket CLI: doctor",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "picket-cli"],
+        "filter": { "name": "picket", "kind": "bin" }
+      },
+      "args": ["doctor"],
+      "cwd": "${workspaceFolder}",
+      "env": { "RUST_BACKTRACE": "1" }
+    },
+    {
+      "name": "Picket desktop (run pnpm dev:ui first)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "picket-app"],
+        "filter": { "name": "picket-app", "kind": "bin" }
+      },
+      "cwd": "${workspaceFolder}",
+      "env": { "RUST_BACKTRACE": "1", "RUST_LOG": "picket_app=debug,picket_core=debug" }
+    }
+  ]
+}

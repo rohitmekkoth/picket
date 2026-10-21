@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Picket fence icon</title>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="#254e3e"/>
+  <path d="M280 290L352 218L424 290V734H280ZM600 290L672 218L744 290V734H600ZM424 458H600V586H424Z" fill="#e5efda"/>
+</svg>
