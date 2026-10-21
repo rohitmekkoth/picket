@@ -13,6 +13,12 @@
 - Use stderr tracing for the current data-free shell. Before handling account data, add tested redaction and size-based rotation; tracing alone is not a privacy filter.
 - Generate the simple temporary app icon from `assets/icon.svg` with `pnpm tauri icon ../../assets/icon.svg --output icons`; do not manually edit generated icons or Tauri schemas.
 
+## Native notifications, 2026-10-20
+
+- Use `tauri-plugin-notification` 2.7 for the M8 native notification path. [Version 2.6 added desktop action callbacks](https://v2.tauri.app/release/notification/v2.6.0/), so a separate `objc2` bridge is not needed for the initial implementation. Keep action handling in Rust so it works while the webview window is hidden.
+- The packaged, ad hoc signed macOS app submitted a synthetic notification with Review and This was expected actions. macOS accepted it and stored it in Notification Center. The first launch showed the system's notification permission notice; notifications had to be enabled in System Settings before the test could proceed.
+- Clicking the stored notification in Notification Center restored the hidden Picket window and selected the Review test view. Choosing This was expected from its Options menu restored the window and selected the expected-action test view. Both results were checked in the native window. A banner was not observed in this test; check banner presentation separately during M8 UX testing. The M8 implementation can use the plugin for click-through and actions; incident lookup and feedback persistence belong to M8.
+
 ## Resolve before implementing the owning milestone
 
 1. **M2 event deduplication:** `UNIQUE(source, source_ref, kind)` cannot represent repeated changes to the same Calendar event if source_ref is only its event ID. Define a stable change identity including a source revision.

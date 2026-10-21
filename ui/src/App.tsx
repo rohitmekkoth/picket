@@ -1,7 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { getRuntimeInfo } from "./lib/runtime";
 
 export function App() {
+  const [notificationAction, setNotificationAction] = useState(window.location.hash);
+  useEffect(() => {
+    const onHashChange = () => setNotificationAction(window.location.hash);
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
   // The query is the single typed boundary between the renderer and Rust shell.
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
   let runtimeHeading = "Checking runtime";
@@ -30,6 +37,21 @@ export function App() {
         <span className="stage">Development foundation</span>
       </header>
       <main>
+        {notificationAction.startsWith("#/notification-test/") && (
+          <section className="runtime notification-result" aria-label="Notification test result">
+            <div>
+              <p className="eyebrow">Notification test</p>
+              <h2>
+                {notificationAction.endsWith("/expected")
+                  ? "This was expected action received"
+                  : "Review action received"}
+              </h2>
+              <p role="status">
+                The native notification opened this window and selected this view.
+              </p>
+            </div>
+          </section>
+        )}
         <p className="eyebrow">An independent record</p>
         <h1>
           Your agents act.

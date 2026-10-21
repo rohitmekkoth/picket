@@ -144,6 +144,9 @@ h2 {
 .runtime h2 {
   margin-top: 0;
 }
+.notification-result {
+  margin-bottom: 28px;
+}
 button {
   background: #254e3e;
   color: #fff;
