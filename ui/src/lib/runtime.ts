@@ -16,3 +16,22 @@ export async function getRuntimeInfo(): Promise<RuntimeInfo | null> {
   if (!isTauri()) return null;
   return runtimeInfoSchema.parse(await invoke<unknown>("get_runtime_info"));
 }
+
+const googleStatusSchema = z.enum([
+  "disconnected",
+  "starting",
+  "monitoring",
+  "degraded",
+  "unavailable",
+]);
+export type GoogleStatus = z.infer<typeof googleStatusSchema>;
+
+export async function getGoogleStatus(): Promise<GoogleStatus | null> {
+  if (!isTauri()) return null;
+  return googleStatusSchema.parse(await invoke<unknown>("google_connected"));
+}
+
+export async function connectGoogle(clientId: string, clientSecret: string): Promise<void> {
+  if (!isTauri()) throw new Error("Open the desktop app to connect Google.");
+  await invoke("connect_google", { clientId, clientSecret });
+}

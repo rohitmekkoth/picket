@@ -15,7 +15,8 @@ body {
   min-width: 360px;
 }
 button,
-a {
+a,
+input {
   -webkit-tap-highlight-color: transparent;
 }
 button:focus-visible,
@@ -127,7 +128,52 @@ h2 {
   margin: 0;
 }
 
-/* Keep runtime health visually separate from future monitoring results. */
+/* Keep source health and the runtime diagnostic easy to scan. */
+.google-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: 32px;
+  padding: 24px;
+  margin-bottom: 14px;
+  border: 1px solid #d8e1d3;
+  border-radius: 10px;
+  background: #fff;
+}
+.google-panel h2 {
+  margin-top: 0;
+}
+.google-panel p {
+  color: #59665f;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+.connect-form {
+  display: grid;
+  gap: 8px;
+}
+.connect-form label {
+  font-size: 11px;
+  font-weight: 600;
+}
+.connect-form input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #b9c8bc;
+  border-radius: 6px;
+  padding: 10px;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+}
+.google-panel .form-error {
+  color: #a33328;
+}
+.connection-state {
+  align-self: center;
+  font-weight: 600;
+}
 .runtime {
   padding: 22px 24px;
   display: flex;
@@ -165,6 +211,10 @@ button:hover {
 button:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+.connect-form button {
+  justify-self: start;
+  margin-top: 5px;
 }
 .disclosure {
   font-size: 11px;
@@ -204,6 +254,10 @@ footer {
     flex-direction: column;
     gap: 16px;
   }
+  .google-panel {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
   footer {
     flex-direction: column;
     gap: 6px;
@@ -237,6 +291,19 @@ footer {
   .runtime {
     background: #223026;
     border-color: #3c4b40;
+  }
+  .google-panel {
+    background: #1d2820;
+    border-color: #3c4b40;
+  }
+  .google-panel p {
+    color: #b5c3b8;
+  }
+  .google-panel .form-error {
+    color: #ffab9e;
+  }
+  .connect-form input {
+    border-color: #647a68;
   }
   button,
   .brand-mark {

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("foundation renders, stays local, and supports keyboard interaction", async ({
+test("Google observation preview stays local and supports keyboard interaction", async ({
   page,
   browserName,
 }, testInfo) => {
@@ -17,7 +17,8 @@ test("foundation renders, stays local, and supports keyboard interaction", async
   for (const name of ["Request", "Claim", "Effect"]) {
     await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   }
-  await expect(page.getByText(/No accounts are connected/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Gmail and primary Calendar" })).toBeVisible();
+  await expect(page.getByText(/Open the desktop app to connect Google/)).toBeVisible();
   // Safari uses Option-Tab for links when full keyboard access is disabled.
   const nextControl = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
   await page.keyboard.press(nextControl);

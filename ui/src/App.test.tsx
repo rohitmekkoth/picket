@@ -2,10 +2,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
-import { getRuntimeInfo } from "./lib/runtime";
+import { getGoogleStatus, getRuntimeInfo } from "./lib/runtime";
 
-vi.mock("./lib/runtime", () => ({ getRuntimeInfo: vi.fn() }));
+vi.mock("./lib/runtime", () => ({
+  getRuntimeInfo: vi.fn(),
+  getGoogleStatus: vi.fn(),
+  connectGoogle: vi.fn(),
+}));
 const getRuntime = vi.mocked(getRuntimeInfo);
+const getGoogle = vi.mocked(getGoogleStatus);
 
 function renderApp() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -16,13 +21,17 @@ function renderApp() {
   );
 }
 
-beforeEach(() => getRuntime.mockReset());
+beforeEach(() => {
+  getRuntime.mockReset();
+  getGoogle.mockReset();
+  getGoogle.mockResolvedValue(null);
+});
 
 test("browser preview does not pretend the Rust core is connected", async () => {
   getRuntime.mockResolvedValue(null);
   renderApp();
   expect(await screen.findByRole("heading", { name: "Browser preview" })).toBeInTheDocument();
-  expect(screen.getByText(/Monitoring is not implemented yet/)).toBeInTheDocument();
+  expect(screen.getByText(/Open the desktop app to connect Google/)).toBeInTheDocument();
 });
 
 test("runtime failures can recover through the check button", async () => {
