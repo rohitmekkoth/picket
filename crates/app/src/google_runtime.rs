@@ -11,7 +11,10 @@ use chrono::{Duration as ChronoDuration, Utc};
 use picket_core::{event::Source, store::Store};
 use tauri::Manager;
 
-use crate::{GoogleState, google_auth, google_collector, google_http::GoogleHttp};
+use crate::{
+    GoogleState, google_auth, google_collector,
+    google_http::{GoogleHttp, HttpError},
+};
 
 pub fn start_worker(app: tauri::AppHandle) {
     let state = app.state::<GoogleState>();
@@ -110,6 +113,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         }
         let now = Utc::now();
         if Instant::now() >= next_gmail {
+            let mut retry_seconds = 10;
             gmail_healthy = match google_collector::poll_gmail(
                 &http,
                 &mut store,
@@ -120,6 +124,15 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
             ) {
                 Ok(()) => true,
                 Err(error) => {
+                    if matches!(
+                        &error,
+                        google_collector::CollectorError::Http {
+                            source: HttpError::RateLimited,
+                            ..
+                        }
+                    ) {
+                        retry_seconds = 60;
+                    }
                     tracing::warn!(%error, "Gmail collection degraded");
                     let _ = google_collector::record_failure(
                         &mut store,
@@ -130,7 +143,8 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                     false
                 }
             };
-            next_gmail = Instant::now() + Duration::from_secs(if gmail_healthy { 45 } else { 10 });
+            next_gmail = Instant::now()
+                + Duration::from_secs(if gmail_healthy { 45 } else { retry_seconds });
         }
         if Instant::now() >= next_calendar {
             calendar_healthy = match google_collector::poll_calendar(

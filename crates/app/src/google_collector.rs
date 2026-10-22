@@ -24,8 +24,12 @@ type CalendarUpdates = (Vec<Event>, Vec<(String, CalendarState)>);
 
 #[derive(Debug, Error)]
 pub enum CollectorError {
-    #[error("Google collection is unavailable")]
-    Http,
+    #[error("Google {operation} failed: {source}")]
+    Http {
+        operation: &'static str,
+        #[source]
+        source: HttpError,
+    },
     #[error("Google returned invalid source metadata")]
     Source,
     #[error("local event store is unavailable")]
@@ -136,7 +140,12 @@ pub fn poll_gmail(
                 )?;
                 return bootstrap_gmail(api, store, account, account_email, token, now).map(|_| ());
             }
-            Err(_) => return Err(CollectorError::Http),
+            Err(source) => {
+                return Err(CollectorError::Http {
+                    operation: "history",
+                    source,
+                });
+            }
         };
         for record in &page.history {
             for item in record.messages_added.iter().chain(&record.labels_added) {
@@ -182,7 +191,12 @@ pub fn poll_gmail(
                 missing = true;
                 continue;
             }
-            Err(_) => return Err(CollectorError::Http),
+            Err(source) => {
+                return Err(CollectorError::Http {
+                    operation: "message",
+                    source,
+                });
+            }
         };
         for event in message
             .observations(account, origin.clone(), now)
@@ -221,7 +235,12 @@ fn bootstrap_gmail(
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<String, CollectorError> {
-    let profile = api.gmail_profile(token).map_err(|_| CollectorError::Http)?;
+    let profile = api
+        .gmail_profile(token)
+        .map_err(|source| CollectorError::Http {
+            operation: "profile",
+            source,
+        })?;
     if profile.email_address.to_lowercase() != account_email || profile.history_id.is_empty() {
         return Err(CollectorError::Account);
     }
@@ -232,13 +251,21 @@ fn bootstrap_gmail(
         for _ in 0..MAX_PAGES {
             let page = api
                 .gmail_list(token, label, page_token.as_deref())
-                .map_err(|_| CollectorError::Http)?;
+                .map_err(|source| CollectorError::Http {
+                    operation: "message list",
+                    source,
+                })?;
             let mut events = Vec::new();
             for item in page.messages {
                 let message = match api.gmail_message(token, &item.id) {
                     Ok(message) => message,
                     Err(HttpError::MissingResource) => continue,
-                    Err(_) => return Err(CollectorError::Http),
+                    Err(source) => {
+                        return Err(CollectorError::Http {
+                            operation: "message",
+                            source,
+                        });
+                    }
                 };
                 let milliseconds: i64 = message
                     .internal_date
@@ -436,7 +463,12 @@ pub fn poll_calendar(
                             Origin::CatchUp,
                         );
                     }
-                    Err(_) => return Err(CollectorError::Http),
+                    Err(source) => {
+                        return Err(CollectorError::Http {
+                            operation: "calendar sync",
+                            source,
+                        });
+                    }
                 };
                 let items = select_calendar_items(store, account, page.items, now)?;
                 let (events, snapshots) =
@@ -536,7 +568,10 @@ pub fn refresh_calendar_window(
     for _ in 0..MAX_PAGES {
         let page = api
             .calendar_list(token, None, page_token.as_deref(), Some((&from, &to)))
-            .map_err(|_| CollectorError::Http)?;
+            .map_err(|source| CollectorError::Http {
+                operation: "calendar window",
+                source,
+            })?;
         let items = select_calendar_items(store, account, page.items, now)?;
         let (events, snapshots) =
             calendar_observations(store, account, items, Origin::Baseline, now)?;
@@ -583,7 +618,10 @@ fn bootstrap_calendar(
             let bounds = bounded.then_some((from.as_str(), to.as_str()));
             let page = api
                 .calendar_list(token, None, page_token.as_deref(), bounds)
-                .map_err(|_| CollectorError::Http)?;
+                .map_err(|source| CollectorError::Http {
+                    operation: "calendar bootstrap",
+                    source,
+                })?;
             let items = select_calendar_items(store, account, page.items, now)?;
             let (events, snapshots) =
                 calendar_observations(store, account, items, origin.clone(), now)?;
