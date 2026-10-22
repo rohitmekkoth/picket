@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
@@ -15,7 +16,7 @@ const MAX_CANDIDATES: usize = 128;
 const CLAIM_WINDOW: Duration = Duration::minutes(10);
 const GRACE: Duration = Duration::minutes(5);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ActorEvidence {
     Unknown,
     Reported(String),
@@ -24,7 +25,7 @@ pub enum ActorEvidence {
     Conflicting(Vec<String>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RequestFit {
     NotAssessed,
     NoObservedRequest,
@@ -34,7 +35,7 @@ pub enum RequestFit {
     Conflicts(Vec<ConflictReason>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConflictReason {
     ProhibitedAction,
     DifferentAction,
@@ -45,14 +46,14 @@ pub enum ConflictReason {
     OutsideWindow,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Route {
     Timeline,
     MediumReview,
     HighReview,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Assessment {
     pub finding: String,
     pub effect: EventKey,
@@ -65,7 +66,7 @@ pub struct Assessment {
     pub coverage: Vec<CoverageEvidence>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoverageEvidence {
     pub source: Source,
     pub capability: String,
@@ -73,7 +74,7 @@ pub struct CoverageEvidence {
     pub observed_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClaimStatus {
     Pending,
     Matched,
@@ -82,18 +83,59 @@ pub enum ClaimStatus {
     CoverageIncomplete,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ClaimCheck {
     pub claim: EventKey,
     pub status: ClaimStatus,
     pub observed_effect: Option<EventKey>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NoticeAssessment {
     pub notice: EventKey,
     pub kind: NoticeKind,
     pub route: Route,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum FindingDetail {
+    Effect(Assessment),
+    Claim(ClaimCheck),
+    Notice(NoticeAssessment),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Finding {
+    pub id: String,
+    pub route: Route,
+    pub detail: FindingDetail,
+}
+
+pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
+    let mut result: Vec<_> = assess(events, now)
+        .into_iter()
+        .map(|assessment| Finding {
+            id: assessment.finding.clone(),
+            route: assessment.route,
+            detail: FindingDetail::Effect(assessment),
+        })
+        .collect();
+    result.extend(assess_claims(events, now).into_iter().map(|claim| Finding {
+        id: key_finding_id("claim", &claim.claim),
+        route: Route::Timeline,
+        detail: FindingDetail::Claim(claim),
+    }));
+    result.extend(
+        assess_notices(events, now)
+            .into_iter()
+            .map(|notice| Finding {
+                id: key_finding_id("notice", &notice.notice),
+                route: notice.route,
+                detail: FindingDetail::Notice(notice),
+            }),
+    );
+    result.sort_by(|left, right| left.id.cmp(&right.id));
+    result
 }
 
 /// Replaying the same retained input at the same clock time gives the same result.
@@ -179,11 +221,11 @@ fn assess_one(events: &[Event], event: &Event, effect: &Effect, now: DateTime<Ut
 }
 
 /// A metadata notice prompts review; it does not prove a setting or payment.
-pub fn assess_notices(events: &[Event]) -> Vec<NoticeAssessment> {
+pub fn assess_notices(events: &[Event], now: DateTime<Utc>) -> Vec<NoticeAssessment> {
     events
         .iter()
         .filter_map(|event| {
-            if event.key.source != Source::Gmail {
+            if event.key.source != Source::Gmail || event.ingested_at > now {
                 return None;
             }
             if let EventPayload::Notice { kind } = &event.payload {
@@ -708,6 +750,10 @@ fn same_targets(left: &[String], right: &[String]) -> bool {
 }
 
 fn finding_id(key: &EventKey) -> String {
+    key_finding_id("effect", key)
+}
+
+fn key_finding_id(kind: &str, key: &EventKey) -> String {
     // EventKey is a fixed shape of strings and an enum; serialization is infallible.
     let mut hash = Sha256::new();
     for part in [
@@ -719,7 +765,7 @@ fn finding_id(key: &EventKey) -> String {
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part.as_bytes());
     }
-    format!("effect/{:x}", hash.finalize())
+    format!("{kind}/{:x}", hash.finalize())
 }
 
 #[cfg(test)]
@@ -1238,7 +1284,7 @@ mod tests {
                 kind: NoticeKind::Forwarding,
             },
         );
-        let found = assess_notices(&[notice]);
+        let found = assess_notices(&[notice], time(20));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].route, Route::MediumReview);
     }

@@ -4,6 +4,7 @@ use serde::Serialize;
 
 pub mod engine;
 pub mod event;
+pub mod incidents;
 pub mod store;
 
 /// Read-only process details shared by the CLI and desktop shell.

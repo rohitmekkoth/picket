@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -10,8 +10,12 @@ use thiserror::Error;
 use crate::event::{
     Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source, canonical_json,
 };
+use crate::{
+    engine::Finding,
+    incidents::{self, OutboxItem, ReconcileSummary},
+};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -64,7 +68,7 @@ impl Store {
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != SCHEMA_VERSION {
+        if version != 1 && version != SCHEMA_VERSION {
             return Err(StoreError::Schema(version));
         }
         Ok(Self { connection })
@@ -101,8 +105,44 @@ impl Store {
                  PRAGMA user_version=1;
                  COMMIT;",
             )?,
-            SCHEMA_VERSION => {}
+            1 | SCHEMA_VERSION => {}
             other => return Err(StoreError::Schema(other)),
+        }
+        if version != SCHEMA_VERSION {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE assessment_revisions (
+                   finding TEXT NOT NULL,
+                   revision INTEGER NOT NULL,
+                   assessed_at TEXT NOT NULL,
+                   engine_version INTEGER NOT NULL,
+                   payload BLOB NOT NULL,
+                   PRIMARY KEY(finding, revision)
+                 );
+                 CREATE TABLE assessment_current (
+                   finding TEXT PRIMARY KEY,
+                   revision INTEGER NOT NULL,
+                   FOREIGN KEY(finding, revision) REFERENCES assessment_revisions(finding, revision)
+                 );
+                 CREATE TABLE notification_outbox (
+                   id TEXT PRIMARY KEY,
+                   finding TEXT NOT NULL,
+                   revision INTEGER NOT NULL,
+                   kind TEXT NOT NULL CHECK(kind IN ('alert', 'correction')),
+                   state TEXT NOT NULL CHECK(state IN ('pending', 'delivered', 'cancelled')),
+                   attempts INTEGER NOT NULL DEFAULT 0,
+                   created_at TEXT NOT NULL,
+                   FOREIGN KEY(finding, revision) REFERENCES assessment_revisions(finding, revision)
+                 );
+                 CREATE TABLE engine_state (
+                   id INTEGER PRIMARY KEY CHECK(id = 1),
+                   through_sequence INTEGER NOT NULL,
+                   engine_version INTEGER NOT NULL
+                 );
+                 INSERT INTO engine_state VALUES (1, 0, 1);
+                 PRAGMA user_version=2;
+                 COMMIT;",
+            )?;
         }
         Ok(Self { connection })
     }
@@ -113,6 +153,66 @@ impl Store {
         let sequence = append_in_transaction(&tx, event)?;
         tx.commit()?;
         Ok(sequence)
+    }
+
+    /// Appends an input and commits resulting assessments/outbox work together.
+    pub fn append_assessed(
+        &mut self,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> Result<(i64, ReconcileSummary)> {
+        validate_event(event)?;
+        let mut inputs: Vec<_> = self.events()?.into_iter().map(|row| row.event).collect();
+        let previous_head = chain_state(&self.connection)?.2;
+        let tx = self.connection.transaction()?;
+        let sequence = append_in_transaction(&tx, event)?;
+        if sequence > previous_head {
+            inputs.push(event.clone());
+        }
+        let summary = incidents::reconcile(&tx, &inputs, now, previous_head.max(sequence))?;
+        tx.commit()?;
+        Ok((sequence, summary))
+    }
+
+    /// Reassesses pending findings after the clock advances or a restart.
+    pub fn reconcile(&mut self, now: DateTime<Utc>) -> Result<ReconcileSummary> {
+        let rows = self.events()?;
+        let through_sequence = chain_state(&self.connection)?.2;
+        let inputs: Vec<_> = rows.into_iter().map(|row| row.event).collect();
+        let tx = self.connection.transaction()?;
+        let summary = incidents::reconcile(&tx, &inputs, now, through_sequence)?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    pub fn current_findings(&self) -> Result<Vec<(i64, Finding)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT revisions.revision,revisions.payload FROM assessment_current AS current
+             JOIN assessment_revisions AS revisions
+               ON revisions.finding=current.finding AND revisions.revision=current.revision
+             ORDER BY current.finding",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (revision, payload) = row?;
+            Ok((revision, serde_json::from_slice(&payload)?))
+        })
+        .collect()
+    }
+
+    pub fn pending_notifications(&self) -> Result<Vec<OutboxItem>> {
+        incidents::pending(&self.connection)
+    }
+
+    /// A delivery worker acknowledges only after handing a notification to the OS.
+    pub fn mark_notification_delivered(&mut self, id: &str) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE notification_outbox SET state='delivered',attempts=attempts+1
+             WHERE id=?1 AND state='pending'",
+            [id],
+        )? == 1)
     }
 
     pub fn verify(&self) -> Result<Verification> {
