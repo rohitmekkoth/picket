@@ -12,7 +12,14 @@ mod google_http;
 #[cfg(target_os = "macos")]
 mod google_runtime;
 #[cfg(target_os = "macos")]
-use std::sync::{Mutex, atomic::AtomicBool};
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tracing_subscriber::EnvFilter;
 
@@ -170,21 +177,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 app.manage(GoogleState::default());
                 let restore_handle = app.handle().clone();
-                tauri::async_runtime::spawn_blocking(move || match google_auth::restore() {
-                    Ok(Some(session)) => {
-                        if let Ok(mut current) =
-                            restore_handle.state::<GoogleState>().session.lock()
+                tauri::async_runtime::spawn_blocking(move || {
+                    loop {
+                        let state = restore_handle.state::<GoogleState>();
+                        if state.worker_started.load(Ordering::SeqCst)
+                            || state.session.lock().is_ok_and(|current| current.is_some())
                         {
-                            *current = Some(session);
+                            break;
                         }
-                        google_runtime::start_worker(restore_handle.clone());
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "Google connection unavailable");
-                        if let Ok(mut status) = restore_handle.state::<GoogleState>().status.lock()
-                        {
-                            *status = "unavailable";
+                        match google_auth::restore() {
+                            Ok(Some(session)) => {
+                                let Ok(mut current) = state.session.lock() else {
+                                    break;
+                                };
+                                if current.is_none() && !state.worker_started.load(Ordering::SeqCst)
+                                {
+                                    *current = Some(session);
+                                    drop(current);
+                                    google_runtime::start_worker(restore_handle.clone());
+                                }
+                                break;
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                tracing::warn!(%error, "Google connection unavailable");
+                                if let Ok(mut status) = state.status.lock() {
+                                    *status = "unavailable";
+                                }
+                                thread::sleep(Duration::from_secs(30));
+                            }
                         }
                     }
                 });
