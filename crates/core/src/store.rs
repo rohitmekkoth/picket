@@ -451,6 +451,7 @@ mod tests {
                 action: Action::EmailSend,
                 targets: vec!["person@example.test".into()],
                 targets_complete: true,
+                calendar_start: None,
                 origin: Origin::Live,
                 external_change: false,
             }),

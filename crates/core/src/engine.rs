@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{
     AccountPolicy, Action, Effect, Event, EventKey, EventPayload, Feedback, Field, Origin, Request,
-    SnapshotValue, Source, ToolOutcome,
+    SnapshotValue, Source, ToolOutcome, ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
@@ -40,6 +40,9 @@ pub enum ConflictReason {
     DifferentAction,
     ExtraTarget,
     ApprovalMissing,
+    DifferentCalendarTime,
+    TooManyActions,
+    OutsideWindow,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,14 +157,7 @@ fn actor_for(events: &[Event], event: &Event, effect: &Effect, finding: &str) ->
         match &candidate.payload {
             EventPayload::ToolResult(tool)
                 if candidate.key.source == Source::OpenClaw
-                    && tool.outcome == ToolOutcome::Succeeded
-                    && tool.provider_resource.as_deref() == Some(event.key.resource.as_str())
-                    && tool.action == effect.action
-                    && effect.targets_complete
-                    && same_targets(&tool.targets, &effect.targets)
-                    && (effect.action != Action::CalendarUpdate
-                        || tool.provider_revision.as_deref()
-                            == Some(event.key.revision.as_str())) =>
+                    && tool_matches(tool, event, effect) =>
             {
                 runtime.insert(tool.agent.clone());
             }
@@ -200,6 +196,17 @@ fn actor_for(events: &[Event], event: &Event, effect: &Effect, finding: &str) ->
         .into_iter()
         .next()
         .map_or(ActorEvidence::Unknown, ActorEvidence::Reported)
+}
+
+fn tool_matches(tool: &ToolResult, event: &Event, effect: &Effect) -> bool {
+    tool.outcome == ToolOutcome::Succeeded
+        && tool.provider_resource.as_deref() == Some(event.key.resource.as_str())
+        && tool.action == effect.action
+        && effect.targets_complete
+        && !effect.external_change
+        && same_targets(&tool.targets, &effect.targets)
+        && (effect.action != Action::CalendarUpdate
+            || tool.provider_revision.as_deref() == Some(event.key.revision.as_str()))
 }
 
 fn claim_matches(
@@ -325,13 +332,7 @@ fn request_fit(
                 (ActorEvidence::RuntimeLinked(_), EventPayload::ToolResult(tool))
                     if candidate.key.source == Source::OpenClaw
                         && tool.agent == *agent
-                        && tool.outcome == ToolOutcome::Succeeded
-                        && tool.provider_resource.as_deref() == Some(&event.key.resource)
-                        && tool.action == effect.action
-                        && effect.targets_complete
-                        && same_targets(&tool.targets, &effect.targets)
-                        && (effect.action != Action::CalendarUpdate
-                            || tool.provider_revision.as_deref() == Some(&event.key.revision)) =>
+                        && tool_matches(tool, event, effect) =>
                 {
                     tool.task.as_ref()
                 }
@@ -364,9 +365,6 @@ fn request_fit(
             match &candidate.payload {
                 EventPayload::Request(request)
                     if request.agent == *agent
-                        && request
-                            .valid_until
-                            .is_none_or(|until| event.occurred_at <= until)
                         && task_hint.is_none_or(|task| request.task == *task) =>
                 {
                     Some((candidate.occurred_at, request))
@@ -388,14 +386,26 @@ fn request_fit(
     match latest.len() {
         0 => RequestFit::NoObservedRequest,
         1 => match latest.into_values().next() {
-            Some((_, request)) => compare_request(request, effect),
+            Some((_, request)) => {
+                let count = task_hint.and_then(|task| {
+                    matches!(actor, ActorEvidence::RuntimeLinked(_))
+                        .then(|| linked_action_count(events, event, agent, task))
+                        .flatten()
+                });
+                compare_request(request, effect, count, event.occurred_at)
+            }
             None => RequestFit::NoObservedRequest,
         },
         _ => RequestFit::AmbiguousTask,
     }
 }
 
-fn compare_request(request: &Request, effect: &Effect) -> RequestFit {
+fn compare_request(
+    request: &Request,
+    effect: &Effect,
+    linked_actions: Option<u32>,
+    occurred_at: DateTime<Utc>,
+) -> RequestFit {
     let mut conflicts = Vec::new();
     if request.prohibited_actions.contains(&effect.action) {
         conflicts.push(ConflictReason::ProhibitedAction);
@@ -416,8 +426,25 @@ fn compare_request(request: &Request, effect: &Effect) -> RequestFit {
     if request.requires_approval == Field::Known(true) && !request.approved {
         conflicts.push(ConflictReason::ApprovalMissing);
     }
-    // Account-wide counts include human actions. Quantity remains unassessed
-    // until effects can be explicitly linked to task slots.
+    if request.valid_until.is_some_and(|until| occurred_at > until) {
+        conflicts.push(ConflictReason::OutsideWindow);
+    }
+    if matches!(
+        effect.action,
+        Action::CalendarCreate | Action::CalendarUpdate | Action::CalendarRsvp
+    ) && let (Field::Known(expected), Some(observed)) =
+        (&request.calendar_start, effect.calendar_start)
+        && *expected != observed
+    {
+        conflicts.push(ConflictReason::DifferentCalendarTime);
+    }
+    if let (Field::Known(max), Some(count)) = (&request.max_actions, linked_actions)
+        && count > *max
+    {
+        conflicts.push(ConflictReason::TooManyActions);
+    } else if request.max_actions == Field::Known(0) {
+        conflicts.push(ConflictReason::TooManyActions);
+    }
     if !conflicts.is_empty() {
         return RequestFit::Conflicts(conflicts);
     }
@@ -425,11 +452,64 @@ fn compare_request(request: &Request, effect: &Effect) -> RequestFit {
         || !matches!(request.actions, Field::Known(_) | Field::ExplicitAny)
         || !matches!(request.targets, Field::Known(_) | Field::ExplicitAny)
         || !matches!(request.requires_approval, Field::Known(_))
+        || (matches!(
+            effect.action,
+            Action::CalendarCreate | Action::CalendarUpdate | Action::CalendarRsvp
+        ) && (!matches!(request.calendar_start, Field::Known(_) | Field::ExplicitAny)
+            || (matches!(request.calendar_start, Field::Known(_))
+                && effect.calendar_start.is_none())))
         || !matches!(request.max_actions, Field::ExplicitAny)
+            && !(matches!(request.max_actions, Field::Known(_)) && linked_actions.is_some())
     {
         return RequestFit::InsufficientEvidence;
     }
     RequestFit::ConsistentWithVisibleRequest
+}
+
+fn linked_action_count(events: &[Event], current: &Event, agent: &str, task: &str) -> Option<u32> {
+    let first_request = events
+        .iter()
+        .filter_map(|event| {
+            if event.key.account == current.key.account
+                && event.key.source == Source::Messages
+                && let EventPayload::Request(request) = &event.payload
+                && request.agent == agent
+                && request.task == task
+                && event.occurred_at <= current.occurred_at
+            {
+                return Some(event.occurred_at);
+            }
+            None
+        })
+        .min()?;
+    let mut effects = BTreeSet::new();
+    for event in events {
+        if event.key.account != current.key.account
+            || event.occurred_at < first_request
+            || event.occurred_at > current.occurred_at
+        {
+            continue;
+        }
+        let EventPayload::Effect(effect) = &event.payload else {
+            continue;
+        };
+        if effect.origin == Origin::Baseline || effect.external_change {
+            continue;
+        }
+        if events.iter().any(|candidate| {
+            candidate.key.account == current.key.account
+                && candidate.key.source == Source::OpenClaw
+                && matches!(&candidate.payload, EventPayload::ToolResult(tool)
+                    if tool.agent == agent && tool.task.as_deref() == Some(task)
+                        && tool_matches(tool, event, effect))
+        }) {
+            effects.insert(finding_id(&event.key));
+            if effects.len() > MAX_CANDIDATES {
+                return None;
+            }
+        }
+    }
+    u32::try_from(effects.len()).ok()
 }
 
 fn same_targets(left: &[String], right: &[String]) -> bool {
@@ -491,6 +571,7 @@ mod tests {
                 action: Action::EmailSend,
                 targets: vec!["a@example.test".into()],
                 targets_complete: true,
+                calendar_start: None,
                 origin: Origin::Live,
                 external_change: false,
             }),
@@ -524,6 +605,7 @@ mod tests {
                 task: "task-1".into(),
                 actions: Field::Known(vec![Action::EmailSend]),
                 targets: Field::Known(vec!["a@example.test".into()]),
+                calendar_start: Field::Unknown,
                 prohibited_actions: vec![],
                 max_actions: Field::ExplicitAny,
                 valid_until: None,
@@ -818,5 +900,73 @@ mod tests {
         assert_eq!(one(&[policy.clone(), effect()]).route, Route::MediumReview);
         policy.occurred_at = time(11);
         assert_eq!(one(&[policy, effect()]).route, Route::Timeline);
+    }
+
+    #[test]
+    fn action_limit_counts_only_task_linked_effects() {
+        let mut asked = request();
+        if let EventPayload::Request(value) = &mut asked.payload {
+            value.max_actions = Field::Known(1);
+        }
+        let mut human = effect();
+        human.key.resource = "human-message".into();
+        human.occurred_at = time(11);
+        let first = one(&[asked.clone(), effect(), tool(), human.clone()]);
+        assert_eq!(first.request_fit, RequestFit::ConsistentWithVisibleRequest);
+        let mut second = effect();
+        second.key.resource = "message-2".into();
+        second.occurred_at = time(12);
+        let mut second_tool = tool();
+        second_tool.key.resource = "call-2".into();
+        if let EventPayload::ToolResult(value) = &mut second_tool.payload {
+            value.provider_resource = Some("message-2".into());
+        }
+        let results = assess(
+            &[asked, effect(), tool(), human, second, second_tool],
+            time(20),
+        );
+        assert_eq!(
+            results[2].request_fit,
+            RequestFit::Conflicts(vec![ConflictReason::TooManyActions])
+        );
+    }
+
+    #[test]
+    fn calendar_time_is_a_hard_constraint() {
+        let mut asked = request();
+        if let EventPayload::Request(value) = &mut asked.payload {
+            value.actions = Field::Known(vec![Action::CalendarCreate]);
+            value.calendar_start = Field::Known(time(100));
+        }
+        let mut created = effect();
+        created.key.source = Source::Calendar;
+        if let EventPayload::Effect(value) = &mut created.payload {
+            value.action = Action::CalendarCreate;
+            value.calendar_start = Some(time(101));
+        }
+        let mut linked = tool();
+        if let EventPayload::ToolResult(value) = &mut linked.payload {
+            value.action = Action::CalendarCreate;
+        }
+        assert_eq!(
+            one(&[asked, created, linked]).request_fit,
+            RequestFit::Conflicts(vec![ConflictReason::DifferentCalendarTime])
+        );
+    }
+
+    #[test]
+    fn expired_request_and_zero_action_limit_are_explicit_conflicts() {
+        let mut asked = request();
+        if let EventPayload::Request(value) = &mut asked.payload {
+            value.valid_until = Some(time(5));
+            value.max_actions = Field::Known(0);
+        }
+        assert_eq!(
+            one(&[asked, effect(), tool()]).request_fit,
+            RequestFit::Conflicts(vec![
+                ConflictReason::OutsideWindow,
+                ConflictReason::TooManyActions
+            ])
+        );
     }
 }

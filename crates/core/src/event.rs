@@ -87,11 +87,12 @@ pub struct AccountPolicy {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Field<T> {
     Known(T),
     ExplicitAny,
+    #[default]
     Unknown,
     Ambiguous,
 }
@@ -101,6 +102,8 @@ pub struct Effect {
     pub action: Action,
     pub targets: Vec<String>,
     pub targets_complete: bool,
+    #[serde(default)]
+    pub calendar_start: Option<DateTime<Utc>>,
     pub origin: Origin,
     pub external_change: bool,
 }
@@ -111,6 +114,8 @@ pub struct Request {
     pub task: String,
     pub actions: Field<Vec<Action>>,
     pub targets: Field<Vec<String>>,
+    #[serde(default)]
+    pub calendar_start: Field<DateTime<Utc>>,
     pub prohibited_actions: Vec<Action>,
     pub max_actions: Field<u32>,
     pub valid_until: Option<DateTime<Utc>>,
