@@ -1,6 +1,6 @@
 # Alignment engine review and implementation plan
 
-Reviewed: 2026-10-21. Status: proposed design and coding plan; no engine, collector, model, or account experiment is implemented. This is a focused companion to [design.md](design.md), not a second product design. It replaces the original weighted attribution and authorization proposals for future implementation. Product scope remains local, read-only Gmail metadata and primary Calendar monitoring, with optional Messages and OpenClaw observations.
+Reviewed: 2026-10-21. Status: the M2 store and M3 mock engine are implemented; M4 evaluation and real-source experiments remain open. This is a focused companion to [design.md](design.md), not a second product design. It replaces the original weighted attribution and authorization proposals. Product scope remains local, read-only Gmail metadata and primary Calendar monitoring, with optional Messages and OpenClaw observations.
 
 ## 1. Product decision
 
@@ -275,4 +275,4 @@ CI should enforce invariants, per-class regressions and minimum applicable-case 
 | Text was discarded by privacy policy | Cannot rerun extraction or display full original evidence later; retain structured assessment and disclose the limitation |
 | Agent writes outside Gmail/primary Calendar, or no usable request/log integration exists | Unsupported visibility. Do not advertise comprehensive monitoring of Instinct, Muse, or every OpenClaw tool |
 
-The next implementation action is to settle the M2 observation/evidence/coverage contract and build its storage tests when implementation is requested. The next attribution research action is the controlled E1/E2 capability probe during M5/M6. Failed probes narrow supported claims; they must not be compensated for by increasing heuristic confidence.
+The next implementation action is M4: evaluate the mock engine with held-out scenario families, denominators, utility gates and separate mode reports. The next attribution research action is the controlled E1/E2 capability probe during M5/M6. Failed probes narrow supported claims; they must not be compensated for by increasing heuristic confidence.

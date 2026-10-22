@@ -1,6 +1,6 @@
 # Picket - Design Doc
 
-Design revision: 2026-10-21 (alignment review; implementation remains at M1)
+Design revision: 2026-10-21 (alignment review; M3 mock engine implemented, M4 onward pending)
 
 ## Overview
 

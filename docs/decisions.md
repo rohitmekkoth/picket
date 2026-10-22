@@ -21,7 +21,7 @@
 
 ## Alignment review, 2026-10-21
 
-- [Alignment engine plan](alignment-engine-plan.md) records the focused review, evidence policy, implementation increments, experiments, evaluation gates and unsolved limits. The related sections of `design.md` now reflect it. This is design work only; no product milestone beyond M1 is implemented or authorized by this review.
+- [Alignment engine plan](alignment-engine-plan.md) records the focused review, evidence policy, implementation increments, experiments, evaluation gates and unsolved limits. The related sections of `design.md` reflect it. This review initially added no product code; subsequent M2 and M3 implementation is recorded below.
 - Separate observable account state, actor evidence, request fit and alert routing. Remove the old 0.95 claim attribution, 0.30 effects-only baseline, automatic `user` fallback and additive authorization score. Unknown actor is a first-class outcome; a claim or a known contact cannot grant permission.
 - Explicit restrictions are gates. Preserve missing fields, conflicting evidence, task revisions, cardinality and collection coverage. An AI extraction is an uncertain input; no AI judge changes v1 verdicts. Expectedness feedback does not automatically label actors, trust contacts or tune thresholds.
 - Header fingerprinting is an unvalidated experiment, not actor proof. Personal Gmail's documented message resource does not expose the sending app. Workspace Gmail logs do document app identity and message identifiers, correcting the earlier conversation's overly pessimistic assessment; real API/export availability and unique joins remain unverified. Workspace integration is future scope and adds no permissions now.
@@ -32,15 +32,35 @@
 
 ## Resolve before implementing the owning milestone
 
-1. **M2 event deduplication:** `UNIQUE(source, source_ref, kind)` cannot represent repeated changes to the same Calendar event if source_ref is only its event ID. Define a stable change identity including a source revision.
-2. **M2 replay completeness:** ordinary received-mail contacts are upserted without events, while the design says contacts can be rebuilt entirely from the log. Decide how privacy-minimized contact observations and baseline state are replayed.
-3. **M2 finding uniqueness:** SQLite UNIQUE constraints permit multiple NULL values. The proposed nullable finding key needs an explicit normalized identity or partial indexes.
-4. **M2 retention and feedback:** define the retained chain anchor and transactional checkpoint boundary precisely. Preserve user decisions by stable event/finding identities when derived incidents are rebuilt.
+1. **M2 source identity, contact replay, retention and feedback:** resolved for the initial event store below. M3 finding keys are explicit and non-null. Real Calendar adapters must supply meaningful revisions in M5.
 5. **M5 calendar synchronization:** verify that the chosen initial bounded query and subsequent sync-token requests meet Google's parameter restrictions without introducing gaps.
 6. **M6 decoder and plugin:** verify the current imessage-database license and the actual OpenClaw hooks before choosing dependencies.
 7. **M7 model integrity:** verify model name, license, exact GGUF revision, checksum, and download redirect hosts. The design's model claims are not yet independently validated.
 8. **Before public release:** choose the license, Developer ID signing identity, Homebrew tap owner, and validated installation instructions. Local development uses an ad hoc signature; public signing and notarization are not configured.
-9. **M2 evidence contract:** settle the observation/evidence/coverage fields and versioned replay inputs described in the alignment plan before freezing migrations. Do not persist raw message bodies to make replay easier.
-10. **Before M3:** review the explicit request-constraint and actor-evidence states, select bounded candidate/queue limits, and label uncertainty/adversarial seed scenarios before coding. Keep policy, extraction, coverage and attribution uncertainty separate.
+9. **M5 adapter evidence contract:** the M2/M3 typed inputs, source identity and coverage states support mock replay. Before real collectors, add and validate source time quality, adapter provenance, scope and loss counters. Do not persist raw message bodies to make replay easier.
+10. **M3 mock contract:** explicit request and actor states, bounded candidate/outbox reads and 24 labeled seeds are implemented. Keep policy, extraction, coverage and attribution uncertainty separate as integrations are added.
 11. **M5/M6 attribution experiments:** test actual header separability, request-channel coverage, tool-result resource linkage and Calendar external changes. No claim of reliable Instinct/Muse attribution is established. Workspace requires a separately scoped integration decision.
 12. **M4/M7/release evidence:** operationalize the plan's denominators, held-out splits, uncertainty intervals and per-mode safety/utility gates. Do not publish the proposed thresholds as achieved performance.
+
+## Event store implementation, 2026-10-21
+
+- The M2 schema uses `(account, source, resource, revision, kind)` as a non-null event identity. An adapter must supply a stable revision for each distinct Calendar change; reusing an event ID alone would lose updates. Exact retries deduplicate, while conflicting content for the same key is rejected.
+- Events carry a schema version, typed payload, source and observation time. Source coverage changes and privacy-minimized received-contact observations are events, so they are available for replay. Collector adapters must validate and minimize their fields before submission; the store also caps event size and source identity lengths.
+- The hash chain includes canonical JSON, ordered sequence numbers, a stored head, and a retained-prefix anchor. A single mutable connection owns writes. `picket verify --database` uses a separate read-only connection and reports the first broken sequence, including a removed tail. This detects accidental or casual modification, not a full malicious rewrite of both rows and chain metadata.
+- Retention deletes a verified prefix in one transaction with an anchor update and a new checkpoint event. The latest feedback, contact, policy and coverage records are copied forward as typed snapshot events, preserving their replayable current state. A retained checkpoint marks the limited historical horizon; absent older requests or effects cannot be inferred from it.
+- M3 uses stable, explicit, non-null finding identities and resource-based incident groups. The M2 migration contains only events and chain state; M3 adds assessment and outbox tables in a separate migration.
+
+## Synthetic alignment foundation, 2026-10-21
+
+- The portable matcher returns separate actor evidence, request fit, account-policy hits, pending state, and route. A successful OpenClaw report links only when account, operation, complete target set, provider resource, and Calendar update revision match. Runtime linkage is conditional on the adapter's honesty; real adapter capability remains untested. Claims stay at `reported` strength and cannot override a runtime link.
+- Effects-only observations, external Calendar changes, failed/unlinked tool calls, incomplete targets, multiple plausible tasks, and conflicting runtime links abstain from a named actor or complete request match. Request fields use explicit `Known`, `ExplicitAny`, `Unknown`, and `Ambiguous` states. Matching known fields is only consistency with visible scope, not proof of full authorization.
+- A quantity bound is evaluated only when validated runtime reports link each counted effect to the same task. Human account activity does not consume an agent's task allowance; missing task links yield insufficient evidence. Calendar start time and explicit request expiry are hard constraints.
+- Account policies are local Picket events with an explicit high-consequence flag. A visible violation can route to review with an unknown actor. Retention snapshots preserve the latest policy as of the cutoff; the replay engine reads the original policy time from the snapshot. Policy editing and confirmation UI remain future work.
+- `picket replay --database ... --at ...` verifies the log and prints aggregate counts only. The separate store API persists finding revisions and a notification outbox atomically with inputs, but no collector or OS delivery worker calls it yet. Its synthetic tests are a smoke gate, not the M4 evaluation baseline or measured precision.
+
+## M3 mock engine, 2026-10-21
+
+- Deterministic matching separates actor evidence, visible request fit, account policy, claim consistency, coverage state and alert routing. Claims without a provider ID abstain when more than one similar effect is visible. A lone request with no task link is insufficient for comparison. Baseline imports and observations with unknown origin do not create effect or metadata-notice findings.
+- SQLite schema v2 preserves assessment revisions, a processing cursor and a durable notification outbox read in bounded pages. Input, assessment and outbox intent commit in one transaction through `append_assessed`; duplicate input and restart replay do not duplicate alerts. Delivered findings can receive a correction after material late evidence or feedback. Delivery itself belongs to M8.
+- Twenty-four labeled synthetic scenarios replay through the store with a scripted `MockModel`; paired cases with identical visible evidence but different true actors remain unknown. These are M3 safety smoke tests. They are not independent validation samples, accuracy estimates or a substitute for the M4 held-out evaluation.
+- Optional event fields added during M3 preserve older canonical log entries. Verification checks canonical source JSON and the original hash; a semantically identical retry of an old record deduplicates. Real adapter provenance, source time quality, collection completeness and runtime integrity remain M5/M6 work.
