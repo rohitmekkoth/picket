@@ -19,10 +19,10 @@ Read these files in order before changing code:
 
 - Repository: `https://github.com/rohitmekkoth/picket`.
 - Visibility: private. Do not make it public without the owner's explicit request.
-- Primary branch: `main`. Fetch before starting new work. M4 merged from `feature/m4-evaluation-harness` in PR #9.
+- Primary branch: `main`. Fetch before starting new work. M5 merged from `feature/m5-google-collectors` in PR #11.
 - M1 notification work: PR #5 merged with its two commits preserved. The post-merge [main CI run](https://github.com/rohitmekkoth/picket/actions/runs/39556842806) passed all three jobs.
-- Product implementation status: M2 and M3 merged in PR #8; M4 merged in PR #9. The post-M4 [main CI run](https://github.com/rohitmekkoth/picket/actions/runs/39723127863) passed all three jobs. No collectors, real account access, Messages/OpenClaw adapters, local model, app incident views, notification delivery, or production alerts are implemented.
-- Available scaffold: Rust workspace, portable core boundary, diagnostic CLI, Tauri v2 window and menu-bar shell, synthetic native notification probe, React UI, tests, CI, dependency audits, and macOS smoke test.
+- Product implementation status: M2 and M3 merged in PR #8, M4 in PR #9, and M5 in PR #11. M5 adds scoped live Gmail metadata and primary Calendar monitoring. Messages/OpenClaw adapters, the local model, incident views, notification delivery, and production alerts remain unimplemented.
+- Available scaffold: Rust workspace, portable core boundary, diagnostic CLI, Tauri v2 window and menu-bar shell, Google collectors, synthetic native notification probe, React UI, tests, CI, dependency audits, and macOS smoke test.
 - The browser preview intentionally cannot reach the Rust core. This is expected behavior.
 - Runtime data, credentials, personal messages, account fixtures, databases, and model files must never be committed.
 
@@ -33,10 +33,10 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 ## Milestone checklist
 
 - [x] **M1 - Foundation:** Rust workspace, portable core boundary, CLI diagnostic, Tauri tray and window, React shell, CI, audits, macOS smoke test, and native notification feasibility.
-- [x] **M2 - Event store foundation:** Typed events, canonical JSON, SQLite schema, ordered writer, hash chain, retention, and `picket verify` with exact broken-sequence reporting. Collector-specific observation fields still need refinement before M5.
+- [x] **M2 - Event store foundation:** Typed events, canonical JSON, SQLite schema, ordered writer, hash chain, retention, and `picket verify` with exact broken-sequence reporting.
 - [x] **M3 - Engine on mocks:** Deterministic rules, attribution and request states, task-linked action limits, claim/coverage checks, durable findings/outbox, scripted model and 24 labeled scenarios. This is synthetic validation only.
 - [x] **M4 - Mock evaluation harness:** 288 fixed synthetic cases across 18 families, separate mode and family counts, JSON report, and a versioned CI regression gate. Real-source accuracy remains unmeasured.
-- [ ] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and baseline import.
+- [x] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and bounded baseline import. Larger Gmail baselines are marked incomplete.
 - [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
 - [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging, and keyword fallback.
 - [ ] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and digest, export, and wipe. Recheck banner presentation.
@@ -55,17 +55,9 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 ## Next work
 
-M5 is next. Fetch `main` and create a dedicated branch. Implement only the Google scopes and hosts already in `docs/design.md`. Keep credentials and account data out of Git. Run controlled source capability experiments during M5/M6, not by inferring identities from timing or email headers.
+M6 is next. Fetch `main` and create a dedicated branch before implementation. Review the Messages and OpenClaw boundaries in `docs/design.md` and the attribution limits in `docs/alignment-engine-plan.md`. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
 
-M5 implementation order:
-
-1. Finalize provider observation identity, revision, source-time quality, adapter provenance, and coverage/gap fields before wiring collectors.
-2. Add scoped OAuth with PKCE loopback, scope validation, and macOS Keychain token storage; keep Google HTTP behind a host allowlist.
-3. Build Gmail metadata-only history polling and a bounded SENT/INBOX bootstrap and expired-cursor resync. Preserve baseline, live, and catch-up origins; do not read bodies or assert that a Sent record proves delivery or the sending app.
-4. Build primary Calendar polling with revision-aware create/update/delete/RSVP observations, organizer context, sync-token recovery, and a bounded baseline. Verify initial-query and sync-token parameter compatibility.
-5. Emit explicit coverage health and gaps for expiry, partial pages, failures, sleep/wake, and unavailable history. Feed validated observations into the existing store and engine.
-6. Test synthetic recorded API responses, retries, duplicates, restarts, expired cursors, and external Calendar changes. Then use a controlled test account to confirm one-poll observation of sent mail and Calendar changes, and record what the APIs actually expose.
-7. Run `make check`, `make test`, `make eval`, `make audit`, relevant native checks, and full CI before merging. Keep real account fixtures and research outputs outside Git.
+M5 verification on `feature/m5-google-collectors`: `make check`, `make test`, `make eval` (288 cases), `make audit`, `make e2e` (6 cases), and `make smoke-macos` passed. All three PR #11 CI jobs passed. In a controlled Google test account, OAuth and Keychain restore worked; a sent message and primary Calendar create, update, and delete appeared as effects. Gmail and Calendar live coverage were healthy, Calendar recovered from an expired sync cursor, and the local event chain verified through 191 records. Replay showed four timeline effects with unknown actor and no false alerts. The metadata-only Gmail scope cannot date-filter message listings; M5 caps the first scan at 50 listed messages per label and records incomplete baseline coverage separately when more history exists. Real-source accuracy and agent attribution remain unmeasured.
 
 M4 runs with `make eval` or `picket eval --mock --report path/to/report.json`. It prints a mode table and writes a privacy-safe JSON report. The fixed baseline fails all-abstain behavior and lost conflict recall. Its 288 variants are correlated synthetic cases; confidence intervals, real-source accuracy, extraction, latency and alerts per day remain `not_measured`. See `eval/README.md`.
 
