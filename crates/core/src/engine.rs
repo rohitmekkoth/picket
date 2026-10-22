@@ -7,8 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, Effect, Event, EventKey, EventPayload, Feedback, Field, Origin, Request,
-    SnapshotValue, Source, ToolOutcome, ToolResult,
+    AccountPolicy, Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
+    Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome, ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
@@ -62,11 +62,49 @@ pub struct Assessment {
     pub pending: bool,
     pub route: Route,
     pub expected_feedback: Option<bool>,
+    pub coverage: Vec<CoverageEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverageEvidence {
+    pub source: Source,
+    pub capability: String,
+    pub state: CoverageState,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaimStatus {
+    Pending,
+    Matched,
+    ContradictedByObservedEffect,
+    NotObservedInHealthySource,
+    CoverageIncomplete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimCheck {
+    pub claim: EventKey,
+    pub status: ClaimStatus,
+    pub observed_effect: Option<EventKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NoticeAssessment {
+    pub notice: EventKey,
+    pub kind: NoticeKind,
+    pub route: Route,
 }
 
 /// Replaying the same retained input at the same clock time gives the same result.
 /// Retention may remove earlier requests or policy history, so callers must show its horizon.
 pub fn assess(events: &[Event], now: DateTime<Utc>) -> Vec<Assessment> {
+    let visible: Vec<_> = events
+        .iter()
+        .filter(|event| event.ingested_at <= now)
+        .cloned()
+        .collect();
+    let events = visible.as_slice();
     let mut effects: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -93,12 +131,8 @@ fn assess_one(events: &[Event], event: &Event, effect: &Effect, now: DateTime<Ut
     let policy_hits = policy_violations(events, event, effect);
     let policy_ids = policy_hits.iter().map(|(id, _)| id.clone()).collect();
     let request_fit = request_fit(events, event, effect, &actor);
-    let wait_from = if event.occurred_at > event.ingested_at + GRACE {
-        event.ingested_at // Source clock is suspiciously ahead; do not wait indefinitely.
-    } else {
-        event.ingested_at.max(event.occurred_at)
-    };
-    let pending = now < wait_from + GRACE;
+    let coverage = coverage_for(events, &event.key.account, now);
+    let pending = now < wait_from(event) + GRACE;
     let expected_feedback = events
         .iter()
         .filter_map(|candidate| {
@@ -140,6 +174,161 @@ fn assess_one(events: &[Event], event: &Event, effect: &Effect, now: DateTime<Ut
         pending,
         route,
         expected_feedback,
+        coverage,
+    }
+}
+
+/// A metadata notice prompts review; it does not prove a setting or payment.
+pub fn assess_notices(events: &[Event]) -> Vec<NoticeAssessment> {
+    events
+        .iter()
+        .filter_map(|event| {
+            if event.key.source != Source::Gmail {
+                return None;
+            }
+            if let EventPayload::Notice { kind } = &event.payload {
+                Some(NoticeAssessment {
+                    notice: event.key.clone(),
+                    kind: kind.clone(),
+                    route: Route::MediumReview,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Claim checks concern observed consistency, not agent honesty.
+pub fn assess_claims(events: &[Event], now: DateTime<Utc>) -> Vec<ClaimCheck> {
+    let visible: Vec<_> = events
+        .iter()
+        .filter(|event| event.ingested_at <= now)
+        .cloned()
+        .collect();
+    let events = visible.as_slice();
+    events
+        .iter()
+        .filter_map(|report| {
+            let EventPayload::Claim(claim) = &report.payload else {
+                return None;
+            };
+            if report.key.source != Source::Messages {
+                return None;
+            }
+            let source = if claim.action == Action::EmailSend {
+                Source::Gmail
+            } else {
+                Source::Calendar
+            };
+            let related: Vec<_> = events
+                .iter()
+                .filter_map(|event| {
+                    if event.key.account != report.key.account || event.key.source != source {
+                        return None;
+                    }
+                    match &event.payload {
+                        EventPayload::Effect(effect) if effect.origin != Origin::Baseline => {
+                            Some((event, effect))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            let matched = related
+                .iter()
+                .find(|(event, effect)| claim_matches(events, report, claim, event, effect));
+            let contradicted = claim.provider_resource.as_ref().and_then(|resource| {
+                related
+                    .iter()
+                    .find(|(event, _)| event.key.resource == *resource)
+            });
+            let (status, observed_effect) = if let Some((event, _)) = matched {
+                (ClaimStatus::Matched, Some(event.key.clone()))
+            } else if let Some((event, _)) = contradicted {
+                (
+                    ClaimStatus::ContradictedByObservedEffect,
+                    Some(event.key.clone()),
+                )
+            } else if now < wait_from(report) + GRACE {
+                (ClaimStatus::Pending, None)
+            } else if coverage_state(events, &report.key.account, &source, "effects", now)
+                .is_some_and(|coverage| {
+                    coverage.state == CoverageState::Healthy
+                        && coverage.observed_at >= wait_from(report) + GRACE
+                })
+            {
+                (ClaimStatus::NotObservedInHealthySource, None)
+            } else {
+                (ClaimStatus::CoverageIncomplete, None)
+            };
+            Some(ClaimCheck {
+                claim: report.key.clone(),
+                status,
+                observed_effect,
+            })
+        })
+        .collect()
+}
+
+fn wait_from(event: &Event) -> DateTime<Utc> {
+    if event.occurred_at > event.ingested_at + GRACE {
+        event.ingested_at
+    } else {
+        event.ingested_at.max(event.occurred_at)
+    }
+}
+
+fn coverage_for(events: &[Event], account: &str, now: DateTime<Utc>) -> Vec<CoverageEvidence> {
+    let mut latest = BTreeMap::new();
+    for event in events {
+        if event.key.account != account || event.ingested_at > now {
+            continue;
+        }
+        if let Some((source, value, observed_at)) = coverage_value(event) {
+            let key = (source.as_str(), value.capability.as_str());
+            let evidence = CoverageEvidence {
+                source,
+                capability: value.capability.clone(),
+                state: value.state.clone(),
+                observed_at,
+            };
+            let entry = latest.entry(key).or_insert_with(|| evidence.clone());
+            if observed_at >= entry.observed_at {
+                *entry = evidence;
+            }
+        }
+    }
+    latest.into_values().collect()
+}
+
+fn coverage_state(
+    events: &[Event],
+    account: &str,
+    source: &Source,
+    capability: &str,
+    now: DateTime<Utc>,
+) -> Option<CoverageEvidence> {
+    coverage_for(events, account, now)
+        .into_iter()
+        .find(|value| value.source == *source && value.capability == capability)
+}
+
+fn coverage_value(event: &Event) -> Option<(Source, &Coverage, DateTime<Utc>)> {
+    match &event.payload {
+        EventPayload::Coverage(value) => Some((event.key.source.clone(), value, event.occurred_at)),
+        EventPayload::Snapshot(snapshot) if event.key.source == Source::Picket => {
+            if let SnapshotValue::Coverage(value) = &snapshot.value {
+                Some((
+                    snapshot.original_source.clone(),
+                    value,
+                    snapshot.original_occurred_at,
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -968,5 +1157,89 @@ mod tests {
                 ConflictReason::TooManyActions
             ])
         );
+    }
+
+    #[test]
+    fn claim_consistency_is_qualified_by_observation_and_coverage() {
+        let claim = event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec!["a@example.test".into()],
+                provider_resource: Some("message-1".into()),
+            }),
+        );
+        assert_eq!(
+            assess_claims(std::slice::from_ref(&claim), time(12))[0].status,
+            ClaimStatus::Pending
+        );
+        assert_eq!(
+            assess_claims(std::slice::from_ref(&claim), time(20))[0].status,
+            ClaimStatus::CoverageIncomplete
+        );
+        let healthy = event(
+            Source::Gmail,
+            "coverage-1",
+            18,
+            EventPayload::Coverage(Coverage {
+                capability: "effects".into(),
+                state: CoverageState::Healthy,
+                cursor: Some("synthetic-cursor".into()),
+            }),
+        );
+        assert_eq!(
+            assess_claims(&[claim.clone(), healthy.clone()], time(20))[0].status,
+            ClaimStatus::NotObservedInHealthySource
+        );
+        let mut stale = healthy.clone();
+        stale.occurred_at = time(0);
+        assert_eq!(
+            assess_claims(&[claim.clone(), stale], time(20))[0].status,
+            ClaimStatus::CoverageIncomplete
+        );
+        assert_eq!(
+            assess_claims(&[claim.clone(), healthy.clone(), effect()], time(20))[0].status,
+            ClaimStatus::Matched
+        );
+        let mut different = effect();
+        if let EventPayload::Effect(value) = &mut different.payload {
+            value.targets = vec!["b@example.test".into()];
+        }
+        assert_eq!(
+            assess_claims(&[claim, healthy, different], time(20))[0].status,
+            ClaimStatus::ContradictedByObservedEffect
+        );
+    }
+
+    #[test]
+    fn coverage_gap_survives_as_evidence_and_notice_is_only_a_review_prompt() {
+        let gap = event(
+            Source::Gmail,
+            "coverage-1",
+            18,
+            EventPayload::Coverage(Coverage {
+                capability: "effects".into(),
+                state: CoverageState::Gap,
+                cursor: None,
+            }),
+        );
+        let result = one(&[effect(), gap]);
+        assert_eq!(result.coverage.len(), 1);
+        assert_eq!(result.coverage[0].state, CoverageState::Gap);
+        let notice = event(
+            Source::Gmail,
+            "notice-1",
+            19,
+            EventPayload::Notice {
+                kind: NoticeKind::Forwarding,
+            },
+        );
+        let found = assess_notices(&[notice]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].route, Route::MediumReview);
     }
 }
