@@ -1347,6 +1347,9 @@ mod tests {
                 capability: "effects".into(),
                 state: CoverageState::Healthy,
                 cursor: Some("synthetic-cursor".into()),
+                gap_since: None,
+                reason: None,
+                partial_pages: None,
             }),
         );
         assert_eq!(
@@ -1383,6 +1386,9 @@ mod tests {
                 capability: "effects".into(),
                 state: CoverageState::Gap,
                 cursor: None,
+                gap_since: None,
+                reason: None,
+                partial_pages: None,
             }),
         );
         let result = one(&[effect(), gap]);

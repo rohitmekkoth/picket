@@ -400,6 +400,9 @@ fn case(kind: Kind, index: usize) -> Case {
                     capability: "sent_metadata".into(),
                     state: CoverageState::Gap,
                     cursor: None,
+                    gap_since: None,
+                    reason: None,
+                    partial_pages: None,
                 }),
             ));
         }

@@ -203,14 +203,45 @@ impl Store {
     }
 
     pub fn collector_cursor(&self, account: &str, source: &Source) -> Result<Option<String>> {
-        self.connection
+        Ok(self
+            .collector_checkpoint(account, source)?
+            .map(|cursor| cursor.value))
+    }
+
+    pub fn collector_checkpoint(
+        &self,
+        account: &str,
+        source: &Source,
+    ) -> Result<Option<CollectorCursor>> {
+        let row: Option<(String, String)> = self
+            .connection
             .query_row(
-                "SELECT value FROM collector_cursors WHERE account=?1 AND source=?2",
+                "SELECT value, updated_at FROM collector_cursors WHERE account=?1 AND source=?2",
                 params![account, source.as_str()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()
-            .map_err(StoreError::from)
+            .optional()?;
+        row.map(|(value, updated_at)| {
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                .map_err(|_| StoreError::Invalid("invalid collector cursor time"))?
+                .with_timezone(&Utc);
+            Ok(CollectorCursor {
+                account: account.into(),
+                source: source.clone(),
+                value,
+                updated_at,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn event_exists(&self, key: &EventKey, kind: &str) -> Result<bool> {
+        let exists: i64 = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE account=?1 AND source=?2 AND resource=?3 AND revision=?4 AND kind=?5)",
+            params![key.account, key.source.as_str(), key.resource, key.revision, kind],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
     }
 
     /// Writes a complete collector page and its next cursor in one transaction.
@@ -900,6 +931,9 @@ mod tests {
             capability: "sent-records".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         });
         store.append(&gap)?;
         assert_eq!(
@@ -931,6 +965,9 @@ mod tests {
             capability: "sent-records".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         });
         store.append(&coverage)?;
         assert_eq!(store.retain_after(3)?, 3);

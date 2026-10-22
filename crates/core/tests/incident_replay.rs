@@ -219,6 +219,9 @@ fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
             capability: "effects".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         }),
     );
     store.append_assessed(&gap, at(10))?;
@@ -234,6 +237,9 @@ fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
             capability: "effects".into(),
             state: CoverageState::Healthy,
             cursor: Some("synthetic-cursor".into()),
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         }),
     );
     store.append_assessed(&healthy, at(20))?;

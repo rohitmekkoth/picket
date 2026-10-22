@@ -65,6 +65,17 @@ pub enum CoverageState {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CoverageReason {
+    CursorExpired,
+    PageLimit,
+    MissingResource,
+    RequestFailed,
+    AuthUnavailable,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
     Succeeded,
     Failed,
@@ -179,6 +190,12 @@ pub struct Coverage {
     pub capability: String,
     pub state: CoverageState,
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_since: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CoverageReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_pages: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
