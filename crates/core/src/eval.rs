@@ -250,6 +250,7 @@ fn case(kind: Kind, index: usize) -> Case {
             Origin::CatchUp
         },
         external_change: false,
+        email: None,
     };
     let mut tool = ToolResult {
         agent: agent.clone(),

@@ -101,6 +101,7 @@ fn sent(resource: &str, minute: i64) -> Event {
             calendar_start: None,
             origin: Origin::Live,
             external_change: false,
+            email: None,
         }),
     )
 }

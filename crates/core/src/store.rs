@@ -633,6 +633,7 @@ mod tests {
                 calendar_start: None,
                 origin: Origin::Live,
                 external_change: false,
+                email: None,
             }),
         }
     }

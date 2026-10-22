@@ -77,6 +77,16 @@ pub enum NoticeKind {
     Forwarding,
     AppAccess,
     Purchase,
+    Otp,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EmailMetadata {
+    pub thread_id: String,
+    pub sender: Option<String>,
+    pub subject_hash: String,
+    pub subject_snippet: String,
+    pub labels: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -108,6 +118,8 @@ pub struct Effect {
     pub calendar_start: Option<DateTime<Utc>>,
     pub origin: Origin,
     pub external_change: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<EmailMetadata>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

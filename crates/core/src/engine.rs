@@ -315,7 +315,11 @@ pub fn assess_notices(events: &[Event], now: DateTime<Utc>) -> Vec<NoticeAssessm
                 Some(NoticeAssessment {
                     notice: event.key.clone(),
                     kind: kind.clone(),
-                    route: Route::MediumReview,
+                    route: if *kind == NoticeKind::Otp {
+                        Route::Timeline
+                    } else {
+                        Route::MediumReview
+                    },
                 })
             } else {
                 None
@@ -903,6 +907,7 @@ mod tests {
                 calendar_start: None,
                 origin: Origin::Live,
                 external_change: false,
+                email: None,
             }),
         )
     }
