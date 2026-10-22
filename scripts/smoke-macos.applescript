@@ -29,6 +29,8 @@ tell application "System Events"
             delay 0.1
         end repeat
         if labels does not contain "Desktop core connected" then error "Native Rust connection is not displayed."
+        if labels contains "Open the desktop app to connect Google." then error "Google connection commands are unavailable in the packaged app."
+        if labels does not contain "Google Desktop OAuth client ID" and labels does not contain "Connection: monitoring" and labels does not contain "Connection: starting" then error "Google connection controls or status are missing."
 
         -- Closing must preserve the process and its tray icon.
         click (first button of window "Picket" whose subrole is "AXCloseButton")
@@ -56,5 +58,5 @@ tell application "System Events"
     end repeat
     if exists process "picket-app" then error "Picket did not quit."
 end tell
-return "PASS: native IPC status, close-to-tray, tray presence, single-instance restore, and quit"
+return "PASS: native IPC status, Google connection UI, close-to-tray, tray presence, single-instance restore, and quit"
 end run
