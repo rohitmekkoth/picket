@@ -12,7 +12,7 @@ use crate::event::{
 };
 use crate::{
     engine::Finding,
-    incidents::{self, OutboxItem, ReconcileSummary},
+    incidents::{self, OutboxBatch, ReconcileSummary},
 };
 
 const SCHEMA_VERSION: i64 = 2;
@@ -202,7 +202,7 @@ impl Store {
         .collect()
     }
 
-    pub fn pending_notifications(&self) -> Result<Vec<OutboxItem>> {
+    pub fn pending_notifications(&self) -> Result<OutboxBatch> {
         incidents::pending(&self.connection)
     }
 
@@ -258,7 +258,8 @@ impl Store {
             {
                 return broken(seq, "indexed identity differs from event");
             }
-            let normalized = canonical_json(&event)?;
+            let value: serde_json::Value = serde_json::from_slice(&canonical)?;
+            let normalized = canonical_json(&value)?;
             if normalized != canonical {
                 return broken(seq, "event JSON is not canonical");
             }
@@ -468,7 +469,7 @@ fn append_in_transaction(tx: &Transaction<'_>, event: &Event) -> Result<i64> {
         let mut retry = event.clone();
         let prior: Event = serde_json::from_slice(&existing)?;
         retry.ingested_at = prior.ingested_at;
-        if canonical_json(&retry)? == existing {
+        if retry == prior {
             return Ok(seq);
         }
         return Err(StoreError::DuplicateConflict);
@@ -756,6 +757,42 @@ mod tests {
                 if value.id == "no-send" && value.enabled)));
         assert!(retained.iter().any(|row| matches!(&row.event.payload,
             EventPayload::Policy(value) if !value.enabled)));
+        Ok(())
+    }
+
+    #[test]
+    fn old_canonical_event_without_new_optional_field_remains_verifiable() -> Result<()> {
+        let mut store = Store::memory()?;
+        let current = event("old-message", "rev-1");
+        let mut old_value = serde_json::to_value(&current)?;
+        if let Some(fields) = old_value
+            .pointer_mut("/payload/data")
+            .and_then(|value| value.as_object_mut())
+        {
+            fields.remove("calendar_start");
+        }
+        let old_bytes = canonical_json(&old_value)?;
+        let hash = hash_event(&[0; 32], &old_bytes);
+        store.connection.execute(
+            "INSERT INTO events(seq,account,source,resource,revision,kind,canonical,prev_hash,hash)
+             VALUES (1,?1,?2,?3,?4,'effect',?5,?6,?7)",
+            params![
+                current.key.account,
+                current.key.source.as_str(),
+                current.key.resource,
+                current.key.revision,
+                old_bytes,
+                [0u8; 32].as_slice(),
+                hash.as_slice()
+            ],
+        )?;
+        store.connection.execute(
+            "UPDATE chain_state SET head_seq=1,head_hash=?1 WHERE id=1",
+            [hash.as_slice()],
+        )?;
+        assert_eq!(store.verify()?.retained_events, 1);
+        assert_eq!(store.events()?.len(), 1);
+        assert_eq!(store.append(&current)?, 1);
         Ok(())
     }
 }

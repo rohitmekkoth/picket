@@ -1,5 +1,7 @@
 //! Durable assessment revisions and notification intent. No OS delivery here.
 
+use std::ops::Deref;
+
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,20 @@ pub struct OutboxItem {
     pub finding: String,
     pub revision: i64,
     pub kind: OutboxKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxBatch {
+    pub items: Vec<OutboxItem>,
+    pub has_more: bool,
+}
+
+impl Deref for OutboxBatch {
+    type Target = [OutboxItem];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +158,7 @@ fn ready_for_alert(finding: &Finding) -> bool {
         }
         FindingDetail::Notice(_) => finding.route == Route::MediumReview,
         FindingDetail::Claim(_) => false,
+        FindingDetail::Coverage(_) => finding.route == Route::MediumReview,
     }
 }
 
@@ -158,6 +175,9 @@ fn material_change(old: &Finding, new: &Finding) -> bool {
         }
         (FindingDetail::Claim(_), FindingDetail::Claim(_)) => false,
         (FindingDetail::Notice(_), FindingDetail::Notice(_)) => false,
+        (FindingDetail::Coverage(before), FindingDetail::Coverage(after)) => {
+            before.evidence.state != after.evidence.state
+        }
         _ => true,
     }
 }
@@ -179,12 +199,12 @@ impl OutboxKind {
     }
 }
 
-pub(crate) fn pending(connection: &Connection) -> Result<Vec<OutboxItem>> {
+pub(crate) fn pending(connection: &Connection) -> Result<OutboxBatch> {
     let mut statement = connection.prepare(
         "SELECT id,finding,revision,kind FROM notification_outbox
-         WHERE state='pending' ORDER BY created_at,id LIMIT 128",
+         WHERE state='pending' ORDER BY created_at,id LIMIT 129",
     )?;
-    statement
+    let mut items = statement
         .query_map([], |row| {
             let value: String = row.get(3)?;
             let kind = OutboxKind::from_str(&value).ok_or_else(|| {
@@ -197,6 +217,8 @@ pub(crate) fn pending(connection: &Connection) -> Result<Vec<OutboxItem>> {
                 kind,
             })
         })?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let has_more = items.len() > 128;
+    items.truncate(128);
+    Ok(OutboxBatch { items, has_more })
 }

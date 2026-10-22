@@ -45,10 +45,11 @@ pub enum Action {
     CalendarRsvp,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
     Baseline,
+    #[default]
     Live,
     CatchUp,
 }
@@ -186,7 +187,11 @@ pub struct Snapshot {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum EventPayload {
     Effect(Effect),
-    Notice { kind: NoticeKind },
+    Notice {
+        kind: NoticeKind,
+        #[serde(default)]
+        origin: Origin,
+    },
     Request(Request),
     Claim(Claim),
     ToolResult(ToolResult),
@@ -195,7 +200,10 @@ pub enum EventPayload {
     Feedback(Feedback),
     Policy(AccountPolicy),
     Snapshot(Snapshot),
-    Checkpoint { through_sequence: i64, hash: String },
+    Checkpoint {
+        through_sequence: i64,
+        hash: String,
+    },
 }
 
 impl EventPayload {

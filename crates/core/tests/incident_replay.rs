@@ -2,7 +2,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use picket_core::{
     engine::{ActorEvidence, FindingDetail, Route},
     event::{
-        AccountPolicy, Action, Effect, Event, EventKey, EventPayload, Feedback, Origin, Source,
+        AccountPolicy, Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
+        Feedback, NoticeKind, Origin, Source,
     },
     incidents::OutboxKind,
     store::Store,
@@ -199,5 +200,96 @@ fn expected_feedback_cancels_an_undelivered_alert_without_new_notification()
     );
     store.append_assessed(&feedback, at(11))?;
     assert!(store.pending_notifications()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut store = Store::memory()?;
+    let gap = event(
+        Source::Gmail,
+        "coverage-1",
+        10,
+        EventPayload::Coverage(Coverage {
+            capability: "effects".into(),
+            state: CoverageState::Gap,
+            cursor: None,
+        }),
+    );
+    store.append_assessed(&gap, at(10))?;
+    let alert = store.pending_notifications()?;
+    assert_eq!(alert.len(), 1);
+    assert_eq!(alert[0].kind, OutboxKind::Alert);
+    assert!(store.mark_notification_delivered(&alert[0].id)?);
+    let healthy = event(
+        Source::Gmail,
+        "coverage-2",
+        20,
+        EventPayload::Coverage(Coverage {
+            capability: "effects".into(),
+            state: CoverageState::Healthy,
+            cursor: Some("synthetic-cursor".into()),
+        }),
+    );
+    store.append_assessed(&healthy, at(20))?;
+    let correction = store.pending_notifications()?;
+    assert_eq!(correction.len(), 1);
+    assert_eq!(correction[0].kind, OutboxKind::Correction);
+    assert!(store.current_findings()?.iter().any(
+        |(_, finding)| matches!(&finding.detail, FindingDetail::Coverage(value)
+            if value.evidence.state == CoverageState::Healthy)
+    ));
+    Ok(())
+}
+
+#[test]
+fn revisions_of_one_resource_share_an_incident_group_without_losing_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut first = effect();
+    first.key.source = Source::Calendar;
+    let mut second = first.clone();
+    second.key.revision = "2".into();
+    second.occurred_at = at(12);
+    second.ingested_at = at(12);
+    let mut store = Store::memory()?;
+    store.append_assessed(&first, at(10))?;
+    store.append_assessed(&second, at(12))?;
+    let effects: Vec<_> = store
+        .current_findings()?
+        .into_iter()
+        .filter_map(|(_, finding)| {
+            matches!(finding.detail, FindingDetail::Effect(_)).then_some(finding)
+        })
+        .collect();
+    assert_eq!(effects.len(), 2);
+    assert_ne!(effects[0].id, effects[1].id);
+    assert_eq!(effects[0].group, effects[1].group);
+    Ok(())
+}
+
+#[test]
+fn outbox_batch_discloses_more_work_instead_of_silently_truncating()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut store = Store::memory()?;
+    for number in 0..129 {
+        let notice = event(
+            Source::Gmail,
+            &format!("notice-{number}"),
+            10,
+            EventPayload::Notice {
+                kind: NoticeKind::AppAccess,
+                origin: Origin::Live,
+            },
+        );
+        store.append_assessed(&notice, at(10))?;
+    }
+    let batch = store.pending_notifications()?;
+    assert_eq!(batch.len(), 128);
+    assert!(batch.has_more);
+    assert!(store.mark_notification_delivered(&batch[0].id)?);
+    let next = store.pending_notifications()?;
+    assert_eq!(next.len(), 128);
+    assert!(!next.has_more);
     Ok(())
 }

@@ -98,15 +98,25 @@ pub struct NoticeAssessment {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CoverageAssessment {
+    pub account: String,
+    pub evidence: CoverageEvidence,
+    pub route: Route,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FindingDetail {
     Effect(Assessment),
     Claim(ClaimCheck),
     Notice(NoticeAssessment),
+    Coverage(CoverageAssessment),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub id: String,
+    #[serde(default)]
+    pub group: String,
     pub route: Route,
     pub detail: FindingDetail,
 }
@@ -116,12 +126,42 @@ pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
         .into_iter()
         .map(|assessment| Finding {
             id: assessment.finding.clone(),
+            group: scoped_id(
+                "incident",
+                &[
+                    assessment.effect.account.as_str(),
+                    assessment.effect.source.as_str(),
+                    assessment.effect.resource.as_str(),
+                ],
+            ),
             route: assessment.route,
             detail: FindingDetail::Effect(assessment),
         })
         .collect();
     result.extend(assess_claims(events, now).into_iter().map(|claim| Finding {
         id: key_finding_id("claim", &claim.claim),
+        group: claim.observed_effect.as_ref().map_or_else(
+            || {
+                scoped_id(
+                    "incident",
+                    &[
+                        claim.claim.account.as_str(),
+                        claim.claim.source.as_str(),
+                        claim.claim.resource.as_str(),
+                    ],
+                )
+            },
+            |effect| {
+                scoped_id(
+                    "incident",
+                    &[
+                        effect.account.as_str(),
+                        effect.source.as_str(),
+                        effect.resource.as_str(),
+                    ],
+                )
+            },
+        ),
         route: Route::Timeline,
         detail: FindingDetail::Claim(claim),
     }));
@@ -130,10 +170,49 @@ pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
             .into_iter()
             .map(|notice| Finding {
                 id: key_finding_id("notice", &notice.notice),
+                group: scoped_id(
+                    "incident",
+                    &[
+                        notice.notice.account.as_str(),
+                        notice.notice.source.as_str(),
+                        notice.notice.resource.as_str(),
+                    ],
+                ),
                 route: notice.route,
                 detail: FindingDetail::Notice(notice),
             }),
     );
+    let accounts: BTreeSet<_> = events
+        .iter()
+        .filter(|event| event.ingested_at <= now)
+        .map(|event| event.key.account.as_str())
+        .collect();
+    for account in accounts {
+        for evidence in coverage_for(events, account, now) {
+            let route = if evidence.state == CoverageState::Healthy {
+                Route::Timeline
+            } else {
+                Route::MediumReview
+            };
+            let id = scoped_id(
+                "coverage",
+                &[account, evidence.source.as_str(), &evidence.capability],
+            );
+            result.push(Finding {
+                id,
+                group: scoped_id(
+                    "incident",
+                    &[account, evidence.source.as_str(), &evidence.capability],
+                ),
+                route,
+                detail: FindingDetail::Coverage(CoverageAssessment {
+                    account: account.to_owned(),
+                    evidence,
+                    route,
+                }),
+            });
+        }
+    }
     result.sort_by(|left, right| left.id.cmp(&right.id));
     result
 }
@@ -228,7 +307,9 @@ pub fn assess_notices(events: &[Event], now: DateTime<Utc>) -> Vec<NoticeAssessm
             if event.key.source != Source::Gmail || event.ingested_at > now {
                 return None;
             }
-            if let EventPayload::Notice { kind } = &event.payload {
+            if let EventPayload::Notice { kind, origin } = &event.payload
+                && *origin != Origin::Baseline
+            {
                 Some(NoticeAssessment {
                     notice: event.key.clone(),
                     kind: kind.clone(),
@@ -614,6 +695,9 @@ fn request_fit(
             *entry = (at, request);
         }
     }
+    if task_hint.is_none() && latest.len() == 1 {
+        return RequestFit::InsufficientEvidence;
+    }
     match latest.len() {
         0 => RequestFit::NoObservedRequest,
         1 => match latest.into_values().next() {
@@ -754,14 +838,20 @@ fn finding_id(key: &EventKey) -> String {
 }
 
 fn key_finding_id(kind: &str, key: &EventKey) -> String {
-    // EventKey is a fixed shape of strings and an enum; serialization is infallible.
+    scoped_id(
+        kind,
+        &[
+            key.account.as_str(),
+            key.source.as_str(),
+            key.resource.as_str(),
+            key.revision.as_str(),
+        ],
+    )
+}
+
+fn scoped_id(kind: &str, parts: &[&str]) -> String {
     let mut hash = Sha256::new();
-    for part in [
-        key.account.as_str(),
-        key.source.as_str(),
-        key.resource.as_str(),
-        key.revision.as_str(),
-    ] {
+    for part in parts {
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part.as_bytes());
     }
@@ -1095,6 +1185,18 @@ mod tests {
     }
 
     #[test]
+    fn an_unrelated_single_request_is_not_assumed_to_be_the_task() {
+        let mut unhinted = tool();
+        if let EventPayload::ToolResult(value) = &mut unhinted.payload {
+            value.task = None;
+        }
+        assert_eq!(
+            one(&[request(), effect(), unhinted]).request_fit,
+            RequestFit::InsufficientEvidence
+        );
+    }
+
+    #[test]
     fn calendar_update_requires_exact_revision() {
         let mut changed = effect();
         changed.key.source = Source::Calendar;
@@ -1282,10 +1384,21 @@ mod tests {
             19,
             EventPayload::Notice {
                 kind: NoticeKind::Forwarding,
+                origin: Origin::Live,
             },
         );
         let found = assess_notices(&[notice], time(20));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].route, Route::MediumReview);
+        let baseline = event(
+            Source::Gmail,
+            "notice-old",
+            0,
+            EventPayload::Notice {
+                kind: NoticeKind::Forwarding,
+                origin: Origin::Baseline,
+            },
+        );
+        assert!(assess_notices(&[baseline], time(20)).is_empty());
     }
 }
