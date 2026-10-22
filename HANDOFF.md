@@ -19,9 +19,9 @@ Read these files in order before changing code:
 
 - Repository: `https://github.com/rohitmekkoth/picket`.
 - Visibility: private. Do not make it public without the owner's explicit request.
-- Primary branch: `main`. The alignment design review merged at `6104d42`; fetch before starting new work.
+- Primary branch: `main`. Fetch before starting new work; M3 was developed on `feature/alignment-engine-foundation`.
 - M1 notification work: PR #5 merged with its two commits preserved. The post-merge [main CI run](https://github.com/rohitmekkoth/picket/actions/runs/39556842806) passed all three jobs.
-- Product implementation status: M2 event storage and an initial synthetic M3 matcher exist on `feature/alignment-engine-foundation`. No collectors, real account access, Messages/OpenClaw adapters, local model, persisted incidents, or production alerts are implemented.
+- Product implementation status: M2 storage and M3 mock alignment engine are complete on `feature/alignment-engine-foundation`. No collectors, real account access, Messages/OpenClaw adapters, local model, app incident views, notification delivery, or production alerts are implemented.
 - Available scaffold: Rust workspace, portable core boundary, diagnostic CLI, Tauri v2 window and menu-bar shell, synthetic native notification probe, React UI, tests, CI, dependency audits, and macOS smoke test.
 - The browser preview intentionally cannot reach the Rust core. This is expected behavior.
 - Runtime data, credentials, personal messages, account fixtures, databases, and model files must never be committed.
@@ -34,7 +34,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 
 - [x] **M1 - Foundation:** Rust workspace, portable core boundary, CLI diagnostic, Tauri tray and window, React shell, CI, audits, macOS smoke test, and native notification feasibility.
 - [x] **M2 - Event store foundation:** Typed events, canonical JSON, SQLite schema, ordered writer, hash chain, retention, and `picket verify` with exact broken-sequence reporting. Collector-specific observation fields still need refinement before M5.
-- [ ] **M3 - Engine on mocks:** Initial deterministic matching, attribution states, explicit policy checks, request gates, replay CLI, and synthetic cases exist. Persisted incidents/outbox, complete task constraints, coverage logic, and a labeled scenario set remain.
+- [x] **M3 - Engine on mocks:** Deterministic rules, attribution and request states, task-linked action limits, claim/coverage checks, durable findings/outbox, scripted model and 24 labeled scenarios. This is synthetic validation only.
 - [ ] **M4 - Evaluation harness:** Scenario replay, metrics and report, plus a CI regression gate against a real baseline.
 - [ ] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and baseline import.
 - [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
@@ -47,17 +47,17 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 ## Alignment review and implementation progress, 2026-10-21
 
 - Design review merged to `main` in PR #7 before implementation. The owner then authorized implementation on a new branch.
-- Branch `feature/alignment-engine-foundation` starts at `6104d42`. Pushed commits: `25b2be9` (M2 store), `29a976e` (synthetic matcher and replay CLI), and `8eca50c` (abstain when a claim could refer to multiple similar effects). [CI for the latest code commit](https://github.com/rohitmekkoth/picket/actions/runs/39654005019) passed all three jobs.
+- Branch `feature/alignment-engine-foundation` starts at `6104d42`. Pushed commits: `25b2be9`, `29a976e`, `8eca50c`, `2b2a68e` (M2 and M3 foundation); `9a6025f` (task constraints); `df0408c` (coverage and claims); `7be7e3e` (incidents and outbox); `c45eff5` (coverage findings and 24 scenarios). Check the PR history for the merge result.
 - The original additive matcher and actor confidence constants were replaced in the design. New plan: separate observations, actor evidence, request constraints and alert routing; preserve unknowns, contradictions, collection gaps and late corrections.
 - Header fingerprints remain experimental. Runtime-linked OpenClaw evidence depends on runtime integrity. Current Workspace Gmail documentation supports further app-attribution investigation, but a working integration has not been demonstrated.
 - The plan defines M2-M8 coding increments, source experiments, adversarial scenarios, precision/coverage gates, and cases with no solution under the current privacy/access constraints. Review these before implementing attribution.
-- No empirical attribution accuracy is claimed. The synthetic engine deliberately leaves effects-only actors unknown, treats agent claims as reports, and requires an exact successful runtime/resource match for runtime linkage. Quantity remains unassessed until task slots can exclude human actions.
+- No empirical attribution accuracy is claimed. The synthetic engine leaves effects-only actors unknown, treats agent claims as reports, and requires an exact successful runtime/resource match for runtime linkage. Quantity is assessed only when validated runtime reports link the counted effects to one task, excluding unrelated human actions.
 
 ## Next work
 
-Continue on `feature/alignment-engine-foundation`. Verify branch CI and complete M3 in small increments: retain and replay task/evidence provenance with bounded coverage states, implement task-linked action slots and condition checks, persist assessment revisions and a transactional notification outbox, then add claim consistency checks and 20 labeled adversarial scenarios. Build the M4 harness with separate safety and utility gates before any real account integration. Existing core tests are synthetic only; the CLI replay reports privacy-safe counts and does not deliver alerts. Run source capability experiments during M5/M6, not by inferring identities from timing or email headers.
+If the M3 PR is still open, confirm it is current with `main` and GitHub CI is green, then merge. After merge, M4 is next: build a held-out evaluation harness with separate attribution, request-fit, alert, coverage and abstention reports; enforce minimum applicable-case counts and utility as well as safety. The 24 M3 seeds are smoke tests, not accuracy estimates. Run controlled source capability experiments during M5/M6, not by inferring identities from timing or email headers.
 
-The branch passed `make check`, `make test`, and `make audit` locally for the matcher increment; the final attribution fix passed focused core clippy/tests. GitHub CI passed frontend end-to-end, portable core, and macOS packaging checks on the latest code commit. No UI/native lifecycle code changed, so `make smoke-macos` was not rerun locally. Before any merge, fetch `main`, integrate changes, run full branch checks, and require green CI. Do not represent this foundation as a finished monitoring product.
+M3 passed `make check`, `make test`, `make e2e` (6 Playwright cases), and `make audit` locally. The core tests include schema migration, replay/restart, transaction rollback, notification revision behavior, and 24 labeled scenarios. The first local E2E attempt failed to bind the dev port inside the sandbox; rerunning with local port access passed. No UI/native lifecycle code changed, so `make smoke-macos` is not required. The CLI replay reports privacy-safe counts and does not deliver alerts; the core's outbox has no OS delivery worker yet. Do not represent M3 as a finished monitoring product.
 
 Repository housekeeping is separate from M2: Dependabot PR #2 proposes Node 26 type definitions while this project pins Node 24, so review it before merging. Its red branch status combines three cancelled checks with three passing checks; `main` CI is green. Older merged feature branches still exist on GitHub and can be deleted when convenient. The repository currently has no `main` branch protection; consider requiring CI checks before future merges.
 
