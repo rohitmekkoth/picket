@@ -282,10 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 send_notification_probe(app.handle())?;
             }
-            tracing::info!(
-                version = env!("CARGO_PKG_VERSION"),
-                "Picket started"
-            );
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "Picket started");
             Ok(())
         })
         .on_window_event(|window, event| {
