@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "minimum_families": 15,
+  "minimum_modes": 5,
+  "minimum_cases": 200,
+  "minimum_human_effects": 64,
+  "minimum_linkable_effects": 64,
+  "minimum_explicit_conflicts": 32,
+  "minimum_benign_effects": 96,
+  "minimum_coverage_gaps": 16,
+  "minimum_linkage_recall_percent": 80,
+  "minimum_conflict_recall_percent": 90,
+  "maximum_benign_alert_percent": 5
+}
