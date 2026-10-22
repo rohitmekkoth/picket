@@ -729,6 +729,7 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use picket_core::engine::FindingDetail;
     use std::{collections::VecDeque, sync::Mutex};
 
     struct FakeApi {
@@ -900,6 +901,12 @@ mod tests {
                 .filter(|record| matches!(record.event.payload, EventPayload::Effect(_)))
                 .count(),
             2
+        );
+        assert!(
+            store
+                .current_findings()?
+                .iter()
+                .any(|(_, finding)| matches!(finding.detail, FindingDetail::Effect(_)))
         );
         store.verify()?;
         drop(store);
