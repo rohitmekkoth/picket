@@ -56,6 +56,7 @@ fn effect() -> Event {
             origin: Origin::Live,
             external_change: false,
             email: None,
+            calendar: None,
         }),
     )
 }

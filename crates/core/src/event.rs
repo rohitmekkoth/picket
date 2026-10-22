@@ -90,6 +90,18 @@ pub struct EmailMetadata {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarMetadata {
+    pub end: Option<DateTime<Utc>>,
+    pub summary: Option<String>,
+    pub organizer: Option<String>,
+    pub creator: Option<String>,
+    pub attendees: Vec<String>,
+    pub self_rsvp: Option<String>,
+    pub all_day: bool,
+    pub recurring_event_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountPolicy {
     pub id: String,
     pub forbidden_actions: Vec<Action>,
@@ -120,6 +132,8 @@ pub struct Effect {
     pub external_change: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<EmailMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<CalendarMetadata>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

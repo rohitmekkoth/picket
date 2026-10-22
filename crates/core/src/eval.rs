@@ -251,6 +251,7 @@ fn case(kind: Kind, index: usize) -> Case {
         },
         external_change: false,
         email: None,
+        calendar: None,
     };
     let mut tool = ToolResult {
         agent: agent.clone(),

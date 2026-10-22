@@ -908,6 +908,7 @@ mod tests {
                 origin: Origin::Live,
                 external_change: false,
                 email: None,
+                calendar: None,
             }),
         )
     }

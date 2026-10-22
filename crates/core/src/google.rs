@@ -109,6 +109,7 @@ impl GmailMessage {
                         subject_snippet: subject.chars().take(80).collect(),
                         labels: vec!["SENT".into()],
                     }),
+                    calendar: None,
                 }),
             });
         }
