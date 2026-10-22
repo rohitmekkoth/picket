@@ -7,6 +7,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::calendar::CalendarState;
 use crate::event::{
     Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source, canonical_json,
 };
@@ -15,7 +16,7 @@ use crate::{
     incidents::{self, OutboxBatch, ReconcileSummary},
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -55,6 +56,15 @@ pub struct Store {
     connection: Connection,
 }
 
+/// A source cursor advances only after every observation in its page is durable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollectorCursor {
+    pub account: String,
+    pub source: Source,
+    pub value: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)?;
@@ -68,7 +78,7 @@ impl Store {
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != 1 && version != SCHEMA_VERSION {
+        if !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(StoreError::Schema(version));
         }
         Ok(Self { connection })
@@ -105,10 +115,10 @@ impl Store {
                  PRAGMA user_version=1;
                  COMMIT;",
             )?,
-            1 | SCHEMA_VERSION => {}
+            1..=SCHEMA_VERSION => {}
             other => return Err(StoreError::Schema(other)),
         }
-        if version != SCHEMA_VERSION {
+        if version < 2 {
             connection.execute_batch(
                 "BEGIN IMMEDIATE;
                  CREATE TABLE assessment_revisions (
@@ -144,7 +154,152 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 3 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE collector_cursors (
+                   account TEXT NOT NULL,
+                   source TEXT NOT NULL,
+                   value TEXT NOT NULL,
+                   updated_at TEXT NOT NULL,
+                   PRIMARY KEY(account, source)
+                 );
+                 PRAGMA user_version=3;
+                 COMMIT;",
+            )?;
+        }
+        if version < 4 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE calendar_snapshots (
+                   account TEXT NOT NULL,
+                   resource TEXT NOT NULL,
+                   canonical BLOB NOT NULL,
+                   PRIMARY KEY(account, resource)
+                 );
+                 PRAGMA user_version=4;
+                 COMMIT;",
+            )?;
+        }
         Ok(Self { connection })
+    }
+
+    pub fn calendar_snapshot(
+        &self,
+        account: &str,
+        resource: &str,
+    ) -> Result<Option<CalendarState>> {
+        let bytes: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT canonical FROM calendar_snapshots WHERE account=?1 AND resource=?2",
+                params![account, resource],
+                |row| row.get(0),
+            )
+            .optional()?;
+        bytes
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(StoreError::from))
+            .transpose()
+    }
+
+    pub fn collector_cursor(&self, account: &str, source: &Source) -> Result<Option<String>> {
+        Ok(self
+            .collector_checkpoint(account, source)?
+            .map(|cursor| cursor.value))
+    }
+
+    pub fn collector_checkpoint(
+        &self,
+        account: &str,
+        source: &Source,
+    ) -> Result<Option<CollectorCursor>> {
+        let row: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT value, updated_at FROM collector_cursors WHERE account=?1 AND source=?2",
+                params![account, source.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(value, updated_at)| {
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                .map_err(|_| StoreError::Invalid("invalid collector cursor time"))?
+                .with_timezone(&Utc);
+            Ok(CollectorCursor {
+                account: account.into(),
+                source: source.clone(),
+                value,
+                updated_at,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn event_exists(&self, key: &EventKey, kind: &str) -> Result<bool> {
+        let exists: i64 = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE account=?1 AND source=?2 AND resource=?3 AND revision=?4 AND kind=?5)",
+            params![key.account, key.source.as_str(), key.resource, key.revision, kind],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
+    }
+
+    /// Writes a complete collector page and its next cursor in one transaction.
+    pub fn append_collector_page(
+        &mut self,
+        events: &[Event],
+        cursor: &CollectorCursor,
+    ) -> Result<Vec<i64>> {
+        self.append_collector_page_with_snapshots(events, cursor, &[])
+    }
+
+    /// Calendar snapshots share the page transaction with the event log and cursor.
+    pub fn append_collector_page_with_snapshots(
+        &mut self,
+        events: &[Event],
+        cursor: &CollectorCursor,
+        snapshots: &[(String, CalendarState)],
+    ) -> Result<Vec<i64>> {
+        validate_cursor(cursor)?;
+        if !snapshots.is_empty() && cursor.source != Source::Calendar {
+            return Err(StoreError::Invalid("snapshots require a Calendar cursor"));
+        }
+        for event in events {
+            validate_event(event)?;
+            if event.key.account != cursor.account || event.key.source != cursor.source {
+                return Err(StoreError::Invalid(
+                    "collector page mixes accounts or sources",
+                ));
+            }
+        }
+        let tx = self.connection.transaction()?;
+        let sequences = events
+            .iter()
+            .map(|event| append_in_transaction(&tx, event))
+            .collect::<Result<Vec<_>>>()?;
+        for (resource, snapshot) in snapshots {
+            if resource.is_empty() || resource.len() > 512 || resource.chars().any(char::is_control)
+            {
+                return Err(StoreError::Invalid("invalid Calendar snapshot resource"));
+            }
+            let canonical = canonical_json(snapshot)?;
+            if canonical.len() > MAX_EVENT_BYTES {
+                return Err(StoreError::Invalid("Calendar snapshot exceeds 64 KiB"));
+            }
+            tx.execute(
+                "INSERT INTO calendar_snapshots(account, resource, canonical) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(account, resource) DO UPDATE SET canonical=excluded.canonical",
+                params![cursor.account, resource, canonical],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO collector_cursors(account, source, value, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account, source) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![cursor.account, cursor.source.as_str(), cursor.value, cursor.updated_at.to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(sequences)
     }
 
     pub fn append(&mut self, event: &Event) -> Result<i64> {
@@ -305,6 +460,17 @@ impl Store {
         .collect()
     }
 
+    /// Retains a verified prefix older than the cutoff without crossing a newer row.
+    pub fn retain_older_than(&mut self, cutoff: DateTime<Utc>) -> Result<u64> {
+        let through = self
+            .events()?
+            .into_iter()
+            .take_while(|row| row.event.ingested_at < cutoff)
+            .last()
+            .map(|row| row.sequence);
+        through.map_or(Ok(0), |sequence| self.retain_after(sequence))
+    }
+
     /// Prunes a verified prefix and records its last hash as the new anchor.
     /// The checkpoint and deletion commit together, so a crash cannot split them.
     pub fn retain_after(&mut self, through_sequence: i64) -> Result<u64> {
@@ -340,6 +506,8 @@ impl Store {
             },
             occurred_at: Utc::now(),
             ingested_at: Utc::now(),
+            source_time_quality: None,
+            adapter: None,
             payload: EventPayload::Checkpoint {
                 through_sequence,
                 hash: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
@@ -357,6 +525,8 @@ impl Store {
                 },
                 occurred_at: Utc::now(),
                 ingested_at: Utc::now(),
+                source_time_quality: None,
+                adapter: None,
                 payload: EventPayload::Snapshot(snapshot),
             };
             append_in_transaction(&tx, &event)?;
@@ -438,10 +608,35 @@ fn validate_event(event: &Event) -> Result<()> {
             ));
         }
     }
+    if let Some(adapter) = &event.adapter
+        && (adapter.version == 0
+            || adapter.name.is_empty()
+            || adapter.scope.is_empty()
+            || adapter.name.len() > 128
+            || adapter.scope.len() > 256
+            || adapter.name.chars().any(char::is_control)
+            || adapter.scope.chars().any(char::is_control))
+    {
+        return Err(StoreError::Invalid("invalid adapter provenance"));
+    }
     if matches!(event.payload, EventPayload::Checkpoint { .. })
         && event.key.source != Source::Picket
     {
         return Err(StoreError::Invalid("only Picket may write a checkpoint"));
+    }
+    Ok(())
+}
+
+fn validate_cursor(cursor: &CollectorCursor) -> Result<()> {
+    if cursor.account.is_empty()
+        || cursor.account.len() > 512
+        || cursor.value.is_empty()
+        || cursor.value.len() > 4096
+        || cursor.account.chars().any(char::is_control)
+        || cursor.value.chars().any(char::is_control)
+        || !matches!(cursor.source, Source::Gmail | Source::Calendar)
+    {
+        return Err(StoreError::Invalid("invalid collector cursor"));
     }
     Ok(())
 }
@@ -532,6 +727,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::calendar::CalendarEvent;
     use crate::event::{
         AccountPolicy, Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
     };
@@ -548,6 +744,8 @@ mod tests {
             },
             occurred_at: timestamp,
             ingested_at: timestamp,
+            source_time_quality: None,
+            adapter: None,
             payload: EventPayload::Effect(Effect {
                 action: Action::EmailSend,
                 targets: vec!["person@example.test".into()],
@@ -555,6 +753,8 @@ mod tests {
                 calendar_start: None,
                 origin: Origin::Live,
                 external_change: false,
+                email: None,
+                calendar: None,
             }),
         }
     }
@@ -584,6 +784,92 @@ mod tests {
             store.append(&conflict),
             Err(StoreError::DuplicateConflict)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn collector_page_and_cursor_commit_or_roll_back_together() -> Result<()> {
+        let mut store = Store::memory()?;
+        let cursor = CollectorCursor {
+            account: "synthetic-account".into(),
+            source: Source::Gmail,
+            value: "history-10".into(),
+            updated_at: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        store.append_collector_page(&[event("message-1", "rev-1")], &cursor)?;
+        assert_eq!(
+            store.collector_cursor(&cursor.account, &cursor.source)?,
+            Some(cursor.value.clone())
+        );
+        let mut conflict = event("message-1", "rev-1");
+        if let EventPayload::Effect(effect) = &mut conflict.payload {
+            effect.targets = vec!["different@example.test".into()];
+        }
+        let later = CollectorCursor {
+            value: "history-20".into(),
+            ..cursor.clone()
+        };
+        assert!(matches!(
+            store.append_collector_page(&[event("message-2", "rev-1"), conflict], &later),
+            Err(StoreError::DuplicateConflict)
+        ));
+        assert_eq!(store.verify()?.retained_events, 1);
+        assert_eq!(
+            store.collector_cursor(&cursor.account, &cursor.source)?,
+            Some(cursor.value)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn calendar_snapshot_and_cursor_commit_together()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let wire: CalendarEvent = serde_json::from_str(
+            r#"{"id":"meeting_1","etag":"rev1","start":{"dateTime":"2026-10-23T09:00:00Z"},"attendees":[{"email":"person@example.test"}]}"#,
+        )?;
+        let (event, state) =
+            wire.observation("account-1", crate::event::Origin::Live, Utc::now(), None)?;
+        let cursor = CollectorCursor {
+            account: "account-1".into(),
+            source: Source::Calendar,
+            value: "sync-1".into(),
+            updated_at: Utc::now(),
+        };
+        store.append_collector_page_with_snapshots(
+            &[event.ok_or("missing event")?],
+            &cursor,
+            &[("meeting_1".into(), state.clone())],
+        )?;
+        assert_eq!(
+            store.calendar_snapshot("account-1", "meeting_1")?,
+            Some(state.clone())
+        );
+        assert_eq!(
+            store.collector_cursor("account-1", &Source::Calendar)?,
+            Some("sync-1".into())
+        );
+        let later = CollectorCursor {
+            value: "sync-2".into(),
+            ..cursor
+        };
+        assert!(
+            store
+                .append_collector_page_with_snapshots(
+                    &[],
+                    &later,
+                    &[("bad\nresource".into(), state.clone())],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.collector_cursor("account-1", &Source::Calendar)?,
+            Some("sync-1".into())
+        );
+        assert_eq!(
+            store.calendar_snapshot("account-1", "meeting_1")?,
+            Some(state)
+        );
         Ok(())
     }
 
@@ -666,6 +952,26 @@ mod tests {
     }
 
     #[test]
+    fn time_retention_keeps_newer_rows_and_verified_chain() -> Result<()> {
+        let mut store = Store::memory()?;
+        store.append(&event("old", "rev-1"))?;
+        let mut recent = event("recent", "rev-1");
+        recent.ingested_at = Utc::now();
+        store.append(&recent)?;
+        let cutoff = Utc::now() - chrono::Duration::days(180);
+        assert_eq!(store.retain_older_than(cutoff)?, 1);
+        assert_eq!(store.retain_older_than(cutoff)?, 0);
+        assert!(
+            store
+                .events()?
+                .iter()
+                .any(|row| row.event.key.resource == "recent")
+        );
+        store.verify()?;
+        Ok(())
+    }
+
+    #[test]
     fn coverage_is_a_durable_event() -> Result<()> {
         let mut store = Store::memory()?;
         let mut gap = event("gmail-coverage", "gap-1");
@@ -673,6 +979,9 @@ mod tests {
             capability: "sent-records".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         });
         store.append(&gap)?;
         assert_eq!(
@@ -704,6 +1013,9 @@ mod tests {
             capability: "sent-records".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         });
         store.append(&coverage)?;
         assert_eq!(store.retain_after(3)?, 3);

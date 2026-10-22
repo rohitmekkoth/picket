@@ -25,6 +25,8 @@ fn event(source: Source, resource: &str, minute: i64, payload: EventPayload) -> 
         },
         occurred_at: at(minute),
         ingested_at: at(minute),
+        source_time_quality: None,
+        adapter: None,
         payload,
     }
 }
@@ -101,6 +103,8 @@ fn sent(resource: &str, minute: i64) -> Event {
             calendar_start: None,
             origin: Origin::Live,
             external_change: false,
+            email: None,
+            calendar: None,
         }),
     )
 }

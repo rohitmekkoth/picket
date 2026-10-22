@@ -24,6 +24,8 @@ fn event(source: Source, resource: &str, minute: i64, payload: EventPayload) -> 
         },
         occurred_at: at(minute),
         ingested_at: at(minute),
+        source_time_quality: None,
+        adapter: None,
         payload,
     }
 }
@@ -55,6 +57,8 @@ fn effect() -> Event {
             calendar_start: None,
             origin: Origin::Live,
             external_change: false,
+            email: None,
+            calendar: None,
         }),
     )
 }
@@ -141,7 +145,9 @@ fn legacy_store_migrates_without_losing_events() -> Result<(), Box<dyn std::erro
     drop(original);
     let connection = rusqlite::Connection::open(&path)?;
     connection.execute_batch(
-        "DROP TABLE engine_state;
+        "DROP TABLE collector_cursors;
+         DROP TABLE calendar_snapshots;
+         DROP TABLE engine_state;
          DROP TABLE notification_outbox;
          DROP TABLE assessment_current;
          DROP TABLE assessment_revisions;
@@ -215,6 +221,9 @@ fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
             capability: "effects".into(),
             state: CoverageState::Gap,
             cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         }),
     );
     store.append_assessed(&gap, at(10))?;
@@ -230,6 +239,9 @@ fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
             capability: "effects".into(),
             state: CoverageState::Healthy,
             cursor: Some("synthetic-cursor".into()),
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
         }),
     );
     store.append_assessed(&healthy, at(20))?;

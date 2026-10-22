@@ -3,10 +3,79 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+#[cfg(target_os = "macos")]
+mod google_auth;
+#[cfg(target_os = "macos")]
+mod google_collector;
+#[cfg(target_os = "macos")]
+mod google_http;
+#[cfg(target_os = "macos")]
+mod google_runtime;
+#[cfg(target_os = "macos")]
+use std::{
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tracing_subscriber::EnvFilter;
 
 const PROBE_TITLE: &str = "Picket notification test";
+
+#[cfg(target_os = "macos")]
+struct GoogleState {
+    session: Mutex<Option<google_auth::Session>>,
+    worker_started: AtomicBool,
+    status: Mutex<&'static str>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for GoogleState {
+    fn default() -> Self {
+        Self {
+            session: Mutex::new(None),
+            worker_started: AtomicBool::new(false),
+            status: Mutex::new("disconnected"),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn google_connected(state: tauri::State<'_, GoogleState>) -> String {
+    state
+        .status
+        .lock()
+        .map_or("unavailable", |status| *status)
+        .into()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn connect_google(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GoogleState>,
+    client_id: String,
+    client_secret: String,
+) -> Result<(), String> {
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        google_auth::connect(&client_id, &client_secret)
+    })
+    .await
+    .map_err(|_| "Google connection task failed".to_string())?
+    .map_err(|error| error.to_string())?;
+    let mut current = state
+        .session
+        .lock()
+        .map_err(|_| "Google connection state unavailable".to_string())?;
+    *current = Some(session);
+    drop(current);
+    google_runtime::start_worker(app);
+    Ok(())
+}
 
 fn send_notification_probe(app: &tauri::AppHandle) -> tauri_plugin_notification::Result<()> {
     app.notification()
@@ -32,9 +101,20 @@ fn handle_notification_probe(app: &tauri::AppHandle, action: &str) -> tauri::Res
 
 /// Exposes the portable, read-only diagnostic through the Tauri boundary.
 #[tauri::command]
-fn get_runtime_info() -> picket_core::RuntimeInfo {
+fn get_runtime_info(app: tauri::AppHandle) -> picket_core::RuntimeInfo {
     tracing::debug!("Runtime diagnostic requested through IPC");
-    picket_core::runtime_info()
+    let mut info = picket_core::runtime_info();
+    #[cfg(target_os = "macos")]
+    {
+        info.monitoring = app
+            .state::<GoogleState>()
+            .status
+            .lock()
+            .is_ok_and(|status| *status == "monitoring");
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    info
 }
 
 /// Restores the primary window and its normal macOS application presence.
@@ -74,17 +154,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .map_err(|error| format!("could not initialize diagnostics: {error}"))?;
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // A second launch restores the existing process instead of duplicating it.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Err(error) = show_window(app) {
                 tracing::error!(%error, "failed to show existing window");
             }
         }))
-        .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![get_runtime_info])
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        get_runtime_info,
+        google_connected,
+        connect_google
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![get_runtime_info]);
+    builder
         .on_page_load(|_, _| tracing::debug!("App webview loaded"))
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                app.manage(GoogleState::default());
+                let restore_handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    loop {
+                        let state = restore_handle.state::<GoogleState>();
+                        if state.worker_started.load(Ordering::SeqCst)
+                            || state.session.lock().is_ok_and(|current| current.is_some())
+                        {
+                            break;
+                        }
+                        match google_auth::restore() {
+                            Ok(Some(session)) => {
+                                let Ok(mut current) = state.session.lock() else {
+                                    break;
+                                };
+                                if current.is_none() && !state.worker_started.load(Ordering::SeqCst)
+                                {
+                                    *current = Some(session);
+                                    drop(current);
+                                    google_runtime::start_worker(restore_handle.clone());
+                                }
+                                break;
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                tracing::warn!(%error, "Google connection unavailable");
+                                if let Ok(mut status) = state.status.lock() {
+                                    *status = "unavailable";
+                                }
+                                thread::sleep(Duration::from_secs(30));
+                            }
+                        }
+                    }
+                });
+            }
             app.notification().register_action_types(vec![
                 ActionType::builder("picket-probe")
                     .actions(vec![
@@ -157,10 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 send_notification_probe(app.handle())?;
             }
-            tracing::info!(
-                version = env!("CARGO_PKG_VERSION"),
-                "Picket started; monitoring is not implemented"
-            );
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "Picket started");
             Ok(())
         })
         .on_window_event(|window, event| {

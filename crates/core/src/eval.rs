@@ -218,6 +218,8 @@ fn event(source: Source, resource: String, minute: i64, payload: EventPayload) -
         },
         occurred_at: at(minute),
         ingested_at: at(minute),
+        source_time_quality: None,
+        adapter: None,
         payload,
     }
 }
@@ -250,6 +252,8 @@ fn case(kind: Kind, index: usize) -> Case {
             Origin::CatchUp
         },
         external_change: false,
+        email: None,
+        calendar: None,
     };
     let mut tool = ToolResult {
         agent: agent.clone(),
@@ -398,6 +402,9 @@ fn case(kind: Kind, index: usize) -> Case {
                     capability: "sent_metadata".into(),
                     state: CoverageState::Gap,
                     cursor: None,
+                    gap_since: None,
+                    reason: None,
+                    partial_pages: None,
                 }),
             ));
         }

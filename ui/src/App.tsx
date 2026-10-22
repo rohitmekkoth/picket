@@ -1,9 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { getRuntimeInfo } from "./lib/runtime";
+import { type FormEvent, useEffect, useState } from "react";
+import { connectGoogle, getGoogleStatus, getRuntimeInfo } from "./lib/runtime";
 
 export function App() {
   const [notificationAction, setNotificationAction] = useState(window.location.hash);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
   useEffect(() => {
     const onHashChange = () => setNotificationAction(window.location.hash);
     window.addEventListener("hashchange", onHashChange);
@@ -11,6 +15,25 @@ export function App() {
   }, []);
   // The query is the single typed boundary between the renderer and Rust shell.
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
+  const google = useQuery({
+    queryKey: ["google-status"],
+    queryFn: getGoogleStatus,
+    refetchInterval: 5000,
+  });
+  async function onConnect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setConnectionError("");
+    setConnecting(true);
+    try {
+      await connectGoogle(clientId.trim(), clientSecret);
+      setClientSecret("");
+      await Promise.all([google.refetch(), runtime.refetch()]);
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setConnecting(false);
+    }
+  }
   let runtimeHeading = "Checking runtime";
   let runtimeDetail = "Waiting for the desktop runtime response.";
 
@@ -34,7 +57,7 @@ export function App() {
           </span>
           Picket
         </a>
-        <span className="stage">Development foundation</span>
+        <span className="stage">Google observation</span>
       </header>
       <main>
         {notificationAction.startsWith("#/notification-test/") && (
@@ -79,7 +102,58 @@ export function App() {
             <p>What changed in your account.</p>
           </article>
         </section>
-        {/* This panel proves the UI-to-Rust boundary before monitoring exists. */}
+        <section className="google-panel" aria-labelledby="google-heading">
+          <div>
+            <p className="eyebrow">Read only sources</p>
+            <h2 id="google-heading">Gmail and primary Calendar</h2>
+            <p>
+              Picket reads Gmail message metadata and primary Calendar events. It stores
+              observations locally. It does not read email bodies or attachments, or change your
+              account.
+            </p>
+          </div>
+          {google.data === "monitoring" || google.data === "starting" ? (
+            <p className="connection-state" role="status">
+              Connection: {google.data}
+            </p>
+          ) : google.data ? (
+            <form className="connect-form" onSubmit={(event) => void onConnect(event)}>
+              {google.data !== "disconnected" && (
+                <p role="status">Connection: {google.data}. Sign in again to recover.</p>
+              )}
+              <label htmlFor="client-id">Google Desktop OAuth client ID</label>
+              <input
+                id="client-id"
+                autoComplete="off"
+                value={clientId}
+                onChange={(event) => setClientId(event.target.value)}
+                required
+              />
+              <label htmlFor="client-secret">Client secret, if supplied</label>
+              <input
+                id="client-secret"
+                type="password"
+                autoComplete="off"
+                value={clientSecret}
+                onChange={(event) => setClientSecret(event.target.value)}
+              />
+              <button type="submit" disabled={connecting}>
+                {connecting
+                  ? "Waiting for Google..."
+                  : google.data === "disconnected"
+                    ? "Connect Google"
+                    : "Reconnect Google"}
+              </button>
+              {connectionError && (
+                <p className="form-error" role="alert">
+                  {connectionError}
+                </p>
+              )}
+            </form>
+          ) : (
+            <p className="connection-state">Open the desktop app to connect Google.</p>
+          )}
+        </section>
         <section className="runtime" aria-labelledby="runtime-heading">
           <div>
             <p className="eyebrow">Workspace status</p>
@@ -94,10 +168,11 @@ export function App() {
             Check connection
           </button>
         </section>
-        {/* Keep the foundation explicit about capabilities that do not exist yet. */}
         <p className="disclosure">
-          Monitoring is not implemented yet. No accounts are connected and no personal data is
-          collected.
+          Monitoring covers these two Google sources while your Mac is awake. Coverage gaps and
+          connection problems limit what Picket can verify. A message marked sent does not prove
+          delivery or identify the app that sent it. Initial Gmail history is limited to 50 messages
+          each from Sent and Inbox; older contact context may be incomplete.
         </p>
       </main>
       <footer>

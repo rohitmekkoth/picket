@@ -65,6 +65,17 @@ pub enum CoverageState {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CoverageReason {
+    CursorExpired,
+    PageLimit,
+    MissingResource,
+    RequestFailed,
+    AuthUnavailable,
+    Interrupted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
     Succeeded,
     Failed,
@@ -77,6 +88,28 @@ pub enum NoticeKind {
     Forwarding,
     AppAccess,
     Purchase,
+    Otp,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EmailMetadata {
+    pub thread_id: String,
+    pub sender: Option<String>,
+    pub subject_hash: String,
+    pub subject_snippet: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CalendarMetadata {
+    pub end: Option<DateTime<Utc>>,
+    pub summary: Option<String>,
+    pub organizer: Option<String>,
+    pub creator: Option<String>,
+    pub attendees: Vec<String>,
+    pub self_rsvp: Option<String>,
+    pub all_day: bool,
+    pub recurring_event_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -108,6 +141,10 @@ pub struct Effect {
     pub calendar_start: Option<DateTime<Utc>>,
     pub origin: Origin,
     pub external_change: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<EmailMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<CalendarMetadata>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -153,6 +190,12 @@ pub struct Coverage {
     pub capability: String,
     pub state: CoverageState,
     pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_since: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CoverageReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_pages: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -231,7 +274,25 @@ pub struct Event {
     pub key: EventKey,
     pub occurred_at: DateTime<Utc>,
     pub ingested_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_time_quality: Option<SourceTimeQuality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterProvenance>,
     pub payload: EventPayload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTimeQuality {
+    Provider,
+    IngestedFallback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdapterProvenance {
+    pub name: String,
+    pub version: u16,
+    pub scope: String,
 }
 
 #[derive(Serialize)]

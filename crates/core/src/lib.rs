@@ -2,9 +2,11 @@
 
 use serde::Serialize;
 
+pub mod calendar;
 pub mod engine;
 pub mod eval;
 pub mod event;
+pub mod google;
 pub mod incidents;
 pub mod store;
 

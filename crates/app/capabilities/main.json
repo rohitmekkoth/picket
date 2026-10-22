@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Only the read-only Picket runtime diagnostic command is exposed.",
+  "description": "Expose the runtime diagnostic and narrowly scoped Google connection commands.",
   "windows": ["main"],
-  "permissions": ["allow-get-runtime-info"]
+  "permissions": ["allow-get-runtime-info", "allow-google-connected", "allow-connect-google"]
 }

@@ -19,6 +19,12 @@ Homebrew installs rustup outside its default PATH. Add `$(brew --prefix rustup)/
 
 `pnpm check:env` checks tool availability. `cargo run -p picket-cli -- doctor` prints only the app version, platform, architecture, and inactive monitoring state. Neither accesses accounts or personal files.
 
+## Google test connection (M5)
+
+Use a dedicated Google account with synthetic messages and Calendar events. In Google Cloud Console, select a project, enable the Gmail API and Google Calendar API, configure the Google Auth Platform audience for testing, add the account as a test user, and create a **Desktop app** OAuth client. Follow [Google's desktop OAuth setup](https://developers.google.com/identity/protocols/oauth2/native-app) if the console labels change. Enter that client's ID and secret, if supplied, in Picket's Google connection form. The app opens the system browser for consent and stores the refresh credential in macOS Keychain.
+
+Do not commit or paste credentials, account responses, or real message content into the repository. The permitted scopes are `gmail.metadata` and `calendar.events.readonly`. Picket observes the account's Gmail metadata and primary Calendar only; it cannot identify which app caused an account change. A packaged-app test should send a synthetic message and create, update, and delete a synthetic primary Calendar event, then confirm locally stored observations and source coverage within one polling interval.
+
 ## Test boundaries
 
 `make check`, `make test`, `make e2e`, and `make audit` cover the present foundation. Browser tests verify layout, keyboard interaction, browser-preview disclosure, lack of external UI requests, and console errors. `make smoke-macos` builds and launches the packaged app, checks its Rust IPC status, closes it to the tray, confirms the tray remains present, restores the existing process through a second launch, and quits it. Grant Accessibility access to the invoking terminal before running that macOS-only check. A direct tray click needs a brief manual check because macOS does not expose a real tray click through the accessibility action used by the script.
