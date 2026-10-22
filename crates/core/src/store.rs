@@ -15,7 +15,7 @@ use crate::{
     incidents::{self, OutboxBatch, ReconcileSummary},
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -55,6 +55,15 @@ pub struct Store {
     connection: Connection,
 }
 
+/// A source cursor advances only after every observation in its page is durable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollectorCursor {
+    pub account: String,
+    pub source: Source,
+    pub value: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)?;
@@ -68,7 +77,7 @@ impl Store {
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version != 1 && version != SCHEMA_VERSION {
+        if !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(StoreError::Schema(version));
         }
         Ok(Self { connection })
@@ -105,10 +114,10 @@ impl Store {
                  PRAGMA user_version=1;
                  COMMIT;",
             )?,
-            1 | SCHEMA_VERSION => {}
+            1..=SCHEMA_VERSION => {}
             other => return Err(StoreError::Schema(other)),
         }
-        if version != SCHEMA_VERSION {
+        if version < 2 {
             connection.execute_batch(
                 "BEGIN IMMEDIATE;
                  CREATE TABLE assessment_revisions (
@@ -144,7 +153,62 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 3 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE collector_cursors (
+                   account TEXT NOT NULL,
+                   source TEXT NOT NULL,
+                   value TEXT NOT NULL,
+                   updated_at TEXT NOT NULL,
+                   PRIMARY KEY(account, source)
+                 );
+                 PRAGMA user_version=3;
+                 COMMIT;",
+            )?;
+        }
         Ok(Self { connection })
+    }
+
+    pub fn collector_cursor(&self, account: &str, source: &Source) -> Result<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT value FROM collector_cursors WHERE account=?1 AND source=?2",
+                params![account, source.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Writes a complete collector page and its next cursor in one transaction.
+    pub fn append_collector_page(
+        &mut self,
+        events: &[Event],
+        cursor: &CollectorCursor,
+    ) -> Result<Vec<i64>> {
+        validate_cursor(cursor)?;
+        for event in events {
+            validate_event(event)?;
+            if event.key.account != cursor.account || event.key.source != cursor.source {
+                return Err(StoreError::Invalid(
+                    "collector page mixes accounts or sources",
+                ));
+            }
+        }
+        let tx = self.connection.transaction()?;
+        let sequences = events
+            .iter()
+            .map(|event| append_in_transaction(&tx, event))
+            .collect::<Result<Vec<_>>>()?;
+        tx.execute(
+            "INSERT INTO collector_cursors(account, source, value, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account, source) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![cursor.account, cursor.source.as_str(), cursor.value, cursor.updated_at.to_rfc3339()],
+        )?;
+        tx.commit()?;
+        Ok(sequences)
     }
 
     pub fn append(&mut self, event: &Event) -> Result<i64> {
@@ -446,6 +510,20 @@ fn validate_event(event: &Event) -> Result<()> {
     Ok(())
 }
 
+fn validate_cursor(cursor: &CollectorCursor) -> Result<()> {
+    if cursor.account.is_empty()
+        || cursor.account.len() > 512
+        || cursor.value.is_empty()
+        || cursor.value.len() > 4096
+        || cursor.account.chars().any(char::is_control)
+        || cursor.value.chars().any(char::is_control)
+        || !matches!(cursor.source, Source::Gmail | Source::Calendar)
+    {
+        return Err(StoreError::Invalid("invalid collector cursor"));
+    }
+    Ok(())
+}
+
 fn append_in_transaction(tx: &Transaction<'_>, event: &Event) -> Result<i64> {
     let canonical = canonical_json(event)?;
     if canonical.len() > MAX_EVENT_BYTES {
@@ -584,6 +662,40 @@ mod tests {
             store.append(&conflict),
             Err(StoreError::DuplicateConflict)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn collector_page_and_cursor_commit_or_roll_back_together() -> Result<()> {
+        let mut store = Store::memory()?;
+        let cursor = CollectorCursor {
+            account: "synthetic-account".into(),
+            source: Source::Gmail,
+            value: "history-10".into(),
+            updated_at: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        store.append_collector_page(&[event("message-1", "rev-1")], &cursor)?;
+        assert_eq!(
+            store.collector_cursor(&cursor.account, &cursor.source)?,
+            Some(cursor.value.clone())
+        );
+        let mut conflict = event("message-1", "rev-1");
+        if let EventPayload::Effect(effect) = &mut conflict.payload {
+            effect.targets = vec!["different@example.test".into()];
+        }
+        let later = CollectorCursor {
+            value: "history-20".into(),
+            ..cursor.clone()
+        };
+        assert!(matches!(
+            store.append_collector_page(&[event("message-2", "rev-1"), conflict], &later),
+            Err(StoreError::DuplicateConflict)
+        ));
+        assert_eq!(store.verify()?.retained_events, 1);
+        assert_eq!(
+            store.collector_cursor(&cursor.account, &cursor.source)?,
+            Some(cursor.value)
+        );
         Ok(())
     }
 
