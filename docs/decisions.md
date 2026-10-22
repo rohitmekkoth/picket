@@ -69,3 +69,9 @@
 
 - The M4 baseline is a versioned regression gate over 18 fixed families and 288 constructed cases. It enforces minimum denominators, actor safety, linkage and conflict recall, alert routing, and coverage visibility. Mode and family counts remain separate in the report.
 - Variants within a family are correlated. The harness therefore reports raw counts and marks confidence intervals `not_measured`; calculating a binomial interval over 288 constructed variants would imply unsupported independence. Real-source, model, latency, and base-rate measures remain open. No production accuracy target is claimed from M4.
+
+## M5 planning, 2026-10-22
+
+- [M5 Google observation plan](m5-plan.md) records the implementation sequence and verification gates before collector code. The account label in Picket will be locally opaque and bound to the account reported by the allowed Gmail API; the approved scopes do not provide an OpenID subject claim.
+- Calendar's documented `events.list` rules forbid `timeMin` and `timeMax` alongside `syncToken`. The bounded baseline and token-bearing initial sync therefore need separate queries. Validate pagination, recurrence and large-calendar behavior with synthetic fixtures and a controlled account before treating coverage as healthy.
+- A cursor may advance only in the same committed write as its minimized observations and coverage state. Expired Gmail history or Calendar sync tokens create an explicit gap that current-state resync cannot erase.
