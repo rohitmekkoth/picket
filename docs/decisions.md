@@ -79,5 +79,6 @@
 ## M5 implementation notes, 2026-10-22
 
 - The Google OAuth connection verifies the two granted scopes and Gmail profile, stores a locally opaque account ID with the Keychain refresh credential, and reuses that ID on reauthorization of the same email account. The ID is a local binding, not a Google subject identifier.
+- Google observations carry the adapter name, version, approved scope, and source-time quality. Gmail's internal date is provider time. A Calendar record without `updated` uses its ingestion time and is marked as a fallback; malformed provider time fails validation. Older canonical events omit these optional fields and remain verifiable.
 - Calendar uses a bounded baseline, a separate unbounded token-bearing initial sync, and a daily bounded window refresh that preserves the incremental cursor. Known events remain tracked when moved outside the window; unknown events outside it are skipped. Source failures and expired cursors produce durable coverage gaps.
 - Synthetic collector tests cover retry deduplication, restart, Calendar revision state, expired cursors, invalid source dates, and rolling-window entry. Live OAuth, provider behavior, source-change latency, and actual recurrence edge cases still require the controlled account check before M5 is marked complete.

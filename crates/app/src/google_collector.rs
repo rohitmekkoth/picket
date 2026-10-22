@@ -358,6 +358,8 @@ fn coverage_event(
         },
         occurred_at: now,
         ingested_at: now,
+        source_time_quality: None,
+        adapter: None,
         payload: EventPayload::Coverage(Coverage {
             capability: "effects".into(),
             state,

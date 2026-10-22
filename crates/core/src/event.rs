@@ -274,7 +274,25 @@ pub struct Event {
     pub key: EventKey,
     pub occurred_at: DateTime<Utc>,
     pub ingested_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_time_quality: Option<SourceTimeQuality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterProvenance>,
     pub payload: EventPayload,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTimeQuality {
+    Provider,
+    IngestedFallback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdapterProvenance {
+    pub name: String,
+    pub version: u16,
+    pub scope: String,
 }
 
 #[derive(Serialize)]

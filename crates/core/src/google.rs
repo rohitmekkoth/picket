@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::event::{
-    Action, ContactObserved, Effect, EmailMetadata, Event, EventKey, EventPayload, NoticeKind,
-    Origin, Source,
+    Action, AdapterProvenance, ContactObserved, Effect, EmailMetadata, Event, EventKey,
+    EventPayload, NoticeKind, Origin, Source, SourceTimeQuality,
 };
 
 #[derive(Debug, Error)]
@@ -41,6 +41,14 @@ pub struct GmailPayload {
 pub struct GmailHeader {
     pub name: String,
     pub value: String,
+}
+
+fn gmail_adapter() -> AdapterProvenance {
+    AdapterProvenance {
+        name: "google.gmail.metadata".into(),
+        version: 1,
+        scope: "https://www.googleapis.com/auth/gmail.metadata".into(),
+    }
 }
 
 impl GmailMessage {
@@ -95,6 +103,8 @@ impl GmailMessage {
                 },
                 occurred_at,
                 ingested_at,
+                source_time_quality: Some(SourceTimeQuality::Provider),
+                adapter: Some(gmail_adapter()),
                 payload: EventPayload::Effect(Effect {
                     action: Action::EmailSend,
                     targets_complete: !recipients.is_empty(),
@@ -126,6 +136,8 @@ impl GmailMessage {
                     },
                     occurred_at,
                     ingested_at,
+                    source_time_quality: Some(SourceTimeQuality::Provider),
+                    adapter: Some(gmail_adapter()),
                     payload: EventPayload::ContactObserved(ContactObserved {
                         address: address.clone(),
                         origin: origin.clone(),
@@ -143,6 +155,8 @@ impl GmailMessage {
                     },
                     occurred_at,
                     ingested_at,
+                    source_time_quality: Some(SourceTimeQuality::Provider),
+                    adapter: Some(gmail_adapter()),
                     payload: EventPayload::Notice { kind, origin },
                 });
             }

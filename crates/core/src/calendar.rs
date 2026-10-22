@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::event::{
-    Action, CalendarMetadata, Effect, Event, EventKey, EventPayload, Origin, Source,
+    Action, AdapterProvenance, CalendarMetadata, Effect, Event, EventKey, EventPayload, Origin,
+    Source, SourceTimeQuality,
 };
 
 #[derive(Debug, Error)]
@@ -195,12 +196,15 @@ impl CalendarEvent {
         } else {
             Action::CalendarCreate
         };
-        let occurred_at = self
+        let provider_time = self
             .updated
             .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or(ingested_at);
+            .map(DateTime::parse_from_rfc3339)
+            .transpose()
+            .map_err(|_| CalendarError)?
+            .map(|value| value.with_timezone(&Utc));
+        let has_provider_time = provider_time.is_some();
+        let occurred_at = provider_time.unwrap_or(ingested_at);
         let event = Event {
             schema_version: 1,
             key: EventKey {
@@ -211,6 +215,16 @@ impl CalendarEvent {
             },
             occurred_at,
             ingested_at,
+            source_time_quality: Some(if has_provider_time {
+                SourceTimeQuality::Provider
+            } else {
+                SourceTimeQuality::IngestedFallback
+            }),
+            adapter: Some(AdapterProvenance {
+                name: "google.calendar.events".into(),
+                version: 1,
+                scope: "https://www.googleapis.com/auth/calendar.events.readonly".into(),
+            }),
             payload: EventPayload::Effect(Effect {
                 action,
                 targets: state.metadata.attendees.clone(),
@@ -284,6 +298,10 @@ mod tests {
             return Err("expected effect".into());
         };
         assert_eq!(effect.action, Action::CalendarCreate);
+        assert_eq!(
+            created.source_time_quality,
+            Some(SourceTimeQuality::Provider)
+        );
         assert!(effect.external_change);
         assert_eq!(effect.targets, vec!["me@example.test"]);
         assert_eq!(
@@ -315,6 +333,10 @@ mod tests {
         let (deleted, _) =
             cancelled.observation("account-1", Origin::Live, Utc::now(), Some(&state))?;
         let deleted = deleted.ok_or("missing deletion")?;
+        assert_eq!(
+            deleted.source_time_quality,
+            Some(SourceTimeQuality::IngestedFallback)
+        );
         assert!(matches!(
             deleted.payload,
             EventPayload::Effect(Effect {
@@ -335,6 +357,19 @@ mod tests {
         assert!(observed.is_some());
         assert!(state.metadata.all_day);
         assert!(state.start.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_provider_time_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let malformed = event(
+            r#"{"id":"event_1","etag":"rev1","updated":"bad","start":{"dateTime":"2026-10-23T09:00:00Z"}}"#,
+        )?;
+        assert!(
+            malformed
+                .observation("account-1", Origin::Live, Utc::now(), None)
+                .is_err()
+        );
         Ok(())
     }
 }

@@ -218,6 +218,8 @@ fn event(source: Source, resource: String, minute: i64, payload: EventPayload) -
         },
         occurred_at: at(minute),
         ingested_at: at(minute),
+        source_time_quality: None,
+        adapter: None,
         payload,
     }
 }

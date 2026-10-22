@@ -495,6 +495,8 @@ impl Store {
             },
             occurred_at: Utc::now(),
             ingested_at: Utc::now(),
+            source_time_quality: None,
+            adapter: None,
             payload: EventPayload::Checkpoint {
                 through_sequence,
                 hash: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
@@ -512,6 +514,8 @@ impl Store {
                 },
                 occurred_at: Utc::now(),
                 ingested_at: Utc::now(),
+                source_time_quality: None,
+                adapter: None,
                 payload: EventPayload::Snapshot(snapshot),
             };
             append_in_transaction(&tx, &event)?;
@@ -592,6 +596,17 @@ fn validate_event(event: &Event) -> Result<()> {
                 "source identity must be bounded and nonempty",
             ));
         }
+    }
+    if let Some(adapter) = &event.adapter
+        && (adapter.version == 0
+            || adapter.name.is_empty()
+            || adapter.scope.is_empty()
+            || adapter.name.len() > 128
+            || adapter.scope.len() > 256
+            || adapter.name.chars().any(char::is_control)
+            || adapter.scope.chars().any(char::is_control))
+    {
+        return Err(StoreError::Invalid("invalid adapter provenance"));
     }
     if matches!(event.payload, EventPayload::Checkpoint { .. })
         && event.key.source != Source::Picket
@@ -718,6 +733,8 @@ mod tests {
             },
             occurred_at: timestamp,
             ingested_at: timestamp,
+            source_time_quality: None,
+            adapter: None,
             payload: EventPayload::Effect(Effect {
                 action: Action::EmailSend,
                 targets: vec!["person@example.test".into()],

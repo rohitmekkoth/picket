@@ -891,6 +891,8 @@ mod tests {
             },
             occurred_at: time(minute),
             ingested_at: time(minute),
+            source_time_quality: None,
+            adapter: None,
             payload,
         }
     }
