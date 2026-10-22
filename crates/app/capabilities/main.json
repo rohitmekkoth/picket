@@ -3,9 +3,5 @@
   "identifier": "main",
   "description": "Expose the runtime diagnostic and narrowly scoped Google connection commands.",
   "windows": ["main"],
-  "permissions": [
-    "allow-get-runtime-info",
-    "allow-google-connected",
-    "allow-connect-google"
-  ]
+  "permissions": ["allow-get-runtime-info", "allow-google-connected", "allow-connect-google"]
 }
