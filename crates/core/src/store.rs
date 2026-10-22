@@ -7,6 +7,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::calendar::CalendarState;
 use crate::event::{
     Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source, canonical_json,
 };
@@ -15,7 +16,7 @@ use crate::{
     incidents::{self, OutboxBatch, ReconcileSummary},
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -167,7 +168,38 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 4 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE calendar_snapshots (
+                   account TEXT NOT NULL,
+                   resource TEXT NOT NULL,
+                   canonical BLOB NOT NULL,
+                   PRIMARY KEY(account, resource)
+                 );
+                 PRAGMA user_version=4;
+                 COMMIT;",
+            )?;
+        }
         Ok(Self { connection })
+    }
+
+    pub fn calendar_snapshot(
+        &self,
+        account: &str,
+        resource: &str,
+    ) -> Result<Option<CalendarState>> {
+        let bytes: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT canonical FROM calendar_snapshots WHERE account=?1 AND resource=?2",
+                params![account, resource],
+                |row| row.get(0),
+            )
+            .optional()?;
+        bytes
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(StoreError::from))
+            .transpose()
     }
 
     pub fn collector_cursor(&self, account: &str, source: &Source) -> Result<Option<String>> {
@@ -187,7 +219,20 @@ impl Store {
         events: &[Event],
         cursor: &CollectorCursor,
     ) -> Result<Vec<i64>> {
+        self.append_collector_page_with_snapshots(events, cursor, &[])
+    }
+
+    /// Calendar snapshots share the page transaction with the event log and cursor.
+    pub fn append_collector_page_with_snapshots(
+        &mut self,
+        events: &[Event],
+        cursor: &CollectorCursor,
+        snapshots: &[(String, CalendarState)],
+    ) -> Result<Vec<i64>> {
         validate_cursor(cursor)?;
+        if !snapshots.is_empty() && cursor.source != Source::Calendar {
+            return Err(StoreError::Invalid("snapshots require a Calendar cursor"));
+        }
         for event in events {
             validate_event(event)?;
             if event.key.account != cursor.account || event.key.source != cursor.source {
@@ -201,6 +246,21 @@ impl Store {
             .iter()
             .map(|event| append_in_transaction(&tx, event))
             .collect::<Result<Vec<_>>>()?;
+        for (resource, snapshot) in snapshots {
+            if resource.is_empty() || resource.len() > 512 || resource.chars().any(char::is_control)
+            {
+                return Err(StoreError::Invalid("invalid Calendar snapshot resource"));
+            }
+            let canonical = canonical_json(snapshot)?;
+            if canonical.len() > MAX_EVENT_BYTES {
+                return Err(StoreError::Invalid("Calendar snapshot exceeds 64 KiB"));
+            }
+            tx.execute(
+                "INSERT INTO calendar_snapshots(account, resource, canonical) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(account, resource) DO UPDATE SET canonical=excluded.canonical",
+                params![cursor.account, resource, canonical],
+            )?;
+        }
         tx.execute(
             "INSERT INTO collector_cursors(account, source, value, updated_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -610,6 +670,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::calendar::CalendarEvent;
     use crate::event::{
         AccountPolicy, Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
     };
@@ -697,6 +758,58 @@ mod tests {
         assert_eq!(
             store.collector_cursor(&cursor.account, &cursor.source)?,
             Some(cursor.value)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn calendar_snapshot_and_cursor_commit_together()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let wire: CalendarEvent = serde_json::from_str(
+            r#"{"id":"meeting_1","etag":"rev1","start":{"dateTime":"2026-10-23T09:00:00Z"},"attendees":[{"email":"person@example.test"}]}"#,
+        )?;
+        let (event, state) =
+            wire.observation("account-1", crate::event::Origin::Live, Utc::now(), None)?;
+        let cursor = CollectorCursor {
+            account: "account-1".into(),
+            source: Source::Calendar,
+            value: "sync-1".into(),
+            updated_at: Utc::now(),
+        };
+        store.append_collector_page_with_snapshots(
+            &[event.ok_or("missing event")?],
+            &cursor,
+            &[("meeting_1".into(), state.clone())],
+        )?;
+        assert_eq!(
+            store.calendar_snapshot("account-1", "meeting_1")?,
+            Some(state.clone())
+        );
+        assert_eq!(
+            store.collector_cursor("account-1", &Source::Calendar)?,
+            Some("sync-1".into())
+        );
+        let later = CollectorCursor {
+            value: "sync-2".into(),
+            ..cursor
+        };
+        assert!(
+            store
+                .append_collector_page_with_snapshots(
+                    &[],
+                    &later,
+                    &[("bad\nresource".into(), state.clone())],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.collector_cursor("account-1", &Source::Calendar)?,
+            Some("sync-1".into())
+        );
+        assert_eq!(
+            store.calendar_snapshot("account-1", "meeting_1")?,
+            Some(state)
         );
         Ok(())
     }
