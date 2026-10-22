@@ -65,11 +65,14 @@ enum Kind {
     FailedRuntime,
     ResourceMismatch,
     AmbiguousClaim,
+    ReportedOnly,
+    ConflictingRuntime,
     LinkedBenign,
     LinkedWrongTarget,
     LinkedProhibited,
     LinkedMissingApproval,
     LinkedNoRequest,
+    CalendarWrongTime,
     HumanPolicyBreach,
     DisabledPolicy,
     ExternalCalendar,
@@ -84,12 +87,15 @@ impl Kind {
             | Self::AgentSameMetadata
             | Self::FailedRuntime
             | Self::ResourceMismatch
-            | Self::AmbiguousClaim => Mode::EffectsOnly,
+            | Self::AmbiguousClaim
+            | Self::ReportedOnly
+            | Self::ConflictingRuntime => Mode::EffectsOnly,
             Self::LinkedBenign
             | Self::LinkedWrongTarget
             | Self::LinkedProhibited
             | Self::LinkedMissingApproval
-            | Self::LinkedNoRequest => Mode::Instrumented,
+            | Self::LinkedNoRequest
+            | Self::CalendarWrongTime => Mode::Instrumented,
             Self::HumanPolicyBreach | Self::DisabledPolicy => Mode::Policy,
             Self::ExternalCalendar => Mode::Calendar,
             Self::BaselineImport | Self::CollectorGap => Mode::Coverage,
@@ -108,12 +114,19 @@ pub struct Counts {
     pub linkable_effects: usize,
     pub linked_effects: usize,
     pub unknown_actors: usize,
+    pub reported_actors: usize,
     pub conflicting_actors: usize,
     pub explicit_conflicts: usize,
     pub detected_conflicts: usize,
     pub false_consistent: usize,
     pub alert_worthy: usize,
     pub alerts_on_alert_worthy: usize,
+    pub expected_high: usize,
+    pub correct_high: usize,
+    pub expected_medium: usize,
+    pub correct_medium: usize,
+    pub high_alerts: usize,
+    pub medium_alerts: usize,
     pub benign_effects: usize,
     pub alerts_on_benign: usize,
     pub applicable_coverage_gaps: usize,
@@ -131,12 +144,19 @@ impl Counts {
         self.linkable_effects += other.linkable_effects;
         self.linked_effects += other.linked_effects;
         self.unknown_actors += other.unknown_actors;
+        self.reported_actors += other.reported_actors;
         self.conflicting_actors += other.conflicting_actors;
         self.explicit_conflicts += other.explicit_conflicts;
         self.detected_conflicts += other.detected_conflicts;
         self.false_consistent += other.false_consistent;
         self.alert_worthy += other.alert_worthy;
         self.alerts_on_alert_worthy += other.alerts_on_alert_worthy;
+        self.expected_high += other.expected_high;
+        self.correct_high += other.correct_high;
+        self.expected_medium += other.expected_medium;
+        self.correct_medium += other.correct_medium;
+        self.high_alerts += other.high_alerts;
+        self.medium_alerts += other.medium_alerts;
         self.benign_effects += other.benign_effects;
         self.alerts_on_benign += other.alerts_on_benign;
         self.applicable_coverage_gaps += other.applicable_coverage_gaps;
@@ -176,9 +196,11 @@ struct Case {
     truth_actor: TruthActor,
     linkable: bool,
     conflict: bool,
-    alert: bool,
+    expected_route: Route,
     coverage_gap: bool,
     observed_effect: bool,
+    reported: bool,
+    conflicting: bool,
 }
 
 fn at(minute: i64) -> DateTime<Utc> {
@@ -222,7 +244,11 @@ fn case(kind: Kind, index: usize) -> Case {
         targets: vec![target.clone()],
         targets_complete: true,
         calendar_start: None,
-        origin: Origin::Live,
+        origin: if index.is_multiple_of(2) {
+            Origin::Live
+        } else {
+            Origin::CatchUp
+        },
         external_change: false,
     };
     let mut tool = ToolResult {
@@ -238,9 +264,11 @@ fn case(kind: Kind, index: usize) -> Case {
     let mut truth_actor = TruthActor::Human;
     let mut linkable = false;
     let mut conflict = false;
-    let mut alert = false;
+    let mut expected_route = Route::Timeline;
     let mut coverage_gap = false;
     let mut observed_effect = true;
+    let mut reported = false;
+    let mut conflicting = false;
 
     match kind {
         Kind::AgentSameMetadata => truth_actor = TruthActor::Agent,
@@ -266,6 +294,34 @@ fn case(kind: Kind, index: usize) -> Case {
                 EventPayload::Effect(effect.clone()),
             ));
         }
+        Kind::ReportedOnly => {
+            truth_actor = TruthActor::Agent;
+            reported = true;
+            events.push(event(
+                Source::Messages,
+                format!("claim-{index}"),
+                11,
+                EventPayload::Claim(Claim {
+                    agent: agent.clone(),
+                    task: None,
+                    action: Action::EmailSend,
+                    targets: vec![target.clone()],
+                    provider_resource: Some(resource.clone()),
+                }),
+            ));
+        }
+        Kind::ConflictingRuntime => {
+            truth_actor = TruthActor::Unknown;
+            conflicting = true;
+            let mut second = tool.clone();
+            second.agent = format!("other-agent-{index}");
+            events.push(event(
+                Source::OpenClaw,
+                format!("second-call-{index}"),
+                10,
+                EventPayload::ToolResult(second),
+            ));
+        }
         Kind::LinkedBenign | Kind::LinkedNoRequest => {
             truth_actor = TruthActor::Agent;
             linkable = true;
@@ -274,7 +330,7 @@ fn case(kind: Kind, index: usize) -> Case {
             truth_actor = TruthActor::Agent;
             linkable = true;
             conflict = true;
-            alert = true;
+            expected_route = Route::MediumReview;
             let wrong = format!("other-{index}@example.test");
             effect.targets = vec![wrong.clone()];
             tool.targets = vec![wrong];
@@ -283,18 +339,32 @@ fn case(kind: Kind, index: usize) -> Case {
             truth_actor = TruthActor::Agent;
             linkable = true;
             conflict = true;
-            alert = true;
+            expected_route = Route::MediumReview;
             request.prohibited_actions.push(Action::EmailSend);
         }
         Kind::LinkedMissingApproval => {
             truth_actor = TruthActor::Agent;
             linkable = true;
             conflict = true;
-            alert = true;
+            expected_route = Route::MediumReview;
             request.requires_approval = Field::Known(true);
         }
+        Kind::CalendarWrongTime => {
+            truth_actor = TruthActor::Agent;
+            linkable = true;
+            conflict = true;
+            expected_route = Route::MediumReview;
+            request.actions = Field::Known(vec![Action::CalendarCreate]);
+            request.calendar_start = Field::Known(at(100));
+            effect.action = Action::CalendarCreate;
+            effect.calendar_start = Some(at(101));
+            tool.action = Action::CalendarCreate;
+        }
         Kind::HumanPolicyBreach | Kind::DisabledPolicy => {
-            alert = matches!(kind, Kind::HumanPolicyBreach);
+            let alert = matches!(kind, Kind::HumanPolicyBreach);
+            if alert {
+                expected_route = Route::HighReview;
+            }
             events.push(event(
                 Source::Picket,
                 format!("policy-{index}"),
@@ -342,7 +412,7 @@ fn case(kind: Kind, index: usize) -> Case {
         ));
     }
     if !matches!(kind, Kind::CollectorGap) {
-        let source = if matches!(kind, Kind::ExternalCalendar) {
+        let source = if matches!(kind, Kind::ExternalCalendar | Kind::CalendarWrongTime) {
             Source::Calendar
         } else {
             Source::Gmail
@@ -354,13 +424,21 @@ fn case(kind: Kind, index: usize) -> Case {
             EventPayload::Effect(effect),
         ));
     }
-    if linkable || matches!(kind, Kind::FailedRuntime | Kind::ResourceMismatch) {
+    if linkable
+        || matches!(
+            kind,
+            Kind::FailedRuntime | Kind::ResourceMismatch | Kind::ConflictingRuntime
+        )
+    {
         events.push(event(
             Source::OpenClaw,
             format!("call-{index}"),
             10,
             EventPayload::ToolResult(tool),
         ));
+    }
+    if index % 4 == 1 {
+        events.reverse();
     }
     Case {
         events,
@@ -369,9 +447,11 @@ fn case(kind: Kind, index: usize) -> Case {
         truth_actor,
         linkable,
         conflict,
-        alert,
+        expected_route,
         coverage_gap,
         observed_effect,
+        reported,
+        conflicting,
     }
 }
 
@@ -418,7 +498,10 @@ fn evaluate_case(case: Case) -> Result<(Counts, Vec<String>), Box<dyn std::error
                 counts.conflicting_actors = 1;
                 None
             }
-            ActorEvidence::Reported(_) => None,
+            ActorEvidence::Reported(_) => {
+                counts.reported_actors = 1;
+                None
+            }
         };
         counts.named_agents = usize::from(named.is_some());
         counts.correct_named_agents = usize::from(
@@ -434,10 +517,21 @@ fn evaluate_case(case: Case) -> Result<(Counts, Vec<String>), Box<dyn std::error
         counts.false_consistent = usize::from(
             case.conflict && value.request_fit == RequestFit::ConsistentWithVisibleRequest,
         );
-        counts.alert_worthy = usize::from(case.alert);
-        counts.alerts_on_alert_worthy = usize::from(case.alert && value.route != Route::Timeline);
-        counts.benign_effects = usize::from(!case.alert);
-        counts.alerts_on_benign = usize::from(!case.alert && value.route != Route::Timeline);
+        let alert = case.expected_route != Route::Timeline;
+        counts.alert_worthy = usize::from(alert);
+        counts.alerts_on_alert_worthy = usize::from(alert && value.route != Route::Timeline);
+        counts.expected_high = usize::from(case.expected_route == Route::HighReview);
+        counts.correct_high = usize::from(
+            case.expected_route == Route::HighReview && value.route == Route::HighReview,
+        );
+        counts.expected_medium = usize::from(case.expected_route == Route::MediumReview);
+        counts.correct_medium = usize::from(
+            case.expected_route == Route::MediumReview && value.route == Route::MediumReview,
+        );
+        counts.high_alerts = usize::from(value.route == Route::HighReview);
+        counts.medium_alerts = usize::from(value.route == Route::MediumReview);
+        counts.benign_effects = usize::from(!alert);
+        counts.alerts_on_benign = usize::from(!alert && value.route != Route::Timeline);
         if case.linkable && !matches!(value.actor, ActorEvidence::RuntimeLinked(_)) {
             failures.push("instrumented effect was not runtime linked".into());
         }
@@ -449,6 +543,15 @@ fn evaluate_case(case: Case) -> Result<(Counts, Vec<String>), Box<dyn std::error
         }
         if counts.false_consistent > 0 {
             failures.push("explicit conflict marked consistent".into());
+        }
+        if value.route != case.expected_route {
+            failures.push("alert severity disagrees with truth label".into());
+        }
+        if case.reported != matches!(value.actor, ActorEvidence::Reported(_)) {
+            failures.push("claim attribution disagrees with truth label".into());
+        }
+        if case.conflicting != matches!(value.actor, ActorEvidence::Conflicting(_)) {
+            failures.push("conflicting runtime evidence was not preserved".into());
         }
     }
     if case.coverage_gap && gaps != 1 {
@@ -507,6 +610,22 @@ fn gate(totals: &Counts, baseline: &Baseline) -> Vec<String> {
             "alert recall",
         ),
         (
+            totals.correct_high == totals.expected_high,
+            "high alert recall",
+        ),
+        (
+            totals.correct_medium == totals.expected_medium,
+            "medium alert recall",
+        ),
+        (
+            totals.high_alerts == totals.correct_high,
+            "high alert precision",
+        ),
+        (
+            totals.medium_alerts == totals.correct_medium,
+            "medium alert precision",
+        ),
+        (
             totals.surfaced_coverage_gaps == totals.applicable_coverage_gaps,
             "gap visibility",
         ),
@@ -562,7 +681,7 @@ pub fn mock_report() -> Result<Report, Box<dyn std::error::Error>> {
         model: "mock typed inputs",
         adapter: "synthetic",
         interval_method: "not_measured: correlated synthetic variants are not independent samples",
-        sampling_limit: "15 fixed families with 16 variants each; no population accuracy inference",
+        sampling_limit: "18 fixed families with 16 variants each; no population accuracy inference",
         not_measured: vec![
             "real-source attribution",
             "extraction",
@@ -586,7 +705,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let report = mock_report()?;
         assert!(report.gates_passed, "{:?}", report.failures);
-        assert_eq!(report.totals.cases, 240);
+        assert_eq!(report.totals.cases, 288);
         let mut all_unknown = report.totals.clone();
         all_unknown.linked_effects = 0;
         all_unknown.detected_conflicts = 0;

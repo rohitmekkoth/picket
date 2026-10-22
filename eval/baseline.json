@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "minimum_families": 15,
+  "minimum_families": 18,
   "minimum_modes": 5,
-  "minimum_cases": 200,
+  "minimum_cases": 288,
   "minimum_human_effects": 64,
   "minimum_linkable_effects": 64,
   "minimum_explicit_conflicts": 32,

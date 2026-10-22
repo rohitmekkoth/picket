@@ -19,9 +19,9 @@ Read these files in order before changing code:
 
 - Repository: `https://github.com/rohitmekkoth/picket`.
 - Visibility: private. Do not make it public without the owner's explicit request.
-- Primary branch: `main`. Fetch before starting new work; M3 was developed on `feature/alignment-engine-foundation`.
+- Primary branch: `main`. Fetch before starting new work; M4 is developed on `feature/m4-evaluation-harness`.
 - M1 notification work: PR #5 merged with its two commits preserved. The post-merge [main CI run](https://github.com/rohitmekkoth/picket/actions/runs/39556842806) passed all three jobs.
-- Product implementation status: M2 storage and M3 mock alignment engine are complete on `feature/alignment-engine-foundation`. No collectors, real account access, Messages/OpenClaw adapters, local model, app incident views, notification delivery, or production alerts are implemented.
+- Product implementation status: M2 and M3 are merged in PR #8. M4's mock evaluation harness is on `feature/m4-evaluation-harness`. No collectors, real account access, Messages/OpenClaw adapters, local model, app incident views, notification delivery, or production alerts are implemented.
 - Available scaffold: Rust workspace, portable core boundary, diagnostic CLI, Tauri v2 window and menu-bar shell, synthetic native notification probe, React UI, tests, CI, dependency audits, and macOS smoke test.
 - The browser preview intentionally cannot reach the Rust core. This is expected behavior.
 - Runtime data, credentials, personal messages, account fixtures, databases, and model files must never be committed.
@@ -35,7 +35,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M1 - Foundation:** Rust workspace, portable core boundary, CLI diagnostic, Tauri tray and window, React shell, CI, audits, macOS smoke test, and native notification feasibility.
 - [x] **M2 - Event store foundation:** Typed events, canonical JSON, SQLite schema, ordered writer, hash chain, retention, and `picket verify` with exact broken-sequence reporting. Collector-specific observation fields still need refinement before M5.
 - [x] **M3 - Engine on mocks:** Deterministic rules, attribution and request states, task-linked action limits, claim/coverage checks, durable findings/outbox, scripted model and 24 labeled scenarios. This is synthetic validation only.
-- [ ] **M4 - Evaluation harness:** Scenario replay, metrics and report, plus a CI regression gate against a real baseline.
+- [x] **M4 - Mock evaluation harness:** 288 fixed synthetic cases across 18 families, separate mode and family counts, JSON report, and a versioned CI regression gate. Real-source accuracy remains unmeasured.
 - [ ] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and baseline import.
 - [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
 - [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging, and keyword fallback.
@@ -55,7 +55,9 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 ## Next work
 
-If the M3 PR is still open, confirm it is current with `main` and GitHub CI is green, then merge. After merge, M4 is next: build a held-out evaluation harness with separate attribution, request-fit, alert, coverage and abstention reports; enforce minimum applicable-case counts and utility as well as safety. The 24 M3 seeds are smoke tests, not accuracy estimates. Run controlled source capability experiments during M5/M6, not by inferring identities from timing or email headers.
+Check whether the M4 PR has merged. If it is still open, fetch `main`, resolve any conflicts, run full checks, require green CI, and merge. Then M5 is next: Google OAuth and Gmail/Calendar collectors with observed-source gap semantics. Run controlled source capability experiments during M5/M6, not by inferring identities from timing or email headers.
+
+M4 runs with `make eval` or `picket eval --mock --report path/to/report.json`. It prints a mode table and writes a privacy-safe JSON report. The fixed baseline fails all-abstain behavior and lost conflict recall. Its 288 variants are correlated synthetic cases; confidence intervals, real-source accuracy, extraction, latency and alerts per day remain `not_measured`. See `eval/README.md`.
 
 M3 passed `make check`, `make test`, `make e2e` (6 Playwright cases), and `make audit` locally. The core tests include schema migration, replay/restart, transaction rollback, notification revision behavior, and 24 labeled scenarios. The first local E2E attempt failed to bind the dev port inside the sandbox; rerunning with local port access passed. No UI/native lifecycle code changed, so `make smoke-macos` is not required. The CLI replay reports privacy-safe counts and does not deliver alerts; the core's outbox has no OS delivery worker yet. Do not represent M3 as a finished monitoring product.
 

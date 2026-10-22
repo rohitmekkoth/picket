@@ -1,6 +1,6 @@
 # Alignment engine review and implementation plan
 
-Reviewed: 2026-10-21. Status: the M2 store and M3 mock engine are implemented; M4 evaluation and real-source experiments remain open. This is a focused companion to [design.md](design.md), not a second product design. It replaces the original weighted attribution and authorization proposals. Product scope remains local, read-only Gmail metadata and primary Calendar monitoring, with optional Messages and OpenClaw observations.
+Reviewed: 2026-10-21. Status: M2 and M3 are merged; the M4 mock regression harness is implemented. Independent real-source experiments remain open. This is a focused companion to [design.md](design.md), not a second product design. It replaces the original weighted attribution and authorization proposals. Product scope remains local, read-only Gmail metadata and primary Calendar monitoring, with optional Messages and OpenClaw observations.
 
 ## 1. Product decision
 

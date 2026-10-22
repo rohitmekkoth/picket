@@ -1,16 +1,49 @@
 {
   "version": 1,
   "families": [
-    { "id": "human_same_metadata", "mode": "effects_only", "kind": "human_same_metadata", "count": 16 },
-    { "id": "agent_same_metadata", "mode": "effects_only", "kind": "agent_same_metadata", "count": 16 },
+    {
+      "id": "human_same_metadata",
+      "mode": "effects_only",
+      "kind": "human_same_metadata",
+      "count": 16
+    },
+    {
+      "id": "agent_same_metadata",
+      "mode": "effects_only",
+      "kind": "agent_same_metadata",
+      "count": 16
+    },
     { "id": "failed_runtime", "mode": "effects_only", "kind": "failed_runtime", "count": 16 },
     { "id": "resource_mismatch", "mode": "effects_only", "kind": "resource_mismatch", "count": 16 },
     { "id": "ambiguous_claim", "mode": "effects_only", "kind": "ambiguous_claim", "count": 16 },
+    { "id": "reported_only", "mode": "effects_only", "kind": "reported_only", "count": 16 },
+    {
+      "id": "conflicting_runtime",
+      "mode": "effects_only",
+      "kind": "conflicting_runtime",
+      "count": 16
+    },
     { "id": "linked_benign", "mode": "instrumented", "kind": "linked_benign", "count": 16 },
-    { "id": "linked_wrong_target", "mode": "instrumented", "kind": "linked_wrong_target", "count": 16 },
+    {
+      "id": "linked_wrong_target",
+      "mode": "instrumented",
+      "kind": "linked_wrong_target",
+      "count": 16
+    },
     { "id": "linked_prohibited", "mode": "instrumented", "kind": "linked_prohibited", "count": 16 },
-    { "id": "linked_missing_approval", "mode": "instrumented", "kind": "linked_missing_approval", "count": 16 },
+    {
+      "id": "linked_missing_approval",
+      "mode": "instrumented",
+      "kind": "linked_missing_approval",
+      "count": 16
+    },
     { "id": "linked_no_request", "mode": "instrumented", "kind": "linked_no_request", "count": 16 },
+    {
+      "id": "calendar_wrong_time",
+      "mode": "instrumented",
+      "kind": "calendar_wrong_time",
+      "count": 16
+    },
     { "id": "human_policy_breach", "mode": "policy", "kind": "human_policy_breach", "count": 16 },
     { "id": "disabled_policy", "mode": "policy", "kind": "disabled_policy", "count": 16 },
     { "id": "external_calendar", "mode": "calendar", "kind": "external_calendar", "count": 16 },

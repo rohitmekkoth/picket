@@ -27,6 +27,13 @@ enum Command {
         #[arg(long)]
         at: chrono::DateTime<chrono::Utc>,
     },
+    /// Evaluate the deterministic engine on fixed synthetic cases.
+    Eval {
+        #[arg(long, required = true)]
+        mock: bool,
+        #[arg(long, default_value = "target/eval/mock-report.json")]
+        report: PathBuf,
+    },
 }
 
 fn main() {
@@ -75,6 +82,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 count(|a| matches!(a.actor, ActorEvidence::Conflicting(_))),
                 count(|a| matches!(a.actor, ActorEvidence::UserConfirmed(_))),
             );
+        }
+        Command::Eval { mock: _, report } => {
+            let result = picket_core::eval::mock_report()?;
+            if let Some(parent) = report.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&report, serde_json::to_vec_pretty(&result)?)?;
+            println!(
+                "mode           cases   agent    link   conflict  high   medium  false/benign  gap"
+            );
+            for (mode, counts) in &result.modes {
+                println!(
+                    "{mode:<14?} {:>5} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3}",
+                    counts.cases,
+                    counts.correct_named_agents,
+                    counts.named_agents,
+                    counts.linked_effects,
+                    counts.linkable_effects,
+                    counts.detected_conflicts,
+                    counts.explicit_conflicts,
+                    counts.correct_high,
+                    counts.expected_high,
+                    counts.correct_medium,
+                    counts.expected_medium,
+                    counts.alerts_on_benign,
+                    counts.benign_effects,
+                    counts.surfaced_coverage_gaps,
+                    counts.applicable_coverage_gaps,
+                );
+            }
+            println!(
+                "mock cases: {}; gates: {}; report: {}",
+                result.totals.cases,
+                if result.gates_passed { "pass" } else { "FAIL" },
+                report.display()
+            );
+            if !result.gates_passed {
+                return Err(
+                    format!("mock evaluation failed: {}", result.failures.join(", ")).into(),
+                );
+            }
         }
     }
     Ok(())

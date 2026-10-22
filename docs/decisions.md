@@ -64,3 +64,8 @@
 - SQLite schema v2 preserves assessment revisions, a processing cursor and a durable notification outbox read in bounded pages. Input, assessment and outbox intent commit in one transaction through `append_assessed`; duplicate input and restart replay do not duplicate alerts. Delivered findings can receive a correction after material late evidence or feedback. Delivery itself belongs to M8.
 - Twenty-four labeled synthetic scenarios replay through the store with a scripted `MockModel`; paired cases with identical visible evidence but different true actors remain unknown. These are M3 safety smoke tests. They are not independent validation samples, accuracy estimates or a substitute for the M4 held-out evaluation.
 - Optional event fields added during M3 preserve older canonical log entries. Verification checks canonical source JSON and the original hash; a semantically identical retry of an old record deduplicates. Real adapter provenance, source time quality, collection completeness and runtime integrity remain M5/M6 work.
+
+## M4 synthetic evaluation, 2026-10-21
+
+- The M4 baseline is a versioned regression gate over 18 fixed families and 288 constructed cases. It enforces minimum denominators, actor safety, linkage and conflict recall, alert routing, and coverage visibility. Mode and family counts remain separate in the report.
+- Variants within a family are correlated. The harness therefore reports raw counts and marks confidence intervals `not_measured`; calculating a binomial interval over 288 constructed variants would imply unsupported independence. Real-source, model, latency, and base-rate measures remain open. No production accuracy target is claimed from M4.
