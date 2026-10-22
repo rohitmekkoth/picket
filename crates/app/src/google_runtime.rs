@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use picket_core::{event::Source, store::Store};
 use tauri::Manager;
 
@@ -56,10 +56,14 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
     store
         .reconcile(Utc::now())
         .map_err(|_| "event replay failed")?;
+    store
+        .retain_older_than(Utc::now() - ChronoDuration::days(180))
+        .map_err(|_| "event retention failed")?;
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);
     let mut next_gmail = Instant::now();
     let mut next_calendar = Instant::now();
     let mut next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
+    let mut next_retention = next_window;
     let mut gmail_healthy = false;
     let mut calendar_healthy = false;
     let mut window_healthy = true;
@@ -81,6 +85,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         if Instant::now() < next_gmail
             && Instant::now() < next_calendar
             && (!calendar_healthy || Instant::now() < next_window)
+            && Instant::now() < next_retention
         {
             thread::sleep(Duration::from_secs(5));
             continue;
@@ -172,6 +177,15 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                 window_healthy = true;
                 next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
             }
+        }
+        if Instant::now() >= next_retention {
+            if store
+                .retain_older_than(now - ChronoDuration::days(180))
+                .is_err()
+            {
+                tracing::warn!("event retention failed");
+            }
+            next_retention = Instant::now() + Duration::from_secs(24 * 60 * 60);
         }
         if let Ok(mut status) = state.status.lock() {
             *status = if gmail_healthy && calendar_healthy && window_healthy {

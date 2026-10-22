@@ -460,6 +460,17 @@ impl Store {
         .collect()
     }
 
+    /// Retains a verified prefix older than the cutoff without crossing a newer row.
+    pub fn retain_older_than(&mut self, cutoff: DateTime<Utc>) -> Result<u64> {
+        let through = self
+            .events()?
+            .into_iter()
+            .take_while(|row| row.event.ingested_at < cutoff)
+            .last()
+            .map(|row| row.sequence);
+        through.map_or(Ok(0), |sequence| self.retain_after(sequence))
+    }
+
     /// Prunes a verified prefix and records its last hash as the new anchor.
     /// The checkpoint and deletion commit together, so a crash cannot split them.
     pub fn retain_after(&mut self, through_sequence: i64) -> Result<u64> {
@@ -937,6 +948,26 @@ mod tests {
             store.verify(),
             Err(StoreError::Corrupt { sequence: 3, .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn time_retention_keeps_newer_rows_and_verified_chain() -> Result<()> {
+        let mut store = Store::memory()?;
+        store.append(&event("old", "rev-1"))?;
+        let mut recent = event("recent", "rev-1");
+        recent.ingested_at = Utc::now();
+        store.append(&recent)?;
+        let cutoff = Utc::now() - chrono::Duration::days(180);
+        assert_eq!(store.retain_older_than(cutoff)?, 1);
+        assert_eq!(store.retain_older_than(cutoff)?, 0);
+        assert!(
+            store
+                .events()?
+                .iter()
+                .any(|row| row.event.key.resource == "recent")
+        );
+        store.verify()?;
         Ok(())
     }
 

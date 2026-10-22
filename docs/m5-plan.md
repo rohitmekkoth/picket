@@ -22,7 +22,7 @@ M5 is complete only when the packaged app can authenticate, collect, persist, an
 
 - Add typed adapter provenance, source-time quality, and bounded coverage details to the portable core. Preserve existing log verification and replay compatibility through an explicit schema/version migration.
 - Add durable per-account collector cursors and the minimum resource snapshot state required for Calendar revision diffing. Keep network and Keychain code outside `crates/core`; use portable interfaces and injected clock/transport for tests.
-- Reject oversized or malformed adapter inputs, invalid revisions, inconsistent account IDs, and conflicting duplicate identities. Redact sensitive values from errors and diagnostics. Add size-based log rotation before real account collection.
+- Reject oversized or malformed adapter inputs, invalid revisions, inconsistent account IDs, and conflicting duplicate identities. Redact sensitive values from errors and diagnostics. Run the design's 180-day verified-prefix retention before real account collection and daily thereafter.
 - Verify crash points, retention/checkpoint behavior, replay determinism, and no duplicate findings on restart.
 
 ### 2. Authentication and transport
