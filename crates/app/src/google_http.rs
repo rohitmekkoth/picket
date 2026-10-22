@@ -114,7 +114,7 @@ impl GoogleHttp {
         if !matches!(label, "SENT" | "INBOX") {
             return Err(HttpError::Request);
         }
-        let mut query = vec![("labelIds", label), ("maxResults", "500")];
+        let mut query = vec![("labelIds", label), ("maxResults", "50")];
         if let Some(page) = page {
             query.push(("pageToken", page));
         }

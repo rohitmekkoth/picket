@@ -20,6 +20,7 @@ use crate::google_http::{
 
 const MAX_PAGES: usize = 40;
 const MAX_MESSAGES: usize = 5000;
+const BASELINE_MESSAGES_PER_LABEL: usize = 50;
 type CalendarUpdates = (Vec<Event>, Vec<(String, CalendarState)>);
 
 #[derive(Debug, Error)]
@@ -112,7 +113,15 @@ pub fn poll_gmail(
     let cursor = if let Some(checkpoint) = &checkpoint {
         checkpoint.value.clone()
     } else {
-        bootstrap_gmail(api, store, account, account_email, token, now)?
+        bootstrap_gmail(
+            api,
+            store,
+            account,
+            account_email,
+            token,
+            now,
+            Origin::Baseline,
+        )?
     };
     let origin = if checkpoint
         .as_ref()
@@ -138,7 +147,16 @@ pub fn poll_gmail(
                     checkpoint.map(|value| value.updated_at),
                     now,
                 )?;
-                return bootstrap_gmail(api, store, account, account_email, token, now).map(|_| ());
+                return bootstrap_gmail(
+                    api,
+                    store,
+                    account,
+                    account_email,
+                    token,
+                    now,
+                    Origin::CatchUp,
+                )
+                .map(|_| ());
             }
             Err(source) => {
                 return Err(CollectorError::Http {
@@ -234,6 +252,7 @@ fn bootstrap_gmail(
     account_email: &str,
     token: &str,
     now: DateTime<Utc>,
+    origin: Origin,
 ) -> Result<String, CollectorError> {
     let profile = api
         .gmail_profile(token)
@@ -245,72 +264,87 @@ fn bootstrap_gmail(
         return Err(CollectorError::Account);
     }
     let cutoff = now - Duration::days(30);
+    let mut ids = BTreeSet::new();
+    let mut complete = true;
+    let mut missing = false;
     for label in ["SENT", "INBOX"] {
-        let mut page_token = None;
-        let mut complete = false;
-        for _ in 0..MAX_PAGES {
-            let page = api
-                .gmail_list(token, label, page_token.as_deref())
-                .map_err(|source| CollectorError::Http {
-                    operation: "message list",
+        let page = api
+            .gmail_list(token, label, None)
+            .map_err(|source| CollectorError::Http {
+                operation: "message list",
+                source,
+            })?;
+        complete &=
+            page.next_page_token.is_none() && page.messages.len() <= BASELINE_MESSAGES_PER_LABEL;
+        ids.extend(
+            page.messages
+                .into_iter()
+                .take(BASELINE_MESSAGES_PER_LABEL)
+                .map(|message| message.id),
+        );
+    }
+    let mut events = Vec::new();
+    for id in ids {
+        let message = match api.gmail_message(token, &id) {
+            Ok(message) => message,
+            Err(HttpError::MissingResource) => {
+                complete = false;
+                missing = true;
+                continue;
+            }
+            Err(source) => {
+                return Err(CollectorError::Http {
+                    operation: "message",
                     source,
-                })?;
-            let mut events = Vec::new();
-            for item in page.messages {
-                let message = match api.gmail_message(token, &item.id) {
-                    Ok(message) => message,
-                    Err(HttpError::MissingResource) => continue,
-                    Err(source) => {
-                        return Err(CollectorError::Http {
-                            operation: "message",
-                            source,
-                        });
-                    }
-                };
-                let milliseconds: i64 = message
-                    .internal_date
-                    .parse()
-                    .map_err(|_| CollectorError::Source)?;
-                if DateTime::from_timestamp_millis(milliseconds).is_some_and(|date| date >= cutoff)
+                });
+            }
+        };
+        let milliseconds: i64 = message
+            .internal_date
+            .parse()
+            .map_err(|_| CollectorError::Source)?;
+        if DateTime::from_timestamp_millis(milliseconds).is_some_and(|date| date >= cutoff) {
+            for event in message
+                .observations(account, origin.clone(), now)
+                .map_err(|_| CollectorError::Source)?
+            {
+                if !store
+                    .event_exists(&event.key, event.payload.kind())
+                    .map_err(|_| CollectorError::Store)?
+                    && !events.iter().any(|existing: &Event| {
+                        existing.key == event.key && existing.payload.kind() == event.payload.kind()
+                    })
                 {
-                    for event in message
-                        .observations(account, Origin::Baseline, now)
-                        .map_err(|_| CollectorError::Source)?
-                    {
-                        if !store
-                            .event_exists(&event.key, event.payload.kind())
-                            .map_err(|_| CollectorError::Store)?
-                        {
-                            events.push(event);
-                        }
-                    }
+                    events.push(event);
                 }
             }
-            for event in &events {
-                store.append(event).map_err(|_| CollectorError::Store)?;
-            }
-            page_token = page.next_page_token;
-            if page_token.is_none() {
-                complete = true;
-                break;
-            }
-        }
-        if !complete {
-            record_gap(
-                store,
-                account,
-                Source::Gmail,
-                None,
-                Some(CoverageReason::PageLimit),
-                Some(cutoff),
-                now,
-            )?;
-            return Err(CollectorError::Limit);
         }
     }
+    let mut baseline = coverage_event(
+        account,
+        Source::Gmail,
+        if complete {
+            CoverageState::Healthy
+        } else {
+            CoverageState::Gap
+        },
+        None,
+        (!complete).then_some(if missing {
+            CoverageReason::MissingResource
+        } else {
+            CoverageReason::PageLimit
+        }),
+        (!complete).then_some(cutoff),
+        now,
+    );
+    baseline.key.resource = "coverage/baseline".into();
+    if let EventPayload::Coverage(coverage) = &mut baseline.payload {
+        coverage.capability = "baseline".into();
+    }
+    events.push(baseline);
     commit_page(
         store,
-        &[],
+        &events,
         account,
         Source::Gmail,
         profile.history_id.clone(),
@@ -773,6 +807,7 @@ mod tests {
     struct FakeApi {
         calendar: Mutex<VecDeque<Result<CalendarPage, HttpError>>>,
         history: Mutex<VecDeque<Result<GmailHistory, HttpError>>>,
+        sent_more: bool,
         message: GmailMessage,
     }
 
@@ -781,6 +816,7 @@ mod tests {
             Ok(Self {
                 calendar: Mutex::new(VecDeque::new()),
                 history: Mutex::new(VecDeque::new()),
+                sent_more: false,
                 message: serde_json::from_value(serde_json::json!({
                     "id": "abc123", "threadId": "abc123", "historyId": "10",
                     "internalDate": "1792627200000", "labelIds": ["SENT"],
@@ -815,7 +851,7 @@ mod tests {
                 } else {
                     Vec::new()
                 },
-                next_page_token: None,
+                next_page_token: (label == "SENT" && self.sent_more).then(|| "more".into()),
             })
         }
         fn gmail_message(&self, _: &str, _: &str) -> Result<GmailMessage, HttpError> {
@@ -908,6 +944,45 @@ mod tests {
         );
         drop(store);
         let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn limited_gmail_baseline_records_gap_and_keeps_live_cursor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let mut api = FakeApi::new()?;
+        api.sent_more = true;
+        api.history
+            .lock()
+            .map_err(|_| "lock")?
+            .push_back(Ok(serde_json::from_value(
+                serde_json::json!({"historyId": "11"}),
+            )?));
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        poll_gmail(
+            &api,
+            &mut store,
+            "synthetic-account",
+            "sender@example.test",
+            "token",
+            now,
+        )?;
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Gmail)?
+                .as_deref(),
+            Some("11")
+        );
+        assert!(store.events()?.iter().any(|record| matches!(
+            &record.event.payload,
+            EventPayload::Coverage(Coverage {
+                capability,
+                state: CoverageState::Gap,
+                reason: Some(CoverageReason::PageLimit),
+                ..
+            }) if capability == "baseline"
+        )));
         Ok(())
     }
 

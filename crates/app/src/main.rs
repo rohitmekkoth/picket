@@ -284,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             tracing::info!(
                 version = env!("CARGO_PKG_VERSION"),
-                "Picket started; monitoring is not implemented"
+                "Picket started"
             );
             Ok(())
         })

@@ -171,7 +171,8 @@ export function App() {
         <p className="disclosure">
           Monitoring covers these two Google sources while your Mac is awake. Coverage gaps and
           connection problems limit what Picket can verify. A message marked sent does not prove
-          delivery or identify the app that sent it.
+          delivery or identify the app that sent it. Initial Gmail history is limited to 50 messages
+          each from Sent and Inbox; older contact context may be incomplete.
         </p>
       </main>
       <footer>

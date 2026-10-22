@@ -56,7 +56,7 @@ The user installs once, finishes a 5-step wizard, and afterwards only sees Picke
 2. **Connect Google** - the user pastes the Client ID and secret of their own Google Cloud OAuth client (wizard shows a 6-step guide with screenshots and deep links to the Cloud Console pages), then signs in through the system browser. Scopes listed in plain English before sign-in.
 3. **Add agents** - per agent: name, mode (OpenClaw plugin / iMessage agent / effects-only), the agent's phone number or Apple ID email for iMessage agents, connected-since date. OpenClaw: shows one command to install the plugin and waits for its first heartbeat.
 4. **Messages access** (only if an iMessage agent was added) - explains Full Disk Access, opens the correct System Settings pane, polls until granted.
-5. **Baseline and model** - imports 30 days of Gmail Sent + Calendar metadata to learn known contacts and active hours; downloads the local model (\~2.7 GB) in the background with progress; user can finish the wizard before the download completes.
+5. **Baseline and model** - imports up to 30 days of Gmail Sent + Calendar metadata to learn known contacts and active hours, with explicit incomplete coverage when the Gmail scan reaches its safe limit; downloads the local model (\~2.7 GB) in the background with progress; user can finish the wizard before the download completes.
 
 **Daily use**
 
@@ -136,9 +136,9 @@ pub trait Collector: Send + Sync {
 | Poll interval | 45 s while awake; immediately on wake and on network change |
 | Per new message | `users.messages.get?format=metadata&metadataHeaders=From,To,Cc,Bcc,Subject,Date,Message-ID,In-Reply-To` |
 | Cursor | last `historyId`, stored per account |
-| Bootstrap / expired cursor | `history.list` returns 404 when the cursor is too old → resync with `users.messages.list?labelIds=SENT` and `labelIds=INBOX` for the gap window (max 30 days), dedupe by message id |
+| Bootstrap / expired cursor | Capture the profile history cursor before a bounded `users.messages.list?labelIds=SENT` and `labelIds=INBOX` scan, then replay history from that cursor; import only messages from the past 30 days, dedupe by message id, and record a separate baseline coverage gap if the scan limit leaves history incomplete |
 
-- Note: the metadata scope does not allow the `q` search parameter. Filter by `labelIds` and by headers client-side.
+- Note: the metadata scope does not allow the `q` search parameter. Filter by `labelIds` and message timestamps client-side. The M5 scan reads at most 50 listed messages per label so a large mailbox cannot delay live monitoring indefinitely; it reports incomplete baseline coverage when more pages exist.
 - Emit an observation of a Sent record, distinguishing baseline, live and catch-up input. SENT alone does not prove a new send or recipient delivery. Incoming mail is retained only for the minimized observations described below.
 - Derived detectors on received mail (metadata only, no bodies):
   - `purchase.indicator` - sender domain or subject matches the purchase patterns file (`rules/purchases.yaml`: "order confirmation", "your order", "receipt", known merchant domains). Amount parsed from subject when present, else null. Many receipts omit the amount from the subject, so amount-based rules fire only when an amount was found (documented limitation).
