@@ -75,3 +75,9 @@
 - [M5 Google observation plan](m5-plan.md) records the implementation sequence and verification gates before collector code. The account label in Picket will be locally opaque and bound to the account reported by the allowed Gmail API; the approved scopes do not provide an OpenID subject claim.
 - Calendar's documented `events.list` rules forbid `timeMin` and `timeMax` alongside `syncToken`. The bounded baseline and token-bearing initial sync therefore need separate queries. Validate pagination, recurrence and large-calendar behavior with synthetic fixtures and a controlled account before treating coverage as healthy.
 - A cursor may advance only in the same committed write as its minimized observations and coverage state. Expired Gmail history or Calendar sync tokens create an explicit gap that current-state resync cannot erase.
+
+## M5 implementation notes, 2026-10-22
+
+- The Google OAuth connection verifies the two granted scopes and Gmail profile, stores a locally opaque account ID with the Keychain refresh credential, and reuses that ID on reauthorization of the same email account. The ID is a local binding, not a Google subject identifier.
+- Calendar uses a bounded baseline, a separate unbounded token-bearing initial sync, and a daily bounded window refresh that preserves the incremental cursor. Known events remain tracked when moved outside the window; unknown events outside it are skipped. Source failures and expired cursors produce durable coverage gaps.
+- Synthetic collector tests cover retry deduplication, restart, Calendar revision state, expired cursors, invalid source dates, and rolling-window entry. Live OAuth, provider behavior, source-change latency, and actual recurrence edge cases still require the controlled account check before M5 is marked complete.

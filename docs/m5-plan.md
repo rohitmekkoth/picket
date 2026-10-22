@@ -1,6 +1,6 @@
 # M5 Google observation plan
 
-Status: planned, 2026-10-22. This plan implements the M5 scope in [design.md](design.md) and the evidence rules in [alignment-engine-plan.md](alignment-engine-plan.md). It does not add new Google scopes, hosts, account types, or actor attribution claims.
+Status: implemented on `feature/m5-google-collectors`, 2026-10-22; controlled-account acceptance remains pending. This plan implements the M5 scope in [design.md](design.md) and the evidence rules in [alignment-engine-plan.md](alignment-engine-plan.md). It does not add new Google scopes, hosts, account types, or actor attribution claims.
 
 ## Outcome and boundaries
 
