@@ -42,6 +42,7 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
       - run: cargo test -p picket-core -p picket-cli --locked
+      - run: cargo run -p picket-cli --locked -- eval --mock
       - run: cargo clippy -p picket-core -p picket-cli --all-targets --locked -- -D warnings
 
   # Exercise the complete native workspace and repository policy checks.

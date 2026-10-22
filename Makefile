@@ -3,7 +3,7 @@ export PATH := $(HOME)/.cargo/bin:/opt/homebrew/opt/rustup/bin:/usr/local/opt/ru
 # macOS Make 3.81 needs env to resolve tools using the exported PATH.
 CARGO := env cargo
 
-.PHONY: dev doctor check test e2e build smoke-macos fmt audit
+.PHONY: dev doctor check test e2e eval build smoke-macos fmt audit
 
 dev:
 	pnpm dev
@@ -27,6 +27,9 @@ test:
 
 e2e:
 	pnpm test:e2e
+
+eval:
+	$(CARGO) run -p picket-cli --locked -- eval --mock
 
 build:
 	pnpm build

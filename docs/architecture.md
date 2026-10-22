@@ -11,7 +11,7 @@ The desktop app has one window and a menu-bar menu. Closing hides the window; re
 Current and next boundaries, in design milestone order:
 
 1. M2 is implemented: typed events, canonical JSON, ordered writer, SQLite migrations, verification and retention.
-2. M3 is implemented on mocks: deterministic replay with separate actor evidence, request constraints, coverage, findings and a durable notification outbox. M4 adds held-out per-mode safety and utility gates. See [the alignment plan](alignment-engine-plan.md).
+2. M3 is implemented on mocks: deterministic replay with separate actor evidence, request constraints, coverage, findings and a durable notification outbox. M4 adds fixed synthetic per-mode safety and utility gates through `picket eval --mock`. See [the alignment plan](alignment-engine-plan.md).
 3. M5/M6: allowlisted account collectors, Keychain authentication, Messages reader, verified OpenClaw adapter.
 4. M7: verified model download and a bounded in-process worker.
 5. M8/M9: complete user flows, permissions/notifications, packaging, and public release.

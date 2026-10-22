@@ -3,6 +3,7 @@
 use serde::Serialize;
 
 pub mod engine;
+pub mod eval;
 pub mod event;
 pub mod incidents;
 pub mod store;

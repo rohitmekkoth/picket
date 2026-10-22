@@ -1,6 +1,6 @@
 # Picket - Design Doc
 
-Design revision: 2026-10-21 (alignment review; M3 mock engine implemented, M4 onward pending)
+Design revision: 2026-10-21 (alignment review; M3 mock engine and M4 synthetic evaluation implemented, M5 onward pending)
 
 ## Overview
 
