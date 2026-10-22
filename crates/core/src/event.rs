@@ -48,8 +48,9 @@ pub enum Action {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
-    Baseline,
     #[default]
+    Unknown,
+    Baseline,
     Live,
     CatchUp,
 }

@@ -229,7 +229,9 @@ pub fn assess(events: &[Event], now: DateTime<Utc>) -> Vec<Assessment> {
     let mut effects: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::Effect(effect) if effect.origin != Origin::Baseline => {
+            EventPayload::Effect(effect)
+                if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
+            {
                 Some((event, effect))
             }
             _ => None,
@@ -308,7 +310,7 @@ pub fn assess_notices(events: &[Event], now: DateTime<Utc>) -> Vec<NoticeAssessm
                 return None;
             }
             if let EventPayload::Notice { kind, origin } = &event.payload
-                && *origin != Origin::Baseline
+                && matches!(origin, Origin::Live | Origin::CatchUp)
             {
                 Some(NoticeAssessment {
                     notice: event.key.clone(),
@@ -351,7 +353,9 @@ pub fn assess_claims(events: &[Event], now: DateTime<Utc>) -> Vec<ClaimCheck> {
                         return None;
                     }
                     match &event.payload {
-                        EventPayload::Effect(effect) if effect.origin != Origin::Baseline => {
+                        EventPayload::Effect(effect)
+                            if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
+                        {
                             Some((event, effect))
                         }
                         _ => None,
@@ -550,7 +554,7 @@ fn claim_matches(
                     .abs()
                     <= CLAIM_WINDOW.num_seconds()
                 && matches!(&candidate.payload, EventPayload::Effect(other)
-                    if other.origin != Origin::Baseline && other.action == claim.action
+                    if matches!(other.origin, Origin::Live | Origin::CatchUp) && other.action == claim.action
                         && other.targets_complete && same_targets(&other.targets, &claim.targets))
         })
         .take(2)
@@ -808,7 +812,7 @@ fn linked_action_count(events: &[Event], current: &Event, agent: &str, task: &st
         let EventPayload::Effect(effect) = &event.payload else {
             continue;
         };
-        if effect.origin == Origin::Baseline || effect.external_change {
+        if !matches!(effect.origin, Origin::Live | Origin::CatchUp) || effect.external_change {
             continue;
         }
         if events.iter().any(|candidate| {
@@ -1400,5 +1404,18 @@ mod tests {
             },
         );
         assert!(assess_notices(&[baseline], time(20)).is_empty());
+        let old_notice: Event = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "key": {"account":"synthetic","source":"gmail","resource":"old-notice","revision":"1"},
+            "occurred_at": time(0), "ingested_at": time(0),
+            "payload": {"type":"notice","data":{"kind":"forwarding"}}
+        }))
+        .unwrap_or_else(|error| panic!("synthetic notice must deserialize: {error}"));
+        assert!(assess_notices(&[old_notice], time(20)).is_empty());
+        let mut unknown = effect();
+        if let EventPayload::Effect(value) = &mut unknown.payload {
+            value.origin = Origin::Unknown;
+        }
+        assert!(assess(&[unknown], time(20)).is_empty());
     }
 }
