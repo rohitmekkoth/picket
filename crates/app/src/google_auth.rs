@@ -119,8 +119,10 @@ pub fn connect(client_id: &str, client_secret: &str) -> Result<Session, AuthErro
     let access_token = token.access_token().secret().clone();
     let expires_at = expiry(token.expires_in());
     let account_email = verified_profile(&http_client()?, &access_token)?;
+    let account_id =
+        existing_account_id(&account_email)?.unwrap_or_else(|| Uuid::new_v4().to_string());
     let credentials = Credentials {
-        account_id: Uuid::new_v4().to_string(),
+        account_id,
         account_email,
         client_id: client_id.into(),
         client_secret: client_secret.into(),
@@ -132,6 +134,20 @@ pub fn connect(client_id: &str, client_secret: &str) -> Result<Session, AuthErro
         access_token,
         expires_at,
     })
+}
+
+fn existing_account_id(email: &str) -> Result<Option<String>, AuthError> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|_| AuthError::Keychain)?;
+    match entry.get_password() {
+        Ok(value) => {
+            let prior: Credentials =
+                serde_json::from_str(&value).map_err(|_| AuthError::Keychain)?;
+            Ok((prior.account_email == email).then_some(prior.account_id))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(AuthError::Keychain),
+    }
 }
 
 pub fn restore() -> Result<Option<Session>, AuthError> {

@@ -31,6 +31,14 @@ pub fn start_worker(app: tauri::AppHandle) {
         app.state::<GoogleState>()
             .worker_started
             .store(false, Ordering::SeqCst);
+        if app
+            .state::<GoogleState>()
+            .session
+            .lock()
+            .is_ok_and(|pending| pending.is_some())
+        {
+            start_worker(app);
+        }
     });
 }
 
@@ -51,14 +59,50 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);
     let mut next_gmail = Instant::now();
     let mut next_calendar = Instant::now();
+    let mut next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
     let mut gmail_healthy = false;
     let mut calendar_healthy = false;
+    let mut window_healthy = true;
     loop {
-        if Instant::now() < next_gmail && Instant::now() < next_calendar {
+        if let Some(replacement) = state
+            .session
+            .lock()
+            .map_err(|_| "connection state failed")?
+            .take()
+        {
+            session = replacement;
+            gmail_healthy = false;
+            calendar_healthy = false;
+            window_healthy = true;
+            next_gmail = Instant::now();
+            next_calendar = Instant::now();
+            next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
+        }
+        if Instant::now() < next_gmail
+            && Instant::now() < next_calendar
+            && (!calendar_healthy || Instant::now() < next_window)
+        {
             thread::sleep(Duration::from_secs(5));
             continue;
         }
-        google_auth::refresh(&mut session).map_err(|_| "Google authorization failed")?;
+        if let Err(error) = google_auth::refresh(&mut session) {
+            tracing::warn!(%error, "Google authorization unavailable");
+            let now = Utc::now();
+            for source in [Source::Gmail, Source::Calendar] {
+                let _ = google_collector::record_failure(
+                    &mut store,
+                    &session.credentials.account_id,
+                    source,
+                    now,
+                );
+            }
+            if let Ok(mut status) = state.status.lock() {
+                *status = "degraded";
+            }
+            next_gmail = Instant::now() + Duration::from_secs(10);
+            next_calendar = next_gmail;
+            continue;
+        }
         let now = Utc::now();
         if Instant::now() >= next_gmail {
             gmail_healthy = match google_collector::poll_gmail(
@@ -81,7 +125,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                     false
                 }
             };
-            next_gmail = Instant::now() + Duration::from_secs(45);
+            next_gmail = Instant::now() + Duration::from_secs(if gmail_healthy { 45 } else { 10 });
         }
         if Instant::now() >= next_calendar {
             calendar_healthy = match google_collector::poll_calendar(
@@ -103,10 +147,34 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                     false
                 }
             };
-            next_calendar = Instant::now() + Duration::from_secs(60);
+            next_calendar =
+                Instant::now() + Duration::from_secs(if calendar_healthy { 60 } else { 10 });
+        }
+        if calendar_healthy && Instant::now() >= next_window {
+            if let Err(error) = google_collector::refresh_calendar_window(
+                &http,
+                &mut store,
+                &session.credentials.account_id,
+                &session.access_token,
+                now,
+            ) {
+                tracing::warn!(%error, "Calendar window refresh degraded");
+                let _ = google_collector::record_failure(
+                    &mut store,
+                    &session.credentials.account_id,
+                    Source::Calendar,
+                    now,
+                );
+                calendar_healthy = false;
+                window_healthy = false;
+                next_window = Instant::now() + Duration::from_secs(10 * 60);
+            } else {
+                window_healthy = true;
+                next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
+            }
         }
         if let Ok(mut status) = state.status.lock() {
-            *status = if gmail_healthy && calendar_healthy {
+            *status = if gmail_healthy && calendar_healthy && window_healthy {
                 "monitoring"
             } else {
                 "degraded"

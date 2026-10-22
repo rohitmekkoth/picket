@@ -436,8 +436,9 @@ pub fn poll_calendar(
                     }
                     Err(_) => return Err(CollectorError::Http),
                 };
+                let items = select_calendar_items(store, account, page.items, now)?;
                 let (events, snapshots) =
-                    calendar_observations(store, account, page.items, origin.clone(), now)?;
+                    calendar_observations(store, account, items, origin.clone(), now)?;
                 let next_page = page.next_page_token;
                 let final_page = next_page.is_none();
                 let next_cursor = if final_page {
@@ -513,6 +514,51 @@ pub fn record_failure(
     )
 }
 
+pub fn refresh_calendar_window(
+    api: &impl GoogleApi,
+    store: &mut Store,
+    account: &str,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<(), CollectorError> {
+    let checkpoint = store
+        .collector_checkpoint(account, &Source::Calendar)
+        .map_err(|_| CollectorError::Store)?
+        .ok_or(CollectorError::Source)?;
+    if matches!(checkpoint.value.as_str(), "bootstrap" | "resync") {
+        return Err(CollectorError::Source);
+    }
+    let from = (now - Duration::days(30)).to_rfc3339();
+    let to = (now + Duration::days(90)).to_rfc3339();
+    let mut page_token = None;
+    for _ in 0..MAX_PAGES {
+        let page = api
+            .calendar_list(token, None, page_token.as_deref(), Some((&from, &to)))
+            .map_err(|_| CollectorError::Http)?;
+        let items = select_calendar_items(store, account, page.items, now)?;
+        let (events, snapshots) =
+            calendar_observations(store, account, items, Origin::Baseline, now)?;
+        store
+            .append_collector_page_with_snapshots(&events, &checkpoint, &snapshots)
+            .map_err(|_| CollectorError::Store)?;
+        store.reconcile(now).map_err(|_| CollectorError::Store)?;
+        page_token = page.next_page_token;
+        if page_token.is_none() {
+            return Ok(());
+        }
+    }
+    record_gap(
+        store,
+        account,
+        Source::Calendar,
+        Some(checkpoint.value),
+        Some(CoverageReason::PageLimit),
+        Some(checkpoint.updated_at),
+        now,
+    )?;
+    Err(CollectorError::Limit)
+}
+
 fn bootstrap_calendar(
     api: &impl GoogleApi,
     store: &mut Store,
@@ -536,24 +582,7 @@ fn bootstrap_calendar(
             let page = api
                 .calendar_list(token, None, page_token.as_deref(), bounds)
                 .map_err(|_| CollectorError::Http)?;
-            let items = page
-                .items
-                .into_iter()
-                .filter_map(|event| {
-                    let known = store
-                        .calendar_snapshot(account, &event.id)
-                        .map_err(|_| CollectorError::Store);
-                    match known {
-                        Ok(Some(_)) => Some(Ok(event)),
-                        Ok(None) => match calendar_in_window(&event, now) {
-                            Ok(true) => Some(Ok(event)),
-                            Ok(false) => None,
-                            Err(error) => Some(Err(error)),
-                        },
-                        Err(error) => Some(Err(error)),
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let items = select_calendar_items(store, account, page.items, now)?;
             let (events, snapshots) =
                 calendar_observations(store, account, items, origin.clone(), now)?;
             let next_page = page.next_page_token;
@@ -634,9 +663,34 @@ fn calendar_observations(
     Ok((events, snapshots))
 }
 
+fn select_calendar_items(
+    store: &Store,
+    account: &str,
+    items: Vec<CalendarEvent>,
+    now: DateTime<Utc>,
+) -> Result<Vec<CalendarEvent>, CollectorError> {
+    items
+        .into_iter()
+        .filter_map(|event| {
+            let known = store
+                .calendar_snapshot(account, &event.id)
+                .map_err(|_| CollectorError::Store);
+            match known {
+                Ok(Some(_)) => Some(Ok(event)),
+                Ok(None) => match calendar_in_window(&event, now) {
+                    Ok(true) => Some(Ok(event)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                },
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
+}
+
 fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool, CollectorError> {
     if event.status.as_deref() == Some("cancelled") {
-        return Ok(true);
+        return Ok(false);
     }
     let from = now - Duration::days(30);
     let to = now + Duration::days(90);
@@ -656,9 +710,16 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
             && end.is_none_or(|end| end.with_timezone(&Utc) >= from));
     }
     if let Some(date) = &start.date {
-        let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        let start = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
             .map_err(|_| CollectorError::Source)?;
-        return Ok(date >= from.date_naive() && date <= to.date_naive());
+        let end = event
+            .end
+            .as_ref()
+            .and_then(|end| end.date.as_deref())
+            .map(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d"))
+            .transpose()
+            .map_err(|_| CollectorError::Source)?;
+        return Ok(start <= to.date_naive() && end.is_none_or(|end| end > from.date_naive()));
     }
     Err(CollectorError::Source)
 }
@@ -850,6 +911,129 @@ mod tests {
         item.start.as_mut().ok_or("start")?.date_time = Some("invalid".into());
         let now = Utc::now();
         assert!(calendar_in_window(&item, now).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn expired_gmail_cursor_records_gap_before_rescan() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        {
+            let mut history = api.history.lock().map_err(|_| "lock")?;
+            history.push_back(Ok(serde_json::from_value(
+                serde_json::json!({"historyId": "11"}),
+            )?));
+            history.push_back(Err(HttpError::ExpiredCursor));
+        }
+        poll_gmail(
+            &api,
+            &mut store,
+            "synthetic-account",
+            "sender@example.test",
+            "token",
+            now,
+        )?;
+        poll_gmail(
+            &api,
+            &mut store,
+            "synthetic-account",
+            "sender@example.test",
+            "token",
+            now,
+        )?;
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Gmail)?
+                .as_deref(),
+            Some("10")
+        );
+        assert!(store.events()?.iter().any(|record| matches!(
+            &record.event.payload,
+            EventPayload::Coverage(Coverage {
+                state: CoverageState::Gap,
+                reason: Some(CoverageReason::CursorExpired),
+                ..
+            })
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn expired_calendar_token_records_gap_and_resyncs() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        {
+            let mut pages = api.calendar.lock().map_err(|_| "lock")?;
+            pages.push_back(Ok(calendar_page("rev1", None)?));
+            pages.push_back(Ok(calendar_page("rev1", Some("sync1"))?));
+            pages.push_back(Err(HttpError::ExpiredCursor));
+            pages.push_back(Ok(calendar_page("rev2", None)?));
+            pages.push_back(Ok(calendar_page("rev2", Some("sync2"))?));
+        }
+        poll_calendar(&api, &mut store, "synthetic-account", "token", now)?;
+        poll_calendar(&api, &mut store, "synthetic-account", "token", now)?;
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Calendar)?
+                .as_deref(),
+            Some("sync2")
+        );
+        assert!(store.events()?.iter().any(|record| matches!(
+            &record.event.payload,
+            EventPayload::Coverage(Coverage {
+                state: CoverageState::Gap,
+                reason: Some(CoverageReason::CursorExpired),
+                ..
+            })
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn rolling_window_discovers_future_event_without_advancing_sync_cursor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let initial = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        let later = DateTime::parse_from_rfc3339("2026-12-01T12:00:00Z")?.with_timezone(&Utc);
+        let mut future = calendar_page("rev1", Some("sync1"))?;
+        future.items[0].start.as_mut().ok_or("start")?.date_time =
+            Some("2027-02-01T12:00:00Z".into());
+        future.items[0].end.as_mut().ok_or("end")?.date_time = Some("2027-02-01T13:00:00Z".into());
+        {
+            let mut pages = api.calendar.lock().map_err(|_| "lock")?;
+            pages.push_back(Ok(serde_json::from_value(
+                serde_json::json!({"items": []}),
+            )?));
+            pages.push_back(Ok(future.clone()));
+            pages.push_back(Ok(future));
+        }
+        poll_calendar(&api, &mut store, "synthetic-account", "token", initial)?;
+        assert_eq!(
+            store
+                .events()?
+                .iter()
+                .filter(|record| matches!(record.event.payload, EventPayload::Effect(_)))
+                .count(),
+            0
+        );
+        refresh_calendar_window(&api, &mut store, "synthetic-account", "token", later)?;
+        assert_eq!(
+            store
+                .events()?
+                .iter()
+                .filter(|record| matches!(record.event.payload, EventPayload::Effect(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Calendar)?
+                .as_deref(),
+            Some("sync1")
+        );
         Ok(())
     }
 }

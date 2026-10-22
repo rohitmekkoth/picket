@@ -12,10 +12,7 @@ mod google_http;
 #[cfg(target_os = "macos")]
 mod google_runtime;
 #[cfg(target_os = "macos")]
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Mutex, atomic::AtomicBool};
 use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tracing_subscriber::EnvFilter;
 
@@ -57,9 +54,6 @@ async fn connect_google(
     client_id: String,
     client_secret: String,
 ) -> Result<(), String> {
-    if state.worker_started.load(Ordering::SeqCst) {
-        return Err("Google monitoring is already running".into());
-    }
     let session = tauri::async_runtime::spawn_blocking(move || {
         google_auth::connect(&client_id, &client_secret)
     })
@@ -186,7 +180,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         google_runtime::start_worker(restore_handle.clone());
                     }
                     Ok(None) => {}
-                    Err(error) => tracing::warn!(%error, "Google connection unavailable"),
+                    Err(error) => {
+                        tracing::warn!(%error, "Google connection unavailable");
+                        if let Ok(mut status) = restore_handle.state::<GoogleState>().status.lock()
+                        {
+                            *status = "unavailable";
+                        }
+                    }
                 });
             }
             app.notification().register_action_types(vec![

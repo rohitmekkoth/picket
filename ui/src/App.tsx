@@ -112,12 +112,15 @@ export function App() {
               account.
             </p>
           </div>
-          {google.data && google.data !== "disconnected" ? (
+          {google.data === "monitoring" || google.data === "starting" ? (
             <p className="connection-state" role="status">
               Connection: {google.data}
             </p>
-          ) : google.data === "disconnected" ? (
+          ) : google.data ? (
             <form className="connect-form" onSubmit={(event) => void onConnect(event)}>
+              {google.data !== "disconnected" && (
+                <p role="status">Connection: {google.data}. Sign in again to recover.</p>
+              )}
               <label htmlFor="client-id">Google Desktop OAuth client ID</label>
               <input
                 id="client-id"
@@ -135,7 +138,11 @@ export function App() {
                 onChange={(event) => setClientSecret(event.target.value)}
               />
               <button type="submit" disabled={connecting}>
-                {connecting ? "Waiting for Google..." : "Connect Google"}
+                {connecting
+                  ? "Waiting for Google..."
+                  : google.data === "disconnected"
+                    ? "Connect Google"
+                    : "Reconnect Google"}
               </button>
               {connectionError && (
                 <p className="form-error" role="alert">
