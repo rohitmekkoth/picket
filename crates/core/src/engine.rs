@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
-    Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome, ToolResult,
+    AccountPolicy, Action, Coverage, CoverageReason, CoverageState, Effect, Event, EventKey,
+    EventPayload, Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome,
+    ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
@@ -66,7 +67,6 @@ pub struct Assessment {
     pub pending: bool,
     pub route: Route,
     pub expected_feedback: Option<bool>,
-    pub coverage: Vec<CoverageEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,6 +74,8 @@ pub struct CoverageEvidence {
     pub source: Source,
     pub capability: String,
     pub state: CoverageState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CoverageReason>,
     pub observed_at: DateTime<Utc>,
 }
 
@@ -316,7 +318,6 @@ impl Evidence {
         let policy_hits = self.policy_violations(event, effect);
         let policy_ids = policy_hits.iter().map(|(id, _)| id.clone()).collect();
         let request_fit = self.request_fit(event, effect, &actor);
-        let coverage = self.coverage_for(&event.key.account);
         let pending = now < wait_from(event) + GRACE;
         let expected_feedback = self
             .list(self.feedback.get(&finding))
@@ -359,7 +360,6 @@ impl Evidence {
             pending,
             route,
             expected_feedback,
-            coverage,
         })
     }
 
@@ -421,12 +421,7 @@ impl Evidence {
             )
         } else if now < wait_from(report) + GRACE {
             (ClaimStatus::Pending, None)
-        } else if self
-            .coverage_latest(account, &source, "effects")
-            .is_some_and(|(coverage, observed_at)| {
-                coverage.state == CoverageState::Healthy && observed_at >= wait_from(report) + GRACE
-            })
-        {
+        } else if self.observed_without_gap(report, &source) {
             (ClaimStatus::NotObservedInHealthySource, None)
         } else {
             (ClaimStatus::CoverageIncomplete, None)
@@ -438,15 +433,38 @@ impl Evidence {
         })
     }
 
+    /// True when the source recorded no lossy coverage from the claim until its first
+    /// healthy confirmation after the deadline. Later coverage cannot change the answer.
+    fn observed_without_gap(&self, report: &Event, source: &Source) -> bool {
+        let deadline = wait_from(report) + GRACE;
+        let Some(history) = self.coverage.get(&(
+            report.key.account.clone(),
+            source.as_str(),
+            "effects".to_owned(),
+        )) else {
+            return false;
+        };
+        let start = history
+            .partition_point(|(observed_at, _)| *observed_at <= report.occurred_at)
+            .saturating_sub(1);
+        for (observed_at, seq) in &history[start..] {
+            let Some((_, coverage, _)) = self.get(*seq).and_then(coverage_value) else {
+                continue;
+            };
+            match coverage.state {
+                CoverageState::Healthy if *observed_at >= deadline => return true,
+                CoverageState::Healthy | CoverageState::Delayed => {}
+                CoverageState::Gap | CoverageState::Disabled => return false,
+            }
+        }
+        false
+    }
+
     fn coverage_findings(&self, account: &str) -> Vec<Finding> {
         self.coverage_for(account)
             .into_iter()
             .map(|evidence| {
-                let route = if evidence.state == CoverageState::Healthy {
-                    Route::Timeline
-                } else {
-                    Route::MediumReview
-                };
+                let route = coverage_route(&evidence);
                 Finding {
                     id: scoped_id(
                         "coverage",
@@ -485,6 +503,7 @@ impl Evidence {
                 source,
                 capability: value.capability.clone(),
                 state: value.state.clone(),
+                reason: value.reason.clone(),
                 observed_at,
             })
             .collect()
@@ -831,6 +850,16 @@ fn notice_assessment(event: &Event) -> Option<NoticeAssessment> {
             Route::MediumReview
         },
     })
+}
+
+/// Lost data and states that need the user alert; a delay that catch-up repairs does not.
+fn coverage_route(evidence: &CoverageEvidence) -> Route {
+    match (&evidence.state, &evidence.reason) {
+        (CoverageState::Healthy, _) => Route::Timeline,
+        (CoverageState::Delayed, Some(CoverageReason::AuthUnavailable)) => Route::MediumReview,
+        (CoverageState::Delayed, _) => Route::Timeline,
+        (CoverageState::Gap | CoverageState::Disabled, _) => Route::MediumReview,
+    }
 }
 
 fn effect_on<'e>(event: &'e Event, source: &Source) -> Option<&'e Effect> {
@@ -1545,6 +1574,96 @@ mod tests {
         );
     }
 
+    fn coverage(minute: i64, state: CoverageState, reason: Option<CoverageReason>) -> Event {
+        event(
+            Source::Gmail,
+            &format!("coverage-{minute}"),
+            minute,
+            EventPayload::Coverage(Coverage {
+                capability: "effects".into(),
+                state,
+                cursor: None,
+                gap_since: None,
+                reason,
+                partial_pages: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn claim_decision_is_anchored_to_its_deadline_and_later_coverage_cannot_undo_it() {
+        let claim = event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec!["a@example.test".into()],
+                provider_resource: None,
+            }),
+        );
+        let status = |inputs: &[Event]| assess_claims(inputs, time(60))[0].status;
+        let healthy = coverage(18, CoverageState::Healthy, None);
+        let later_gap = coverage(30, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[claim.clone(), healthy.clone(), later_gap]),
+            ClaimStatus::NotObservedInHealthySource
+        );
+        let gap_between = coverage(13, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[claim.clone(), gap_between, healthy.clone()]),
+            ClaimStatus::CoverageIncomplete
+        );
+        let delay_between = coverage(13, CoverageState::Delayed, None);
+        assert_eq!(
+            status(&[claim.clone(), delay_between, healthy.clone()]),
+            ClaimStatus::NotObservedInHealthySource
+        );
+        let gap_before = coverage(5, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[gap_before, claim, healthy]),
+            ClaimStatus::CoverageIncomplete
+        );
+    }
+
+    #[test]
+    fn coverage_changes_do_not_revise_effect_verdicts_and_delays_do_not_alert() {
+        let effect_finding = |inputs: &[Event]| {
+            findings(inputs, time(60))
+                .into_iter()
+                .find(|finding| matches!(finding.detail, FindingDetail::Effect(_)))
+        };
+        let quiet = effect_finding(&[effect()]);
+        let busy = effect_finding(&[
+            effect(),
+            coverage(12, CoverageState::Healthy, None),
+            coverage(14, CoverageState::Gap, None),
+            coverage(16, CoverageState::Healthy, None),
+        ]);
+        assert!(quiet.is_some());
+        assert_eq!(quiet, busy);
+        let route = |state, reason| {
+            findings(&[coverage(12, state, reason)], time(60))
+                .into_iter()
+                .map(|finding| finding.route)
+                .next()
+        };
+        assert_eq!(
+            route(CoverageState::Delayed, Some(CoverageReason::RequestFailed)),
+            Some(Route::Timeline)
+        );
+        assert_eq!(
+            route(
+                CoverageState::Delayed,
+                Some(CoverageReason::AuthUnavailable)
+            ),
+            Some(Route::MediumReview)
+        );
+        assert_eq!(route(CoverageState::Gap, None), Some(Route::MediumReview));
+    }
+
     #[test]
     fn coverage_gap_survives_as_evidence_and_notice_is_only_a_review_prompt() {
         let gap = event(
@@ -1560,9 +1679,19 @@ mod tests {
                 partial_pages: None,
             }),
         );
-        let result = one(&[effect(), gap]);
-        assert_eq!(result.coverage.len(), 1);
-        assert_eq!(result.coverage[0].state, CoverageState::Gap);
+        let inputs = [effect(), gap];
+        let found = findings(&inputs, time(20));
+        let coverage: Vec<_> = found
+            .iter()
+            .filter_map(|finding| match &finding.detail {
+                FindingDetail::Coverage(value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].evidence.state, CoverageState::Gap);
+        assert_eq!(coverage[0].route, Route::MediumReview);
+        assert_eq!(one(&inputs).route, Route::Timeline);
         let notice = event(
             Source::Gmail,
             "notice-1",

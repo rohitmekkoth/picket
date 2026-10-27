@@ -59,6 +59,9 @@ pub enum Origin {
 #[serde(rename_all = "snake_case")]
 pub enum CoverageState {
     Healthy,
+    /// Collection is behind or failing, but its cursor can still catch up without loss.
+    Delayed,
+    /// Some source changes may never be observed.
     Gap,
     Disabled,
 }

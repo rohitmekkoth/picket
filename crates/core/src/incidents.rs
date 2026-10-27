@@ -12,7 +12,7 @@ use crate::{
     store::Result,
 };
 
-const ENGINE_VERSION: i64 = 1;
+const ENGINE_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OutboxKind {
