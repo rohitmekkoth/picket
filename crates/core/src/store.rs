@@ -418,6 +418,21 @@ impl Store {
         Ok(Committed { sequences, summary })
     }
 
+    /// Every retained revision of one finding, oldest first.
+    pub fn finding_history(&self, finding: &str) -> Result<Vec<(i64, Finding)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT revision, payload FROM assessment_revisions WHERE finding=?1 ORDER BY revision",
+        )?;
+        let rows = statement.query_map([finding], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (revision, payload) = row?;
+            Ok((revision, serde_json::from_slice(&payload)?))
+        })
+        .collect()
+    }
+
     pub fn current_findings(&self) -> Result<Vec<(i64, Finding)>> {
         let mut statement = self.connection.prepare(
             "SELECT revisions.revision,revisions.payload FROM assessment_current AS current
@@ -481,14 +496,16 @@ impl Store {
         if through_sequence > head_seq {
             return Err(StoreError::Invalid("retention exceeds log head"));
         }
-        let (hash, count): (Vec<u8>, i64) = tx.query_row(
-            "SELECT hash, (SELECT COUNT(*) FROM events WHERE seq <= ?1)
+        let (hash, canonical, count): (Vec<u8>, Vec<u8>, i64) = tx.query_row(
+            "SELECT hash, canonical, (SELECT COUNT(*) FROM events WHERE seq <= ?1)
              FROM events WHERE seq = ?1",
             [through_sequence],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let hash = checked_hash(through_sequence, hash)?;
+        let cutoff = serde_json::from_slice::<Event>(&canonical)?.ingested_at;
         tx.execute("DELETE FROM events WHERE seq <= ?1", [through_sequence])?;
+        incidents::prune(&tx, cutoff)?;
         tx.execute(
             "UPDATE chain_state SET anchor_seq=?1, anchor_hash=?2 WHERE id=1",
             params![through_sequence, hash.as_slice()],

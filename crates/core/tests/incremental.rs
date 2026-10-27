@@ -302,3 +302,73 @@ fn one_new_input_assesses_a_bounded_set_regardless_of_history() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn retention_prunes_findings_about_removed_events_and_old_revisions() -> Result<()> {
+    use picket_core::event::CoverageState;
+    use picket_core::event::{Action, Effect, Event, EventKey, EventPayload, Origin, Source};
+    let mut store = Store::memory()?;
+    let send = |index: i64| Event {
+        schema_version: 1,
+        key: EventKey {
+            account: "acct-1".into(),
+            source: Source::Gmail,
+            resource: format!("message-{index}"),
+            revision: "1".into(),
+        },
+        occurred_at: at(index * 60),
+        ingested_at: at(index * 60),
+        source_time_quality: None,
+        adapter: None,
+        payload: EventPayload::Effect(Effect {
+            action: Action::EmailSend,
+            targets: vec!["a@example.test".into()],
+            targets_complete: true,
+            calendar_start: None,
+            origin: Origin::Live,
+            external_change: false,
+            email: None,
+            calendar: None,
+        }),
+    };
+    for index in 0..4 {
+        store.append_assessed(&send(index), at(index * 60))?;
+        for (offset, state) in [(1, CoverageState::Delayed), (2, CoverageState::Healthy)] {
+            store.commit(
+                Batch {
+                    coverage: vec![coverage_report(state)],
+                    ..Batch::default()
+                },
+                at(index * 60 + offset),
+            )?;
+        }
+    }
+    store.reconcile(at(400))?;
+    let effects = |store: &Store| -> Result<usize> {
+        Ok(stored(store)?
+            .values()
+            .filter(|finding| finding.id.starts_with("effect/"))
+            .count())
+    };
+    assert_eq!(effects(&store)?, 4);
+    store.retain_older_than(at(150))?;
+    assert_eq!(
+        effects(&store)?,
+        1,
+        "findings about pruned effects are removed"
+    );
+    let coverage = stored(&store)?
+        .into_keys()
+        .find(|id| id.starts_with("coverage/"))
+        .ok_or("missing coverage finding")?;
+    let history = store.finding_history(&coverage)?;
+    // Eight transitions; the five assessed before the minute-122 cutoff are superseded.
+    assert_eq!(history.len(), 3);
+    store.reconcile(at(400))?;
+    assert_eq!(
+        effects(&store)?,
+        1,
+        "retention does not recreate or revise findings"
+    );
+    Ok(())
+}
