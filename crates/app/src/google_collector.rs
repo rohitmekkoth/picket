@@ -1,7 +1,7 @@
 //! Bounded, restart-safe polling over the approved Google resources. Every poll makes
 //! durable progress: a source that is behind resumes from its committed position.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use picket_core::{
@@ -179,19 +179,19 @@ pub fn poll_gmail(
         let mut missing = false;
         let mut page_complete = true;
         for record in &page.history {
-            let ids: BTreeSet<_> = record
-                .messages_added
-                .iter()
-                .chain(&record.labels_added)
-                .map(|item| item.message.id.as_str())
-                .collect();
+            // A message is a draft only if every history entry for it says so.
+            let mut ids = BTreeMap::new();
+            for item in record.messages_added.iter().chain(&record.labels_added) {
+                let draft = ids.entry(item.message.id.as_str()).or_insert(true);
+                *draft &= item.message.is_draft();
+            }
             // A record is processed whole. One larger than a full budget still proceeds,
             // so every poll advances.
             if ids.len() > budget && budget < MESSAGES_PER_POLL {
                 page_complete = false;
                 break;
             }
-            for id in ids {
+            for (id, draft) in ids {
                 budget = budget.saturating_sub(1);
                 match fetch_message(api, token, id)? {
                     Some(message) => push_new(
@@ -201,7 +201,8 @@ pub fn poll_gmail(
                             .observations(account, origin.clone(), now)
                             .map_err(|_| CollectorError::Source)?,
                     )?,
-                    None => missing = true,
+                    // A replaced draft is not a send Picket could have missed.
+                    None => missing |= !draft,
                 }
             }
             durable.clone_from(&record.id);
@@ -800,6 +801,7 @@ mod tests {
                 messages: if label == "SENT" {
                     vec![crate::google_http::GmailRef {
                         id: "abc123".into(),
+                        label_ids: Vec::new(),
                     }]
                 } else {
                     Vec::new()
@@ -808,6 +810,9 @@ mod tests {
             })
         }
         fn gmail_message(&self, _: &str, id: &str) -> Result<GmailMessage, HttpError> {
+            if id.starts_with("gone") {
+                return Err(HttpError::MissingResource);
+            }
             let mut message = self.message.clone();
             message.id = id.into();
             message.thread_id = id.into();
@@ -1282,6 +1287,46 @@ mod tests {
                 .as_deref(),
             Some("sync1")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_replaced_draft_is_not_a_gap_but_a_vanished_send_is()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        let gaps = |labels: serde_json::Value| -> Result<usize, Box<dyn std::error::Error>> {
+            let mut store = Store::memory()?;
+            let api = FakeApi::new()?;
+            api.history
+                .lock()
+                .map_err(|_| "lock")?
+                .push_back(Ok(serde_json::from_value(serde_json::json!({
+                    "historyId": "12",
+                    "history": [{"id": "12", "messagesAdded": [
+                        {"message": {"id": "gone1", "labelIds": labels}}
+                    ]}]
+                }))?));
+            poll_gmail(
+                &api,
+                &mut store,
+                "synthetic-account",
+                "sender@example.test",
+                "token",
+                now,
+            )?;
+            Ok(count(&store, |payload| {
+                matches!(
+                    payload,
+                    EventPayload::Coverage(Coverage {
+                        reason: Some(CoverageReason::MissingResource),
+                        ..
+                    })
+                )
+            }))
+        };
+        assert_eq!(gaps(serde_json::json!(["DRAFT"]))?, 0);
+        assert_eq!(gaps(serde_json::json!(["SENT"]))?, 1);
+        assert_eq!(gaps(serde_json::json!([]))?, 1);
         Ok(())
     }
 }
