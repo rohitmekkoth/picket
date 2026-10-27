@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+pub mod agent;
 pub mod calendar;
 pub mod engine;
 pub mod eval;

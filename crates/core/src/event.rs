@@ -75,6 +75,12 @@ pub enum CoverageReason {
     RequestFailed,
     AuthUnavailable,
     Interrupted,
+    /// The OS denied access, for example Full Disk Access for Messages.
+    PermissionMissing,
+    /// The source's structure is not one this adapter version supports.
+    UnsupportedFormat,
+    /// Some records exist but their content could not be decoded.
+    Undecodable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -201,6 +207,57 @@ pub struct Coverage {
     pub partial_pages: Option<u32>,
 }
 
+/// How Picket can observe an agent. Effects-only agents have no request or report channel.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    OpenClaw,
+    Messages,
+    EffectsOnly,
+}
+
+/// A user-registered agent. Handles are normalized (E.164 phone numbers or lower-case
+/// emails) and identify the agent's 1:1 Messages conversation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentRegistration {
+    pub id: String,
+    pub name: String,
+    pub mode: AgentMode,
+    pub handles: Vec<String>,
+    pub connected_since: Option<DateTime<Utc>>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageDirection {
+    /// Sent from the user's own account, on any of their devices.
+    FromUser,
+    FromAgent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageText {
+    Decoded,
+    /// The message carries no text, for example an attachment only.
+    Absent,
+    Undecodable,
+    Retracted,
+}
+
+/// One message in a registered agent's conversation. The text itself is never stored;
+/// extraction re-reads it from the Messages database by its identity when needed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MessageObserved {
+    pub agent: String,
+    pub direction: MessageDirection,
+    pub service: String,
+    pub text: MessageText,
+    pub snippet: String,
+    pub origin: Origin,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContactObserved {
     pub address: String,
@@ -221,6 +278,7 @@ pub enum SnapshotValue {
     Coverage(Coverage),
     Feedback(Feedback),
     Policy(AccountPolicy),
+    Agent(AgentRegistration),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -246,6 +304,8 @@ pub enum EventPayload {
     ContactObserved(ContactObserved),
     Feedback(Feedback),
     Policy(AccountPolicy),
+    Agent(AgentRegistration),
+    Message(MessageObserved),
     Snapshot(Snapshot),
     Checkpoint {
         through_sequence: i64,
@@ -265,6 +325,8 @@ impl EventPayload {
             Self::ContactObserved(_) => "contact_observed",
             Self::Feedback(_) => "feedback",
             Self::Policy(_) => "policy",
+            Self::Agent(_) => "agent",
+            Self::Message(_) => "message",
             Self::Snapshot(_) => "snapshot",
             Self::Checkpoint { .. } => "checkpoint",
         }
