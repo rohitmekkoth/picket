@@ -1,6 +1,6 @@
 # Picket - Design Doc
 
-Design revision: 2026-10-21 (alignment review; M3 mock engine and M4 synthetic evaluation implemented, M5 onward pending)
+Design revision: 2026-10-27 (incremental assessment and bounded collection after M5; M6 onward pending)
 
 ## Overview
 
@@ -93,7 +93,7 @@ Data flows one way: sensors → event log → engine → incidents → tray, not
 - Async runtime: Tokio. Each collector runs as its own task; a crash in one is caught, logged, reported as `collector.health`, and restarted with exponential backoff (max 10 min).
 - One writer task owns the SQLite connection for writes (hash chain needs strict ordering); readers use a separate read-only connection pool.
 - One AI worker task owns the model and processes a bounded queue (capacity 100, concurrency 1).
-- Engine runs on every new event plus a 60 s ticker that closes expired tasks and emits task-close findings.
+- Engine runs incrementally in the writer's transaction: each write reassesses only the findings its events can affect, and an idle tick reassesses findings whose deadlines passed. Work per write does not grow with log size. See [decisions](decisions.md#incremental-assessment-and-bounded-collection-2026-10-27).
 - Sleep and wake: on `NSWorkspaceDidWakeNotification`, all collectors poll immediately and run catch-up from their cursors.
 
 ### Tech stack
@@ -183,7 +183,7 @@ pub trait Collector: Send + Sync {
 - Current upstream documentation describes `after_tool_call`; verify the installed SDK and each supported tool in M6. Emit bounded normalized operation/target fields, outcome (including unknown), provider resource/revision references when available, session/call/adapter identity, sequence and loss counters. Never forward raw arguments, bodies, credentials or arbitrary tool output. See the linkage experiment in the alignment plan.
 - Transport: Unix domain socket `~/Library/Application Support/Picket/ingest.sock`, created with mode 0600. Each message carries the plugin token from `ingest.token` (0600), compared in constant time.
 - Fire-and-forget: write with a 100 ms timeout, drop on failure, never throw, never block the agent. Bounded in-memory queue of 500 events in the plugin for brief daemon restarts.
-- Heartbeat every 60 s so the UI can show "plugin connected".
+- Heartbeat every 60 s so the UI can show "plugin connected". Heartbeats update live status only; the event log records connection state changes and loss counters, not each heartbeat.
 
 ### Local context (optional, macOS)
 

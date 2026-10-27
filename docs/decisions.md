@@ -102,3 +102,14 @@ Decisions:
 - **Regression tests count work, not wall time.** Scale tests assert that idle polls add no events and that one new input reassesses a bounded number of findings regardless of history size. Timing assertions would be flaky on shared CI runners.
 
 Rejected alternatives: SQL-indexed derived tables (more schema, migrations and duplicated logic for the same bounds); windowed full replay on each poll (still linear per poll and still repeats every finding comparison); time-bucketed heartbeats (fewer events, but still unbounded growth and no exact basis for claim decisions).
+
+Implementation notes, 2026-10-27:
+
+- Effect assessments no longer embed coverage. Coverage remains its own finding, and the future incident view joins the two by account and time. Embedding coverage as of `now` was the dependency that made every heartbeat rewrite every effect verdict.
+- `CoverageState::Delayed` covers request failures and token refresh failures with a transport cause; the cursor is intact and catch-up repairs them, so they stay in the timeline. A refresh rejected by Google (`AuthUnavailable`) and lost data (`Gap`) route to review. A delay between a claim and its confirmation does not make the claim incomplete; a gap does.
+- Engine version 2 reassesses all findings once after upgrade; schema v5 adds the assessment clock. A write that changes nothing (an idle tick) is skipped, because no deadline passed and an older durable clock only rechecks unchanged subjects on restart.
+- The store uses WAL with `synchronous=NORMAL`. A power loss can roll back the latest commits but cannot corrupt the log; cursors roll back with their observations, so the source is read again. This removes an fsync from every poll.
+- Gmail history records carry ids; a processed record id is the resume cursor. Each poll reads at most 10 history pages and 100 message metadata requests (about 30 s at the pacing interval). A single record larger than the budget is still processed whole, so every poll advances. Calendar stores a caught-up sync token as itself, as before, and stores the bootstrap phase and page token as tagged JSON otherwise, so existing databases need no migration.
+- Equivalence evidence: a temporary differential test matched the indexed engine to the previous linear engine on 80,000 random synthetic histories before semantics changed. The committed property test compares incremental and full replay after every commit and random restarts; mutation runs confirmed that removing any dependency rule fails it, with a targeted test for late task links.
+- The portable collector logic still lives in `picket-app`. Move it into `picket-core` behind a shared collector interface at the start of M6, before adding Messages and OpenClaw.
+- Session restore after a rejected grant still retries every 30 s with a warning. M8 should surface "reconnect required" instead.

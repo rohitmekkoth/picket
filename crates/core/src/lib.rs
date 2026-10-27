@@ -1,4 +1,5 @@
-//! Portable event store and synthetic alignment engine. Account collectors are not connected.
+//! Portable event store, incremental alignment engine and source normalization.
+//! Platform collectors, credentials and the desktop shell live in `picket-app`.
 
 use serde::Serialize;
 
