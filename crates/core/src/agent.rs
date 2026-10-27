@@ -68,6 +68,11 @@ pub fn validate(agent: &AgentRegistration) -> Result<(), AgentError> {
     {
         return Err(AgentError::Name);
     }
+    if agent.region.as_ref().is_some_and(|region| {
+        region.len() != 2 || !region.bytes().all(|byte| byte.is_ascii_uppercase())
+    }) {
+        return Err(AgentError::Handle);
+    }
     let needs_handles = agent.mode == AgentMode::Messages;
     if agent.handles.len() > MAX_HANDLES || (needs_handles && agent.handles.is_empty()) {
         return Err(AgentError::Handles);
@@ -79,6 +84,19 @@ pub fn validate(agent: &AgentRegistration) -> Result<(), AgentError> {
         }
     }
     Ok(())
+}
+
+/// A stable id from a display name: lower-case letters and digits joined by hyphens.
+pub fn id_from_name(name: &str) -> Result<String, AgentError> {
+    let id = name
+        .to_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let id: String = id.chars().take(32).collect();
+    let id = id.trim_end_matches('-').to_owned();
+    valid_id(&id).then_some(id).ok_or(AgentError::Name)
 }
 
 /// The first characters of a message, on one line, for display only.
@@ -129,6 +147,7 @@ mod tests {
             handles: vec!["+14155550132".into()],
             connected_since: None,
             enabled: true,
+            region: Some("US".into()),
         };
         assert_eq!(validate(&agent), Ok(()));
         agent.handles = vec!["(415) 555-0132".into()];
@@ -139,6 +158,13 @@ mod tests {
         assert_eq!(validate(&agent), Ok(()));
         agent.id = "Bad Id".into();
         assert_eq!(validate(&agent), Err(AgentError::Id));
+    }
+
+    #[test]
+    fn ids_come_from_names() {
+        assert_eq!(id_from_name("Instinct"), Ok("instinct".into()));
+        assert_eq!(id_from_name("  My Agent #2 "), Ok("my-agent-2".into()));
+        assert_eq!(id_from_name("!!!"), Err(AgentError::Name));
     }
 
     #[test]

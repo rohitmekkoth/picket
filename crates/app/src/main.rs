@@ -4,6 +4,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 #[cfg(target_os = "macos")]
+mod agents;
+#[cfg(target_os = "macos")]
 mod google_auth;
 #[cfg(target_os = "macos")]
 mod google_http;
@@ -26,6 +28,8 @@ const PROBE_TITLE: &str = "Picket notification test";
 #[cfg(target_os = "macos")]
 struct GoogleState {
     session: Mutex<Option<google_auth::Session>>,
+    /// The monitored account's local id, once a worker holds its session.
+    account: Mutex<Option<String>>,
     worker_started: AtomicBool,
     status: Mutex<&'static str>,
 }
@@ -35,6 +39,7 @@ impl Default for GoogleState {
     fn default() -> Self {
         Self {
             session: Mutex::new(None),
+            account: Mutex::new(None),
             worker_started: AtomicBool::new(false),
             status: Mutex::new("disconnected"),
         }
@@ -189,7 +194,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let builder = builder.invoke_handler(tauri::generate_handler![
         get_runtime_info,
         google_connected,
-        connect_google
+        connect_google,
+        agents::list_agents,
+        agents::register_agent
     ]);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.invoke_handler(tauri::generate_handler![get_runtime_info]);
@@ -200,6 +207,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 app.manage(GoogleState::default());
                 app.manage(LedgerState::default());
+                app.manage(agents::MessagesState::default());
+                agents::start(app.handle().clone());
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     loop {

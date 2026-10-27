@@ -5,6 +5,8 @@ fn main() {
             "get_runtime_info",
             "google_connected",
             "connect_google",
+            "list_agents",
+            "register_agent",
         ]),
     ))
     .unwrap_or_else(|error| panic!("failed to build Picket app metadata: {error}"));

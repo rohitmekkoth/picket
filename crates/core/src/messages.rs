@@ -286,7 +286,6 @@ pub fn poll_messages(
     ledger: &mut impl Ledger,
     account: &str,
     agents: &[AgentRegistration],
-    region: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Progress, MessagesError> {
     let agents: Vec<_> = agents
@@ -298,9 +297,11 @@ pub fn poll_messages(
     }
     let mut owners = BTreeMap::new();
     for (rowid, raw) in db.handles()? {
-        if let Ok(handle) = agent::normalize_handle(&raw, region)
-            && let Some(agent) = agents.iter().find(|agent| agent.handles.contains(&handle))
-        {
+        let owner = agents.iter().find(|agent| {
+            agent::normalize_handle(&raw, agent.region.as_deref())
+                .is_ok_and(|handle| agent.handles.contains(&handle))
+        });
+        if let Some(agent) = owner {
             owners.insert(rowid, agent.id.clone());
         }
     }
@@ -642,6 +643,7 @@ pub(crate) mod tests {
             handles: vec!["+14155550132".into()],
             connected_since: None,
             enabled: true,
+            region: None,
         }
     }
 
@@ -702,7 +704,7 @@ pub(crate) mod tests {
         fixture.message(3, "m4", "group conversation", true, at(3), false);
         let db = ChatDb::open(&fixture.path)?;
         let mut store = Store::memory()?;
-        let progress = poll_messages(&db, &mut store, "account-1", &[agent()], Some("US"), at(5))?;
+        let progress = poll_messages(&db, &mut store, "account-1", &[agent()], at(5))?;
         assert_eq!(progress, Progress::CaughtUp);
         let captured = messages(&store);
         assert_eq!(captured.len(), 2);
@@ -728,19 +730,19 @@ pub(crate) mod tests {
         let first = fixture.message(1, "m1", "Send it to Sam", true, at(0), false);
         let db = ChatDb::open(&fixture.path)?;
         let mut store = Store::memory()?;
-        poll_messages(&db, &mut store, "account-1", &[agent()], None, at(1))?;
+        poll_messages(&db, &mut store, "account-1", &[agent()], at(1))?;
         fixture.message(1, "m2", "Done", false, at(2), true);
         let edit = apple_value(at(3));
         fixture.execute(&format!(
             "UPDATE message SET text='Send it to Alex', date_edited={edit} WHERE ROWID={first}"
         ));
-        poll_messages(&db, &mut store, "account-1", &[agent()], None, at(3))?;
-        poll_messages(&db, &mut store, "account-1", &[agent()], None, at(4))?;
+        poll_messages(&db, &mut store, "account-1", &[agent()], at(3))?;
+        poll_messages(&db, &mut store, "account-1", &[agent()], at(4))?;
         let retract = apple_value(at(5));
         fixture.execute(&format!(
             "UPDATE message SET text=NULL, date_retracted={retract} WHERE guid='m2'"
         ));
-        poll_messages(&db, &mut store, "account-1", &[agent()], None, at(6))?;
+        poll_messages(&db, &mut store, "account-1", &[agent()], at(6))?;
         let captured = messages(&store);
         let summary: Vec<_> = captured
             .iter()
@@ -771,16 +773,16 @@ pub(crate) mod tests {
         fixture.chat(1, &[(1, "+14155550132")]);
         let db = ChatDb::open(&fixture.path)?;
         let mut store = Store::memory()?;
-        poll_messages(&db, &mut store, "account-1", &[agent()], None, at(0))?;
+        poll_messages(&db, &mut store, "account-1", &[agent()], at(0))?;
         for index in 0..(ROWS_PER_POLL + 20) {
             fixture.message(1, &format!("m{index}"), "hello", false, at(1), false);
         }
         assert_eq!(
-            poll_messages(&db, &mut store, "account-1", &[agent()], None, at(2))?,
+            poll_messages(&db, &mut store, "account-1", &[agent()], at(2))?,
             Progress::Behind
         );
         assert_eq!(
-            poll_messages(&db, &mut store, "account-1", &[agent()], None, at(3))?,
+            poll_messages(&db, &mut store, "account-1", &[agent()], at(3))?,
             Progress::CaughtUp
         );
         assert_eq!(messages(&store).len(), ROWS_PER_POLL + 20);

@@ -9,8 +9,8 @@ use thiserror::Error;
 
 use crate::calendar::CalendarState;
 use crate::event::{
-    Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source,
-    canonical_json,
+    AgentRegistration, Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot,
+    SnapshotValue, Source, canonical_json,
 };
 use crate::{
     engine::{Assessor, Finding},
@@ -409,6 +409,28 @@ impl Store {
         let summary = incidents::persist(&tx, findings, now, head)?;
         tx.commit()?;
         Ok(Committed { sequences, summary })
+    }
+
+    /// The latest registration of every agent, including retained snapshots.
+    pub fn agents(&self) -> Result<Vec<AgentRegistration>> {
+        let mut statement = self.connection.prepare(
+            "SELECT canonical FROM events WHERE kind IN ('agent', 'snapshot') ORDER BY seq",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut latest = BTreeMap::new();
+        for row in rows {
+            let event: Event = serde_json::from_slice(&row?)?;
+            let agent = match event.payload {
+                EventPayload::Agent(value) => value,
+                EventPayload::Snapshot(Snapshot {
+                    value: SnapshotValue::Agent(value),
+                    ..
+                }) => value,
+                _ => continue,
+            };
+            latest.insert(agent.id.clone(), agent);
+        }
+        Ok(latest.into_values().collect())
     }
 
     /// Every retained revision of one finding, oldest first.
@@ -1302,6 +1324,7 @@ mod tests {
             handles: vec!["+14155550132".into()],
             connected_since: None,
             enabled: true,
+            region: None,
         });
         let mut forged = registration.clone();
         forged.key.source = Source::Messages;

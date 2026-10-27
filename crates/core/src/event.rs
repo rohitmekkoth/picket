@@ -226,6 +226,9 @@ pub struct AgentRegistration {
     pub handles: Vec<String>,
     pub connected_since: Option<DateTime<Utc>>,
     pub enabled: bool,
+    /// The user's ISO 3166 region, for reading national-format numbers in Messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -1,6 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useState } from "react";
-import { connectGoogle, getGoogleStatus, getRuntimeInfo } from "./lib/runtime";
+import {
+  type Agents,
+  connectGoogle,
+  getGoogleStatus,
+  getRuntimeInfo,
+  listAgents,
+  registerAgent,
+} from "./lib/runtime";
+
+const messagesStatus: Record<Agents["messages"], string> = {
+  inactive: "No iMessage agent is registered.",
+  waiting: "Connect Google first. Messages are recorded with the monitored account.",
+  capturing: "Capturing the registered conversations.",
+  permission_missing:
+    "Grant Full Disk Access to Picket in System Settings, Privacy & Security. Capture starts automatically.",
+  unsupported: "This Messages database format is not supported, so capture is off.",
+  unavailable: "Messages could not be read. Picket will retry.",
+};
 
 export function App() {
   const [notificationAction, setNotificationAction] = useState(window.location.hash);
@@ -8,6 +25,10 @@ export function App() {
   const [clientSecret, setClientSecret] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentHandle, setAgentHandle] = useState("");
+  const [agentError, setAgentError] = useState("");
+  const [savingAgent, setSavingAgent] = useState(false);
   useEffect(() => {
     const onHashChange = () => setNotificationAction(window.location.hash);
     window.addEventListener("hashchange", onHashChange);
@@ -20,6 +41,22 @@ export function App() {
     queryFn: getGoogleStatus,
     refetchInterval: 5000,
   });
+  const agents = useQuery({ queryKey: ["agents"], queryFn: listAgents, refetchInterval: 5000 });
+  async function onAddAgent(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAgentError("");
+    setSavingAgent(true);
+    try {
+      await registerAgent(agentName.trim(), agentHandle.trim());
+      setAgentName("");
+      setAgentHandle("");
+      await agents.refetch();
+    } catch (error) {
+      setAgentError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingAgent(false);
+    }
+  }
   async function onConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setConnectionError("");
@@ -152,6 +189,58 @@ export function App() {
             </form>
           ) : (
             <p className="connection-state">Open the desktop app to connect Google.</p>
+          )}
+        </section>
+        <section className="google-panel" aria-labelledby="agents-heading">
+          <div>
+            <p className="eyebrow">Agent conversations</p>
+            <h2 id="agents-heading">iMessage agents</h2>
+            <p>
+              Picket reads only your one-to-one conversation with each registered agent, read only.
+              It stores direction, time and a short snippet, never the full message. This needs Full
+              Disk Access.
+            </p>
+          </div>
+          {agents.data ? (
+            <form className="connect-form" onSubmit={(event) => void onAddAgent(event)}>
+              <p role="status">{messagesStatus[agents.data.messages]}</p>
+              {agents.data.agents.length > 0 && (
+                <ul className="agent-list" aria-label="Registered agents">
+                  {agents.data.agents.map((agent) => (
+                    <li key={agent.id}>
+                      <span>{agent.name}</span>
+                      <span>{agent.handles.join(", ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <label htmlFor="agent-name">Agent name</label>
+              <input
+                id="agent-name"
+                autoComplete="off"
+                value={agentName}
+                onChange={(event) => setAgentName(event.target.value)}
+                required
+              />
+              <label htmlFor="agent-handle">Phone number or Apple ID email</label>
+              <input
+                id="agent-handle"
+                autoComplete="off"
+                value={agentHandle}
+                onChange={(event) => setAgentHandle(event.target.value)}
+                required
+              />
+              <button type="submit" disabled={savingAgent}>
+                {savingAgent ? "Saving..." : "Add agent"}
+              </button>
+              {agentError && (
+                <p className="form-error" role="alert">
+                  {agentError}
+                </p>
+              )}
+            </form>
+          ) : (
+            <p className="connection-state">Open the desktop app to add agents.</p>
           )}
         </section>
         <section className="runtime" aria-labelledby="runtime-heading">

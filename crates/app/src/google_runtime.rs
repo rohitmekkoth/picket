@@ -54,6 +54,9 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         .map_err(|_| "connection state failed")?
         .take()
         .ok_or("Google connection missing")?;
+    if let Ok(mut account) = state.account.lock() {
+        *account = Some(session.credentials.account_id.clone());
+    }
     let mut store = crate::ledger(app)?;
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);
     let mut next_gmail = Instant::now();
