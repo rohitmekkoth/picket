@@ -1,23 +1,21 @@
 //! One native worker owns Google polling and the ordered SQLite writer.
 
 use std::{
-    fs,
     sync::atomic::Ordering,
     thread,
     time::{Duration, Instant},
 };
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Utc;
 use picket_core::{
     event::{CoverageReason, Source},
-    store::Store,
+    google::HttpError,
+    google_collector,
+    ledger::Writer,
 };
 use tauri::Manager;
 
-use crate::{
-    GoogleState, google_auth, google_collector,
-    google_http::{GoogleHttp, HttpError},
-};
+use crate::{GoogleState, google_auth, google_http::GoogleHttp};
 
 pub fn start_worker(app: tauri::AppHandle) {
     let state = app.state::<GoogleState>();
@@ -56,20 +54,11 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         .map_err(|_| "connection state failed")?
         .take()
         .ok_or("Google connection missing")?;
-    let directory = app.path().app_data_dir().map_err(|_| "data path failed")?;
-    fs::create_dir_all(&directory).map_err(|_| "data directory failed")?;
-    let mut store = Store::open(&directory.join("picket.db")).map_err(|_| "event store failed")?;
-    store
-        .reconcile(Utc::now())
-        .map_err(|_| "event replay failed")?;
-    store
-        .retain_older_than(Utc::now() - ChronoDuration::days(180))
-        .map_err(|_| "event retention failed")?;
+    let mut store = crate::ledger(app)?;
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);
     let mut next_gmail = Instant::now();
     let mut next_calendar = Instant::now();
     let mut next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
-    let mut next_retention = next_window;
     let mut gmail_healthy = false;
     let mut calendar_healthy = false;
     let mut window_healthy = true;
@@ -88,14 +77,9 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
             next_calendar = Instant::now();
             next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
         }
-        // Deadlines pass without new input; the store writes only when a finding changes.
-        if store.reconcile(Utc::now()).is_err() {
-            tracing::warn!("assessment tick failed");
-        }
         if Instant::now() < next_gmail
             && Instant::now() < next_calendar
             && (!calendar_healthy || Instant::now() < next_window)
-            && Instant::now() < next_retention
         {
             thread::sleep(Duration::from_secs(5));
             continue;
@@ -166,15 +150,6 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                 next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
             }
         }
-        if Instant::now() >= next_retention {
-            if store
-                .retain_older_than(now - ChronoDuration::days(180))
-                .is_err()
-            {
-                tracing::warn!("event retention failed");
-            }
-            next_retention = Instant::now() + Duration::from_secs(24 * 60 * 60);
-        }
         if let Ok(mut status) = state.status.lock() {
             *status = if gmail_healthy && calendar_healthy && window_healthy {
                 "monitoring"
@@ -188,7 +163,7 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
 /// Schedules the next poll: soon while catching up, later when current, and with
 /// backoff after a failure, which is recorded as a delay rather than a gap.
 fn after_poll(
-    store: &mut Store,
+    store: &mut Writer,
     session: &google_auth::Session,
     source: Source,
     result: Result<google_collector::Progress, google_collector::CollectorError>,

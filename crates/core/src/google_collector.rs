@@ -3,19 +3,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, Utc};
-use picket_core::{
+use crate::{
     calendar::{CalendarEvent, CalendarState},
     event::{Coverage, CoverageReason, CoverageState, Event, Origin, Source},
-    google::GmailMessage,
-    store::{Batch, CollectorCursor, CoverageReport, Store},
+    google::{CalendarPage, GmailHistory, GmailList, GmailMessage, GmailProfile, HttpError},
+    ledger::Ledger,
+    store::{Batch, CollectorCursor, CoverageReport},
 };
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::google_http::{
-    CalendarPage, GmailHistory, GmailList, GmailProfile, GoogleHttp, HttpError,
-};
 
 /// Pages read per poll before yielding to other sources.
 const PAGES_PER_POLL: usize = 10;
@@ -75,53 +72,19 @@ pub trait GoogleApi {
     ) -> Result<CalendarPage, HttpError>;
 }
 
-impl GoogleApi for GoogleHttp {
-    fn gmail_profile(&self, token: &str) -> Result<GmailProfile, HttpError> {
-        GoogleHttp::gmail_profile(self, token)
-    }
-    fn gmail_list(
-        &self,
-        token: &str,
-        label: &str,
-        page: Option<&str>,
-    ) -> Result<GmailList, HttpError> {
-        GoogleHttp::gmail_list(self, token, label, page)
-    }
-    fn gmail_message(&self, token: &str, id: &str) -> Result<GmailMessage, HttpError> {
-        GoogleHttp::gmail_message(self, token, id)
-    }
-    fn gmail_history(
-        &self,
-        token: &str,
-        cursor: &str,
-        page: Option<&str>,
-    ) -> Result<GmailHistory, HttpError> {
-        GoogleHttp::gmail_history(self, token, cursor, page)
-    }
-    fn calendar_list(
-        &self,
-        token: &str,
-        sync: Option<&str>,
-        page: Option<&str>,
-        bounds: Option<(&str, &str)>,
-    ) -> Result<CalendarPage, HttpError> {
-        GoogleHttp::calendar_list(self, token, sync, page, bounds)
-    }
-}
-
 /// Replays Gmail history from the committed cursor. Each page commits its observations
 /// with the id of the last fully processed history record, so a large backlog resumes on
 /// the next poll instead of repeating. Healthy coverage is reported only once caught up.
 pub fn poll_gmail(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     account_email: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Progress, CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Gmail)
+        .checkpoint(account, &Source::Gmail)
         .map_err(|_| CollectorError::Store)?;
     let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
     let start = match checkpoint {
@@ -271,13 +234,13 @@ fn fetch_message(
 
 /// Adds observations that are neither stored nor already in this page.
 fn push_new(
-    store: &Store,
+    store: &impl Ledger,
     events: &mut Vec<Event>,
     observations: Vec<Event>,
 ) -> Result<(), CollectorError> {
     for event in observations {
         let known = store
-            .event_exists(&event.key, event.payload.kind())
+            .contains(&event.key, event.payload.kind())
             .map_err(|_| CollectorError::Store)?
             || events.iter().any(|existing| {
                 existing.key == event.key && existing.payload.kind() == event.payload.kind()
@@ -291,7 +254,7 @@ fn push_new(
 
 fn bootstrap_gmail(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     account_email: &str,
     token: &str,
@@ -372,7 +335,7 @@ fn bootstrap_gmail(
 }
 
 fn commit(
-    store: &mut Store,
+    store: &mut impl Ledger,
     events: Vec<Event>,
     cursor: Option<CollectorCursor>,
     calendar: Vec<(String, CalendarState)>,
@@ -418,14 +381,14 @@ fn report(
 /// Records that a source could not be read. The cursor is intact, so this is a delay
 /// that catch-up repairs, not a gap; the store logs it once per state change.
 pub fn record_failure(
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     source: Source,
     reason: CoverageReason,
     now: DateTime<Utc>,
 ) -> Result<(), CollectorError> {
     let since = store
-        .collector_checkpoint(account, &source)
+        .checkpoint(account, &source)
         .map_err(|_| CollectorError::Store)?
         .map(|value| value.updated_at);
     let delayed = report(
@@ -490,13 +453,13 @@ impl CalendarCursor {
 
 pub fn poll_calendar(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Progress, CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Calendar)
+        .checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?;
     let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
     let mut cursor = match &checkpoint {
@@ -613,13 +576,13 @@ pub fn poll_calendar(
 /// It keeps the incremental cursor; a window too large to list is a visible gap.
 pub fn refresh_calendar_window(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<(), CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Calendar)
+        .checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?
         .ok_or(CollectorError::Source)?;
     if !matches!(
@@ -667,7 +630,7 @@ pub fn refresh_calendar_window(
 }
 
 fn calendar_observations(
-    store: &Store,
+    store: &impl Ledger,
     account: &str,
     items: Vec<CalendarEvent>,
     origin: Origin,
@@ -691,7 +654,7 @@ fn calendar_observations(
 }
 
 fn select_calendar_items(
-    store: &Store,
+    store: &impl Ledger,
     account: &str,
     items: Vec<CalendarEvent>,
     now: DateTime<Utc>,
@@ -754,9 +717,8 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use picket_core::{engine::FindingDetail, event::EventPayload};
+    use crate::{engine::FindingDetail, event::EventPayload, store::Store};
     use std::{collections::VecDeque, sync::Mutex};
-    use uuid::Uuid;
 
     struct FakeApi {
         calendar: Mutex<VecDeque<Result<CalendarPage, HttpError>>>,
@@ -799,7 +761,7 @@ mod tests {
         ) -> Result<GmailList, HttpError> {
             Ok(GmailList {
                 messages: if label == "SENT" {
-                    vec![crate::google_http::GmailRef {
+                    vec![crate::google::GmailRef {
                         id: "abc123".into(),
                         label_ids: Vec::new(),
                     }]
@@ -845,9 +807,11 @@ mod tests {
         }
     }
 
-    fn test_store() -> Result<(Store, std::path::PathBuf), Box<dyn std::error::Error>> {
-        let path = std::env::temp_dir().join(format!("picket-m5-{}.db", Uuid::new_v4()));
-        Ok((Store::open(&path)?, path))
+    fn test_store()
+    -> Result<(Store, std::path::PathBuf, tempfile::TempDir), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("picket.db");
+        Ok((Store::open(&path)?, path, directory))
     }
 
     fn calendar_page(etag: &str, sync: Option<&str>) -> Result<CalendarPage, serde_json::Error> {
@@ -865,7 +829,7 @@ mod tests {
     #[test]
     fn gmail_baseline_and_replayed_history_do_not_duplicate_send()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (mut store, path) = test_store()?;
+        let (mut store, path, _directory) = test_store()?;
         let api = FakeApi::new()?;
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
         for _ in 0..2 {
@@ -949,7 +913,7 @@ mod tests {
 
     #[test]
     fn calendar_revision_and_cursor_survive_restart() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut store, path) = test_store()?;
+        let (mut store, path, _directory) = test_store()?;
         let api = FakeApi::new()?;
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
         {

@@ -8,7 +8,9 @@ pub mod engine;
 pub mod eval;
 pub mod event;
 pub mod google;
+pub mod google_collector;
 pub mod incidents;
+pub mod ledger;
 pub mod store;
 
 /// Read-only process details shared by the CLI and desktop shell.

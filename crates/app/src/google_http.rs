@@ -6,108 +6,23 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use picket_core::{calendar::CalendarEvent, google::GmailMessage};
+use picket_core::{
+    google::{CalendarPage, GmailHistory, GmailList, GmailMessage, GmailProfile, HttpError},
+    google_collector::GoogleApi,
+};
 use reqwest::{
     StatusCode, Url,
     blocking::{Client, Response},
 };
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use thiserror::Error;
 
 const MAX_RESPONSE: u64 = 1024 * 1024;
 const GMAIL_ROOT: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const CALENDAR_ROOT: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const CALENDAR_FIELDS: &str = "nextPageToken,nextSyncToken,items(id,etag,status,updated,summary,start,end,organizer(email,self),creator(email,self),attendees(email,responseStatus,self),recurringEventId)";
 
-#[derive(Debug, Error)]
-pub enum HttpError {
-    #[error("Google authorization expired")]
-    Unauthorized,
-    #[error("Google denied the request: {0}")]
-    Forbidden(&'static str),
-    #[error("Google rate limit exceeded")]
-    RateLimited,
-    #[error("Google cursor expired")]
-    ExpiredCursor,
-    #[error("Google resource disappeared during collection")]
-    MissingResource,
-    #[error("Google request failed or exceeded its limit")]
-    Request,
-    #[error("Google returned HTTP {0}")]
-    Status(u16),
-    #[error("Google returned invalid metadata")]
-    InvalidResponse,
-}
-
 pub struct GoogleHttp {
     client: Client,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GmailProfile {
-    pub email_address: String,
-    pub history_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GmailList {
-    #[serde(default)]
-    pub messages: Vec<GmailRef>,
-    pub next_page_token: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GmailRef {
-    pub id: String,
-    /// Present in history records; message lists return ids only.
-    #[serde(default)]
-    pub label_ids: Vec<String>,
-}
-
-impl GmailRef {
-    /// Gmail replaces a draft with a new message on every autosave and deletes the old one.
-    pub fn is_draft(&self) -> bool {
-        self.label_ids.iter().any(|label| label == "DRAFT")
-            && !self.label_ids.iter().any(|label| label == "SENT")
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GmailHistory {
-    #[serde(default)]
-    pub history: Vec<GmailHistoryRecord>,
-    pub history_id: String,
-    pub next_page_token: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GmailHistoryRecord {
-    /// Records are ordered by id; a processed id is a valid resume cursor.
-    pub id: String,
-    #[serde(default)]
-    pub messages_added: Vec<GmailMessageAdded>,
-    #[serde(default)]
-    pub labels_added: Vec<GmailMessageAdded>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct GmailMessageAdded {
-    pub message: GmailRef,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CalendarPage {
-    #[serde(default)]
-    pub items: Vec<CalendarEvent>,
-    pub next_page_token: Option<String>,
-    pub next_sync_token: Option<String>,
 }
 
 impl GoogleHttp {
@@ -308,6 +223,40 @@ fn classify_forbidden(value: &serde_json::Value) -> HttpError {
         Some("insufficientPermissions") => HttpError::Forbidden("insufficient permissions"),
         Some("accessNotConfigured") => HttpError::Forbidden("API access not configured"),
         _ => HttpError::Forbidden("unspecified"),
+    }
+}
+
+impl GoogleApi for GoogleHttp {
+    fn gmail_profile(&self, token: &str) -> Result<GmailProfile, HttpError> {
+        GoogleHttp::gmail_profile(self, token)
+    }
+    fn gmail_list(
+        &self,
+        token: &str,
+        label: &str,
+        page: Option<&str>,
+    ) -> Result<GmailList, HttpError> {
+        GoogleHttp::gmail_list(self, token, label, page)
+    }
+    fn gmail_message(&self, token: &str, id: &str) -> Result<GmailMessage, HttpError> {
+        GoogleHttp::gmail_message(self, token, id)
+    }
+    fn gmail_history(
+        &self,
+        token: &str,
+        cursor: &str,
+        page: Option<&str>,
+    ) -> Result<GmailHistory, HttpError> {
+        GoogleHttp::gmail_history(self, token, cursor, page)
+    }
+    fn calendar_list(
+        &self,
+        token: &str,
+        sync: Option<&str>,
+        page: Option<&str>,
+        bounds: Option<(&str, &str)>,
+    ) -> Result<CalendarPage, HttpError> {
+        GoogleHttp::calendar_list(self, token, sync, page, bounds)
     }
 }
 
