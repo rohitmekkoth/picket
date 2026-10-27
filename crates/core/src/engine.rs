@@ -8,13 +8,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
-    Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome, ToolResult,
+    AccountPolicy, Action, Coverage, CoverageReason, CoverageState, Effect, Event, EventKey,
+    EventPayload, Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome,
+    ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
 const CLAIM_WINDOW: Duration = Duration::minutes(10);
 const GRACE: Duration = Duration::minutes(5);
+/// Coverage is indexed per account, source and capability, ordered by observation time.
+type CoverageKey = (String, &'static str, String);
+type CoverageHistory = Vec<(DateTime<Utc>, i64)>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ActorEvidence {
@@ -63,7 +67,6 @@ pub struct Assessment {
     pub pending: bool,
     pub route: Route,
     pub expected_feedback: Option<bool>,
-    pub coverage: Vec<CoverageEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -71,6 +74,8 @@ pub struct CoverageEvidence {
     pub source: Source,
     pub capability: String,
     pub state: CoverageState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<CoverageReason>,
     pub observed_at: DateTime<Utc>,
 }
 
@@ -121,285 +126,1098 @@ pub struct Finding {
     pub detail: FindingDetail,
 }
 
-pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
-    let mut result: Vec<_> = assess(events, now)
-        .into_iter()
-        .map(|assessment| Finding {
-            id: assessment.finding.clone(),
-            group: scoped_id(
-                "incident",
-                &[
-                    assessment.effect.account.as_str(),
-                    assessment.effect.source.as_str(),
-                    assessment.effect.resource.as_str(),
-                ],
-            ),
-            route: assessment.route,
-            detail: FindingDetail::Effect(assessment),
-        })
-        .collect();
-    result.extend(assess_claims(events, now).into_iter().map(|claim| Finding {
-        id: key_finding_id("claim", &claim.claim),
-        group: claim.observed_effect.as_ref().map_or_else(
-            || {
-                scoped_id(
-                    "incident",
-                    &[
-                        claim.claim.account.as_str(),
-                        claim.claim.source.as_str(),
-                        claim.claim.resource.as_str(),
-                    ],
-                )
-            },
-            |effect| {
-                scoped_id(
-                    "incident",
-                    &[
-                        effect.account.as_str(),
-                        effect.source.as_str(),
-                        effect.resource.as_str(),
-                    ],
-                )
-            },
-        ),
-        route: Route::Timeline,
-        detail: FindingDetail::Claim(claim),
-    }));
-    result.extend(
-        assess_notices(events, now)
+/// Engine-relevant visible events, indexed so an assessment reads only its candidates.
+/// Each index key is a necessary condition of the predicate that consumes it, so a
+/// lookup returns a superset of the matches a full scan would find. Candidates are
+/// visited in log order, which keeps tie-breaking identical to a full scan.
+#[derive(Clone, Debug, Default)]
+pub struct Evidence {
+    events: BTreeMap<i64, Event>,
+    effects: BTreeSet<(String, DateTime<Utc>, i64)>,
+    claims: BTreeSet<(String, DateTime<Utc>, i64)>,
+    resources: BTreeMap<(String, String), Vec<i64>>,
+    requests: BTreeMap<(String, String), Vec<i64>>,
+    tasks: BTreeMap<(String, String, String), Vec<i64>>,
+    feedback: BTreeMap<String, Vec<i64>>,
+    policies: BTreeMap<String, Vec<i64>>,
+    coverage: BTreeMap<CoverageKey, CoverageHistory>,
+    notices: Vec<i64>,
+    effect_findings: BTreeMap<String, i64>,
+    deadlines: BTreeSet<(DateTime<Utc>, i64)>,
+}
+
+impl Evidence {
+    /// Indexes the events visible at `now`, using slice position as log order.
+    pub fn visible(events: &[Event], now: DateTime<Utc>) -> Self {
+        let mut evidence = Self::default();
+        for (index, event) in events.iter().enumerate() {
+            if event.ingested_at <= now {
+                evidence.insert(index as i64, event.clone());
+            }
+        }
+        evidence
+    }
+
+    /// Adds one visible event. Events the engine never reads are not retained.
+    pub fn insert(&mut self, seq: i64, event: Event) {
+        if self.events.contains_key(&seq) {
+            return;
+        }
+        let account = event.key.account.clone();
+        match &event.payload {
+            EventPayload::Effect(effect)
+                if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
+            {
+                self.effects
+                    .insert((account.clone(), event.occurred_at, seq));
+                self.effect_findings
+                    .insert(effect_finding_id(&event.key), seq);
+                self.deadlines.insert((wait_from(&event) + GRACE, seq));
+                push_sorted(
+                    self.resources
+                        .entry((account, event.key.resource.clone()))
+                        .or_default(),
+                    seq,
+                );
+            }
+            EventPayload::Claim(claim) if event.key.source == Source::Messages => {
+                self.claims
+                    .insert((account.clone(), event.occurred_at, seq));
+                self.deadlines.insert((wait_from(&event) + GRACE, seq));
+                if let Some(resource) = &claim.provider_resource {
+                    push_sorted(
+                        self.resources
+                            .entry((account, resource.clone()))
+                            .or_default(),
+                        seq,
+                    );
+                }
+            }
+            EventPayload::ToolResult(tool) if event.key.source == Source::OpenClaw => {
+                if let Some(task) = &tool.task {
+                    push_sorted(
+                        self.tasks
+                            .entry((account.clone(), tool.agent.clone(), task.clone()))
+                            .or_default(),
+                        seq,
+                    );
+                }
+                if let Some(resource) = &tool.provider_resource {
+                    push_sorted(
+                        self.resources
+                            .entry((account, resource.clone()))
+                            .or_default(),
+                        seq,
+                    );
+                }
+            }
+            EventPayload::Request(request) if event.key.source == Source::Messages => {
+                push_sorted(
+                    self.requests
+                        .entry((account, request.agent.clone()))
+                        .or_default(),
+                    seq,
+                );
+            }
+            EventPayload::Notice { origin, .. }
+                if event.key.source == Source::Gmail
+                    && matches!(origin, Origin::Live | Origin::CatchUp) =>
+            {
+                push_sorted(&mut self.notices, seq);
+            }
+            _ => {
+                if let Some((value, _)) = feedback(&event) {
+                    push_sorted(self.feedback.entry(value.finding.clone()).or_default(), seq);
+                } else if policy(&event).is_some() {
+                    push_sorted(self.policies.entry(account).or_default(), seq);
+                } else if let Some((source, value, observed_at)) = coverage_value(&event) {
+                    let list = self
+                        .coverage
+                        .entry((account, source.as_str(), value.capability.clone()))
+                        .or_default();
+                    let position = list.partition_point(|item| *item < (observed_at, seq));
+                    list.insert(position, (observed_at, seq));
+                } else {
+                    return;
+                }
+            }
+        }
+        self.events.insert(seq, event);
+    }
+
+    fn get(&self, seq: i64) -> Option<&Event> {
+        self.events.get(&seq)
+    }
+
+    fn list<'a>(&'a self, seqs: Option<&'a Vec<i64>>) -> impl Iterator<Item = &'a Event> + 'a {
+        seqs.into_iter()
+            .flatten()
+            .filter_map(|seq| self.events.get(seq))
+    }
+
+    fn by_resource(&self, account: &str, resource: &str) -> Vec<(i64, &Event)> {
+        self.resources
+            .get(&(account.to_owned(), resource.to_owned()))
             .into_iter()
-            .map(|notice| Finding {
-                id: key_finding_id("notice", &notice.notice),
-                group: scoped_id(
-                    "incident",
-                    &[
-                        notice.notice.account.as_str(),
-                        notice.notice.source.as_str(),
-                        notice.notice.resource.as_str(),
-                    ],
-                ),
-                route: notice.route,
-                detail: FindingDetail::Notice(notice),
-            }),
-    );
-    let accounts: BTreeSet<_> = events
-        .iter()
-        .filter(|event| event.ingested_at <= now)
-        .map(|event| event.key.account.as_str())
-        .collect();
-    for account in accounts {
-        for evidence in coverage_for(events, account, now) {
-            let route = if evidence.state == CoverageState::Healthy {
-                Route::Timeline
-            } else {
-                Route::MediumReview
+            .flatten()
+            .filter_map(|seq| self.get(*seq).map(|event| (*seq, event)))
+            .collect()
+    }
+
+    /// Effects near a time. The extra second covers predicates that compare whole seconds.
+    fn effects_near(&self, account: &str, at: DateTime<Utc>) -> Vec<(i64, &Event)> {
+        self.near(&self.effects, account, at)
+    }
+
+    fn claims_near(&self, account: &str, at: DateTime<Utc>) -> Vec<(i64, &Event)> {
+        self.near(&self.claims, account, at)
+    }
+
+    fn near(
+        &self,
+        index: &BTreeSet<(String, DateTime<Utc>, i64)>,
+        account: &str,
+        at: DateTime<Utc>,
+    ) -> Vec<(i64, &Event)> {
+        let window = CLAIM_WINDOW + Duration::seconds(1);
+        time_range(index, account, at - window, at + window)
+            .filter_map(|seq| self.get(seq).map(|event| (seq, event)))
+            .collect()
+    }
+
+    pub fn findings(&self, now: DateTime<Utc>) -> Vec<Finding> {
+        let mut result: Vec<_> = self.assess(now).into_iter().map(effect_finding).collect();
+        result.extend(self.assess_claims(now).into_iter().map(claim_finding));
+        result.extend(self.assess_notices().into_iter().map(notice_finding));
+        let accounts: BTreeSet<_> = self.coverage.keys().map(|key| key.0.as_str()).collect();
+        for account in accounts {
+            result.extend(self.coverage_findings(account));
+        }
+        result.sort_by(|left, right| left.id.cmp(&right.id));
+        result
+    }
+
+    pub fn assess(&self, now: DateTime<Utc>) -> Vec<Assessment> {
+        let mut effects: Vec<_> = self
+            .effects
+            .iter()
+            .filter_map(|(_, _, seq)| self.get(*seq).map(|event| (*seq, event)))
+            .collect();
+        effects.sort_by(|(a_seq, a), (b_seq, b)| {
+            a.occurred_at
+                .cmp(&b.occurred_at)
+                .then_with(|| a.key.resource.cmp(&b.key.resource))
+                .then_with(|| a_seq.cmp(b_seq))
+        });
+        effects
+            .into_iter()
+            .filter_map(|(_, event)| self.assess_effect(event, now))
+            .collect()
+    }
+
+    fn assess_effect(&self, event: &Event, now: DateTime<Utc>) -> Option<Assessment> {
+        let EventPayload::Effect(effect) = &event.payload else {
+            return None;
+        };
+        let finding = effect_finding_id(&event.key);
+        let actor = self.actor_for(event, effect, &finding);
+        let policy_hits = self.policy_violations(event, effect);
+        let policy_ids = policy_hits.iter().map(|(id, _)| id.clone()).collect();
+        let request_fit = self.request_fit(event, effect, &actor);
+        let pending = now < wait_from(event) + GRACE;
+        let expected_feedback = self
+            .list(self.feedback.get(&finding))
+            .filter_map(|candidate| {
+                if candidate.key.account == event.key.account
+                    && let Some((feedback, occurred_at)) = feedback(candidate)
+                    && occurred_at >= event.occurred_at
+                    && feedback.finding == finding
+                {
+                    return Some((candidate.ingested_at, feedback.expected));
+                }
+                None
+            })
+            .max_by_key(|(at, _)| *at)
+            .and_then(|(_, value)| value);
+        let route = if expected_feedback == Some(true) {
+            Route::Timeline
+        } else if policy_hits.iter().any(|(_, high)| *high) {
+            Route::HighReview
+        } else if !policy_hits.is_empty()
+            || (!pending
+                && matches!(request_fit, RequestFit::Conflicts(_))
+                && matches!(
+                    actor,
+                    ActorEvidence::Reported(_)
+                        | ActorEvidence::RuntimeLinked(_)
+                        | ActorEvidence::UserConfirmed(_)
+                ))
+        {
+            Route::MediumReview
+        } else {
+            Route::Timeline
+        };
+        Some(Assessment {
+            finding,
+            effect: event.key.clone(),
+            actor,
+            request_fit,
+            policy_ids,
+            pending,
+            route,
+            expected_feedback,
+        })
+    }
+
+    /// A metadata notice prompts review; it does not prove a setting or payment.
+    pub fn assess_notices(&self) -> Vec<NoticeAssessment> {
+        self.list(Some(&self.notices))
+            .filter_map(notice_assessment)
+            .collect()
+    }
+
+    /// Claim checks concern observed consistency, not agent honesty.
+    pub fn assess_claims(&self, now: DateTime<Utc>) -> Vec<ClaimCheck> {
+        let mut claims: Vec<_> = self.claims.iter().map(|(_, _, seq)| *seq).collect();
+        claims.sort_unstable();
+        claims
+            .into_iter()
+            .filter_map(|seq| {
+                self.get(seq)
+                    .and_then(|report| self.claim_check(report, now))
+            })
+            .collect()
+    }
+
+    fn claim_check(&self, report: &Event, now: DateTime<Utc>) -> Option<ClaimCheck> {
+        let EventPayload::Claim(claim) = &report.payload else {
+            return None;
+        };
+        let source = claim_source(claim);
+        let account = &report.key.account;
+        let mut candidates: BTreeMap<i64, &Event> = self
+            .effects_near(account, report.occurred_at)
+            .into_iter()
+            .collect();
+        let by_resource = claim
+            .provider_resource
+            .as_ref()
+            .map(|resource| self.by_resource(account, resource))
+            .unwrap_or_default();
+        candidates.extend(by_resource.iter().copied());
+        let matched = candidates.values().find(|event| {
+            effect_on(event, &source)
+                .is_some_and(|effect| self.claim_matches(report, claim, event, effect))
+        });
+        let contradicted = claim.provider_resource.as_ref().and_then(|resource| {
+            by_resource.iter().map(|(_, event)| event).find(|event| {
+                effect_on(event, &source).is_some() && event.key.resource == *resource
+            })
+        });
+        let (status, observed_effect) = if let Some(event) = matched {
+            (ClaimStatus::Matched, Some(event.key.clone()))
+        } else if let Some(event) = contradicted {
+            (
+                ClaimStatus::ContradictedByObservedEffect,
+                Some(event.key.clone()),
+            )
+        } else if now < wait_from(report) + GRACE {
+            (ClaimStatus::Pending, None)
+        } else if self.observed_without_gap(report, &source) {
+            (ClaimStatus::NotObservedInHealthySource, None)
+        } else {
+            (ClaimStatus::CoverageIncomplete, None)
+        };
+        Some(ClaimCheck {
+            claim: report.key.clone(),
+            status,
+            observed_effect,
+        })
+    }
+
+    /// True when the source recorded no lossy coverage from the claim until its first
+    /// healthy confirmation after the deadline. Later coverage cannot change the answer.
+    fn observed_without_gap(&self, report: &Event, source: &Source) -> bool {
+        let deadline = wait_from(report) + GRACE;
+        let Some(history) = self.coverage.get(&(
+            report.key.account.clone(),
+            source.as_str(),
+            "effects".to_owned(),
+        )) else {
+            return false;
+        };
+        let start = history
+            .partition_point(|(observed_at, _)| *observed_at <= report.occurred_at)
+            .saturating_sub(1);
+        for (observed_at, seq) in &history[start..] {
+            let Some((_, coverage, _)) = self.get(*seq).and_then(coverage_value) else {
+                continue;
             };
-            let id = scoped_id(
-                "coverage",
-                &[account, evidence.source.as_str(), &evidence.capability],
-            );
-            result.push(Finding {
-                id,
-                group: scoped_id(
-                    "incident",
-                    &[account, evidence.source.as_str(), &evidence.capability],
-                ),
-                route,
-                detail: FindingDetail::Coverage(CoverageAssessment {
-                    account: account.to_owned(),
-                    evidence,
+            match coverage.state {
+                CoverageState::Healthy if *observed_at >= deadline => return true,
+                CoverageState::Healthy | CoverageState::Delayed => {}
+                CoverageState::Gap | CoverageState::Disabled => return false,
+            }
+        }
+        false
+    }
+
+    fn coverage_findings(&self, account: &str) -> Vec<Finding> {
+        self.coverage_for(account)
+            .into_iter()
+            .map(|evidence| {
+                let route = coverage_route(&evidence);
+                Finding {
+                    id: scoped_id(
+                        "coverage",
+                        &[account, evidence.source.as_str(), &evidence.capability],
+                    ),
+                    group: scoped_id(
+                        "incident",
+                        &[account, evidence.source.as_str(), &evidence.capability],
+                    ),
                     route,
-                }),
-            });
+                    detail: FindingDetail::Coverage(CoverageAssessment {
+                        account: account.to_owned(),
+                        evidence,
+                        route,
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    fn coverage_keys<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> impl Iterator<Item = (&'a CoverageKey, &'a CoverageHistory)> + 'a {
+        self.coverage
+            .range((account.to_owned(), "", String::new())..)
+            .take_while(move |(key, _)| key.0 == account)
+    }
+
+    fn coverage_for(&self, account: &str) -> Vec<CoverageEvidence> {
+        self.coverage_keys(account)
+            .filter_map(|(_, list)| list.last())
+            .filter_map(|(_, seq)| self.get(*seq))
+            .filter_map(coverage_value)
+            .map(|(source, value, observed_at)| CoverageEvidence {
+                source,
+                capability: value.capability.clone(),
+                state: value.state.clone(),
+                reason: value.reason.clone(),
+                observed_at,
+            })
+            .collect()
+    }
+
+    /// The most recently observed coverage for one source capability.
+    pub fn coverage_latest(
+        &self,
+        account: &str,
+        source: &Source,
+        capability: &str,
+    ) -> Option<(&Coverage, DateTime<Utc>)> {
+        self.coverage
+            .get(&(account.to_owned(), source.as_str(), capability.to_owned()))
+            .and_then(|list| list.last())
+            .and_then(|(_, seq)| self.get(*seq))
+            .and_then(coverage_value)
+            .map(|(_, value, observed_at)| (value, observed_at))
+    }
+
+    fn actor_for(&self, event: &Event, effect: &Effect, finding: &str) -> ActorEvidence {
+        if effect.external_change {
+            return ActorEvidence::Unknown;
+        }
+        let account = &event.key.account;
+        let mut runtime = BTreeSet::new();
+        let mut reports = BTreeSet::new();
+        let mut candidates: BTreeMap<i64, &Event> = self
+            .claims_near(account, event.occurred_at)
+            .into_iter()
+            .collect();
+        candidates.extend(self.by_resource(account, &event.key.resource));
+        for candidate in candidates.values() {
+            match &candidate.payload {
+                EventPayload::ToolResult(tool) if tool_matches(tool, event, effect) => {
+                    runtime.insert(tool.agent.clone());
+                }
+                EventPayload::Claim(claim)
+                    if self.claim_matches(candidate, claim, event, effect) =>
+                {
+                    reports.insert(claim.agent.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut confirmed = None;
+        for candidate in self.list(self.feedback.get(finding)) {
+            if candidate.key.account == *account
+                && let Some((feedback, _)) = feedback(candidate)
+                && feedback.finding == finding
+                && candidate.ingested_at >= event.ingested_at
+                && let Some(actor) = &feedback.actor
+                && confirmed
+                    .as_ref()
+                    .is_none_or(|(at, _)| candidate.ingested_at > *at)
+            {
+                confirmed = Some((candidate.ingested_at, actor.clone()));
+            }
+        }
+        if let Some((_, actor)) = confirmed {
+            return ActorEvidence::UserConfirmed(actor);
+        }
+        if runtime.len() > 1 {
+            return ActorEvidence::Conflicting(runtime.into_iter().collect());
+        }
+        if let Some(agent) = runtime.into_iter().next() {
+            return ActorEvidence::RuntimeLinked(agent);
+        }
+        if reports.len() > 1 {
+            return ActorEvidence::Conflicting(reports.into_iter().collect());
+        }
+        reports
+            .into_iter()
+            .next()
+            .map_or(ActorEvidence::Unknown, ActorEvidence::Reported)
+    }
+
+    fn claim_matches(
+        &self,
+        report: &Event,
+        claim: &crate::event::Claim,
+        event: &Event,
+        effect: &Effect,
+    ) -> bool {
+        if claim.action != effect.action
+            || !effect.targets_complete
+            || !same_targets(&claim.targets, &effect.targets)
+        {
+            return false;
+        }
+        if let Some(resource) = &claim.provider_resource {
+            return resource == &event.key.resource;
+        }
+        if (report.occurred_at - event.occurred_at).num_seconds().abs() > CLAIM_WINDOW.num_seconds()
+        {
+            return false;
+        }
+        // A report without a provider ID cannot identify one of two similar effects.
+        self.effects_near(&event.key.account, report.occurred_at)
+            .into_iter()
+            .filter(|(_, candidate)| {
+                (report.occurred_at - candidate.occurred_at)
+                    .num_seconds()
+                    .abs()
+                    <= CLAIM_WINDOW.num_seconds()
+                    && matches!(&candidate.payload, EventPayload::Effect(other)
+                        if other.action == claim.action
+                            && other.targets_complete && same_targets(&other.targets, &claim.targets))
+            })
+            .take(2)
+            .count()
+            == 1
+    }
+
+    fn policy_violations(&self, event: &Event, effect: &Effect) -> Vec<(String, bool)> {
+        let mut latest = BTreeMap::new();
+        for candidate in self.list(self.policies.get(&event.key.account)) {
+            if let Some((policy, occurred_at)) = policy(candidate) {
+                if occurred_at > event.occurred_at {
+                    continue;
+                }
+                let entry = latest.entry(&policy.id).or_insert((occurred_at, policy));
+                if occurred_at > entry.0 {
+                    *entry = (occurred_at, policy);
+                }
+            }
+        }
+        latest
+            .into_iter()
+            .filter(|(_, (_, policy))| {
+                policy.enabled
+                    && (policy.forbidden_actions.contains(&effect.action)
+                        || effect
+                            .targets
+                            .iter()
+                            .any(|target| policy.forbidden_targets.contains(target)))
+            })
+            .map(|(id, (_, policy))| (id.clone(), policy.high_consequence))
+            .collect()
+    }
+
+    fn request_fit(&self, event: &Event, effect: &Effect, actor: &ActorEvidence) -> RequestFit {
+        let agent = match actor {
+            ActorEvidence::Reported(agent) | ActorEvidence::RuntimeLinked(agent) => agent,
+            _ => return RequestFit::NotAssessed,
+        };
+        let account = &event.key.account;
+        let task_hints: BTreeSet<_> = self
+            .by_resource(account, &event.key.resource)
+            .into_iter()
+            .filter_map(|(_, candidate)| match (&actor, &candidate.payload) {
+                (ActorEvidence::RuntimeLinked(_), EventPayload::ToolResult(tool))
+                    if tool.agent == *agent && tool_matches(tool, event, effect) =>
+                {
+                    tool.task.as_ref()
+                }
+                (ActorEvidence::Reported(_), EventPayload::Claim(claim))
+                    if claim.agent == *agent
+                        && claim.provider_resource.as_deref() == Some(&event.key.resource)
+                        && claim.action == effect.action
+                        && same_targets(&claim.targets, &effect.targets) =>
+                {
+                    claim.task.as_ref()
+                }
+                _ => None,
+            })
+            .collect();
+        if task_hints.len() > 1 {
+            return RequestFit::AmbiguousTask;
+        }
+        let task_hint = task_hints.into_iter().next();
+        let candidates: Vec<_> = self
+            .list(self.requests.get(&(account.clone(), agent.clone())))
+            .filter_map(|candidate| {
+                if candidate.occurred_at > event.occurred_at {
+                    return None;
+                }
+                match &candidate.payload {
+                    EventPayload::Request(request)
+                        if task_hint.is_none_or(|task| request.task == *task) =>
+                    {
+                        Some((candidate.occurred_at, request))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        if candidates.len() > MAX_CANDIDATES {
+            return RequestFit::InsufficientEvidence;
+        }
+        let mut latest = BTreeMap::new();
+        for (at, request) in candidates {
+            let entry = latest.entry(&request.task).or_insert((at, request));
+            if at > entry.0 {
+                *entry = (at, request);
+            }
+        }
+        if task_hint.is_none() && latest.len() == 1 {
+            return RequestFit::InsufficientEvidence;
+        }
+        match latest.len() {
+            0 => RequestFit::NoObservedRequest,
+            1 => match latest.into_values().next() {
+                Some((_, request)) => {
+                    let count = task_hint.and_then(|task| {
+                        matches!(actor, ActorEvidence::RuntimeLinked(_))
+                            .then(|| self.linked_action_count(event, agent, task))
+                            .flatten()
+                    });
+                    compare_request(request, effect, count, event.occurred_at)
+                }
+                None => RequestFit::NoObservedRequest,
+            },
+            _ => RequestFit::AmbiguousTask,
         }
     }
-    result.sort_by(|left, right| left.id.cmp(&right.id));
-    result
+
+    fn linked_action_count(&self, current: &Event, agent: &str, task: &str) -> Option<u32> {
+        let account = &current.key.account;
+        let first_request = self
+            .list(self.requests.get(&(account.clone(), agent.to_owned())))
+            .filter_map(|event| match &event.payload {
+                EventPayload::Request(request)
+                    if request.task == task && event.occurred_at <= current.occurred_at =>
+                {
+                    Some(event.occurred_at)
+                }
+                _ => None,
+            })
+            .min()?;
+        let mut effects = BTreeSet::new();
+        let tools = self.list(self.tasks.get(&(
+            account.clone(),
+            agent.to_owned(),
+            task.to_owned(),
+        )));
+        for tool in tools {
+            let EventPayload::ToolResult(tool) = &tool.payload else {
+                continue;
+            };
+            let Some(resource) = &tool.provider_resource else {
+                continue;
+            };
+            for (_, event) in self.by_resource(account, resource) {
+                let EventPayload::Effect(effect) = &event.payload else {
+                    continue;
+                };
+                if event.occurred_at < first_request
+                    || event.occurred_at > current.occurred_at
+                    || effect.external_change
+                    || !tool_matches(tool, event, effect)
+                {
+                    continue;
+                }
+                effects.insert(effect_finding_id(&event.key));
+                if effects.len() > MAX_CANDIDATES {
+                    return None;
+                }
+            }
+        }
+        u32::try_from(effects.len()).ok()
+    }
+}
+
+/// The input event an assessment is about.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Subject {
+    Effect(i64),
+    Claim(i64),
+    Notice(i64),
+    Coverage(String),
+}
+
+impl Evidence {
+    /// Subjects whose assessment can change because `seq` became visible. Each rule
+    /// mirrors a lookup in the assessment code; retention housekeeping changes nothing.
+    fn affected_by(&self, seq: i64) -> BTreeSet<Subject> {
+        let mut subjects = BTreeSet::new();
+        let Some(event) = self.get(seq) else {
+            return subjects;
+        };
+        let account = &event.key.account;
+        let effects = |subjects: &mut BTreeSet<Subject>, events: Vec<(i64, &Event)>| {
+            subjects.extend(
+                events
+                    .into_iter()
+                    .filter(|(_, item)| matches!(item.payload, EventPayload::Effect(_)))
+                    .map(|(seq, _)| Subject::Effect(seq)),
+            );
+        };
+        match &event.payload {
+            EventPayload::Effect(_) => {
+                subjects.insert(Subject::Effect(seq));
+                // A report without a provider ID matches only a unique nearby effect, so a
+                // new effect can change the matches of reports and effects around it.
+                let window = CLAIM_WINDOW * 2 + Duration::seconds(2);
+                effects(
+                    &mut subjects,
+                    time_range(
+                        &self.effects,
+                        account,
+                        event.occurred_at - window,
+                        event.occurred_at + window,
+                    )
+                    .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                    .collect(),
+                );
+                subjects.extend(
+                    self.claims_near(account, event.occurred_at)
+                        .into_iter()
+                        .map(|(seq, _)| Subject::Claim(seq)),
+                );
+                for (other, item) in self.by_resource(account, &event.key.resource) {
+                    match &item.payload {
+                        EventPayload::Claim(_) => {
+                            subjects.insert(Subject::Claim(other));
+                        }
+                        EventPayload::ToolResult(tool) => {
+                            self.task_effects(&mut subjects, account, tool);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            EventPayload::Claim(claim) => {
+                subjects.insert(Subject::Claim(seq));
+                effects(&mut subjects, self.effects_near(account, event.occurred_at));
+                if let Some(resource) = &claim.provider_resource {
+                    effects(&mut subjects, self.by_resource(account, resource));
+                }
+            }
+            EventPayload::ToolResult(tool) => {
+                if let Some(resource) = &tool.provider_resource {
+                    effects(&mut subjects, self.by_resource(account, resource));
+                }
+                self.task_effects(&mut subjects, account, tool);
+            }
+            EventPayload::Request(_) | EventPayload::Policy(_) => {
+                effects(
+                    &mut subjects,
+                    time_range(
+                        &self.effects,
+                        account,
+                        event.occurred_at,
+                        DateTime::<Utc>::MAX_UTC,
+                    )
+                    .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                    .collect(),
+                );
+            }
+            EventPayload::Feedback(value) => {
+                if let Some(effect) = self.effect_findings.get(&value.finding) {
+                    subjects.insert(Subject::Effect(*effect));
+                }
+            }
+            EventPayload::Coverage(_) => {
+                subjects.insert(Subject::Coverage(account.clone()));
+                self.claims_awaiting_coverage(&mut subjects, event);
+            }
+            EventPayload::Notice { .. } => {
+                subjects.insert(Subject::Notice(seq));
+            }
+            _ => {}
+        }
+        subjects
+    }
+
+    /// Effects linked to the tool result's task, whose linked-action counts may change.
+    fn task_effects(&self, subjects: &mut BTreeSet<Subject>, account: &str, tool: &ToolResult) {
+        let Some(task) = &tool.task else {
+            return;
+        };
+        let key = (account.to_owned(), tool.agent.clone(), task.clone());
+        for linked in self.list(self.tasks.get(&key)) {
+            if let EventPayload::ToolResult(linked) = &linked.payload
+                && let Some(resource) = &linked.provider_resource
+            {
+                subjects.extend(
+                    self.by_resource(account, resource)
+                        .into_iter()
+                        .filter(|(_, item)| matches!(item.payload, EventPayload::Effect(_)))
+                        .map(|(seq, _)| Subject::Effect(seq)),
+                );
+            }
+        }
+    }
+
+    /// A claim's coverage walk ends at the first healthy confirmation after its
+    /// deadline. Claims whose deadline or report time precedes the source's latest
+    /// earlier healthy entry already ended their walk, so a new entry cannot affect them.
+    fn claims_awaiting_coverage(&self, subjects: &mut BTreeSet<Subject>, event: &Event) {
+        let Some((source, value, observed_at)) = coverage_value(event) else {
+            return;
+        };
+        let account = &event.key.account;
+        let history =
+            self.coverage
+                .get(&(account.clone(), source.as_str(), value.capability.clone()));
+        let healthy_before = history
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter(|(at, _)| *at < observed_at)
+            .filter_map(|(at, seq)| {
+                self.get(*seq)
+                    .and_then(coverage_value)
+                    .map(|item| (at, item))
+            })
+            .find(|(_, (_, coverage, _))| coverage.state == CoverageState::Healthy)
+            .map_or(DateTime::<Utc>::MIN_UTC, |(at, _)| *at);
+        let by_deadline = self
+            .deadlines
+            .range((healthy_before, i64::MAX)..)
+            .map(|(_, seq)| *seq);
+        let by_report = time_range(
+            &self.claims,
+            account,
+            healthy_before,
+            DateTime::<Utc>::MAX_UTC,
+        );
+        for seq in by_deadline.chain(by_report) {
+            if let Some(report) = self.get(seq)
+                && report.key.account == *account
+                && let EventPayload::Claim(claim) = &report.payload
+                && claim_source(claim) == source
+            {
+                subjects.insert(Subject::Claim(seq));
+            }
+        }
+    }
+
+    /// Effects and claims whose review deadline passed in `(after, until]`.
+    fn due(&self, after: DateTime<Utc>, until: DateTime<Utc>) -> BTreeSet<Subject> {
+        if until <= after {
+            return BTreeSet::new();
+        }
+        self.deadlines
+            .range((after, i64::MAX)..=(until, i64::MAX))
+            .filter_map(
+                |(_, seq)| match self.get(*seq).map(|event| &event.payload) {
+                    Some(EventPayload::Effect(_)) => Some(Subject::Effect(*seq)),
+                    Some(EventPayload::Claim(_)) => Some(Subject::Claim(*seq)),
+                    _ => None,
+                },
+            )
+            .collect()
+    }
+
+    fn assess_subject(&self, subject: &Subject, now: DateTime<Utc>) -> Vec<Finding> {
+        match subject {
+            Subject::Effect(seq) => self
+                .get(*seq)
+                .and_then(|event| self.assess_effect(event, now))
+                .map(effect_finding)
+                .into_iter()
+                .collect(),
+            Subject::Claim(seq) => self
+                .get(*seq)
+                .and_then(|report| self.claim_check(report, now))
+                .map(claim_finding)
+                .into_iter()
+                .collect(),
+            Subject::Notice(seq) => self
+                .get(*seq)
+                .and_then(notice_assessment)
+                .map(notice_finding)
+                .into_iter()
+                .collect(),
+            Subject::Coverage(account) => self.coverage_findings(account),
+        }
+    }
+
+    /// True when an open claim needs healthy evidence recorded after its deadline.
+    pub fn confirmation_due(&self, account: &str, source: &Source, now: DateTime<Utc>) -> bool {
+        let confirmed = self
+            .coverage
+            .get(&(account.to_owned(), source.as_str(), "effects".to_owned()))
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter_map(|(at, seq)| {
+                self.get(*seq)
+                    .and_then(coverage_value)
+                    .map(|item| (at, item))
+            })
+            .find(|(_, (_, coverage, _))| coverage.state == CoverageState::Healthy)
+            .map_or(DateTime::<Utc>::MIN_UTC, |(at, _)| *at);
+        if now <= confirmed {
+            return false;
+        }
+        self.deadlines
+            .range((confirmed, i64::MAX)..=(now, i64::MAX))
+            .any(|(_, seq)| {
+                self.get(*seq).is_some_and(|report| {
+                    report.key.account == account
+                        && matches!(&report.payload, EventPayload::Claim(claim)
+                            if claim_source(claim) == *source)
+                })
+            })
+    }
+}
+
+/// Incremental assessment over a growing log. Each `advance` reassesses only the
+/// subjects that new visible events or passed deadlines can change; the result equals
+/// a full replay of the same visible events at the same time.
+#[derive(Clone, Debug, Default)]
+pub struct Assessor {
+    evidence: Evidence,
+    waiting: BTreeMap<i64, Event>,
+    arrivals: Vec<i64>,
+    clock: Option<DateTime<Utc>>,
+}
+
+impl Assessor {
+    /// Resumes from durable state: events through `assessed_through` were already
+    /// assessed at `clock`. Without a clock, the next advance reassesses everything.
+    pub fn resume(
+        events: impl IntoIterator<Item = (i64, Event)>,
+        assessed_through: i64,
+        clock: Option<DateTime<Utc>>,
+    ) -> Self {
+        let mut assessor = Self {
+            clock,
+            ..Self::default()
+        };
+        for (seq, event) in events {
+            if seq <= assessed_through && clock.is_some_and(|clock| event.ingested_at <= clock) {
+                assessor.evidence.insert(seq, event);
+            } else {
+                assessor.waiting.insert(seq, event);
+            }
+        }
+        assessor
+    }
+
+    pub fn evidence(&self) -> &Evidence {
+        &self.evidence
+    }
+
+    /// Records a newly committed event; it is assessed once visible.
+    pub fn observe(&mut self, seq: i64, event: Event, now: DateTime<Utc>) {
+        if event.ingested_at <= now {
+            self.evidence.insert(seq, event);
+            self.arrivals.push(seq);
+        } else {
+            self.waiting.insert(seq, event);
+        }
+    }
+
+    /// Returns the current findings for every subject that may have changed.
+    pub fn advance(&mut self, now: DateTime<Utc>) -> Vec<Finding> {
+        let visible: Vec<_> = self
+            .waiting
+            .iter()
+            .filter(|(_, event)| event.ingested_at <= now)
+            .map(|(seq, _)| *seq)
+            .collect();
+        for seq in visible {
+            if let Some(event) = self.waiting.remove(&seq) {
+                self.evidence.insert(seq, event);
+                self.arrivals.push(seq);
+            }
+        }
+        let arrivals = std::mem::take(&mut self.arrivals);
+        let Some(clock) = self.clock else {
+            self.clock = Some(now);
+            return self.evidence.findings(now);
+        };
+        let mut subjects = self.evidence.due(clock, now);
+        for seq in arrivals {
+            subjects.extend(self.evidence.affected_by(seq));
+        }
+        self.clock = Some(clock.max(now));
+        let mut result: Vec<_> = subjects
+            .iter()
+            .flat_map(|subject| self.evidence.assess_subject(subject, now))
+            .collect();
+        result.sort_by(|left, right| left.id.cmp(&right.id));
+        result
+    }
+}
+
+pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
+    Evidence::visible(events, now).findings(now)
 }
 
 /// Replaying the same retained input at the same clock time gives the same result.
 /// Retention may remove earlier requests or policy history, so callers must show its horizon.
 pub fn assess(events: &[Event], now: DateTime<Utc>) -> Vec<Assessment> {
-    let visible: Vec<_> = events
-        .iter()
-        .filter(|event| event.ingested_at <= now)
-        .cloned()
-        .collect();
-    let events = visible.as_slice();
-    let mut effects: Vec<_> = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::Effect(effect)
-                if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
-            {
-                Some((event, effect))
-            }
-            _ => None,
-        })
-        .collect();
-    effects.sort_by(|(a, _), (b, _)| {
-        a.occurred_at
-            .cmp(&b.occurred_at)
-            .then_with(|| a.key.resource.cmp(&b.key.resource))
-    });
-    effects
-        .into_iter()
-        .map(|(event, effect)| assess_one(events, event, effect, now))
-        .collect()
-}
-
-fn assess_one(events: &[Event], event: &Event, effect: &Effect, now: DateTime<Utc>) -> Assessment {
-    let finding = finding_id(&event.key);
-    let actor = actor_for(events, event, effect, &finding);
-    let policy_hits = policy_violations(events, event, effect);
-    let policy_ids = policy_hits.iter().map(|(id, _)| id.clone()).collect();
-    let request_fit = request_fit(events, event, effect, &actor);
-    let coverage = coverage_for(events, &event.key.account, now);
-    let pending = now < wait_from(event) + GRACE;
-    let expected_feedback = events
-        .iter()
-        .filter_map(|candidate| {
-            if candidate.key.account == event.key.account
-                && let Some((feedback, occurred_at)) = feedback(candidate)
-                && occurred_at >= event.occurred_at
-                && feedback.finding == finding
-            {
-                return Some((candidate.ingested_at, feedback.expected));
-            }
-            None
-        })
-        .max_by_key(|(at, _)| *at)
-        .and_then(|(_, value)| value);
-    let route = if expected_feedback == Some(true) {
-        Route::Timeline
-    } else if policy_hits.iter().any(|(_, high)| *high) {
-        Route::HighReview
-    } else if !policy_hits.is_empty()
-        || (!pending
-            && matches!(request_fit, RequestFit::Conflicts(_))
-            && matches!(
-                actor,
-                ActorEvidence::Reported(_)
-                    | ActorEvidence::RuntimeLinked(_)
-                    | ActorEvidence::UserConfirmed(_)
-            ))
-    {
-        Route::MediumReview
-    } else {
-        Route::Timeline
-    };
-    Assessment {
-        finding,
-        effect: event.key.clone(),
-        actor,
-        request_fit,
-        policy_ids,
-        pending,
-        route,
-        expected_feedback,
-        coverage,
-    }
+    Evidence::visible(events, now).assess(now)
 }
 
 /// A metadata notice prompts review; it does not prove a setting or payment.
 pub fn assess_notices(events: &[Event], now: DateTime<Utc>) -> Vec<NoticeAssessment> {
-    events
-        .iter()
-        .filter_map(|event| {
-            if event.key.source != Source::Gmail || event.ingested_at > now {
-                return None;
-            }
-            if let EventPayload::Notice { kind, origin } = &event.payload
-                && matches!(origin, Origin::Live | Origin::CatchUp)
-            {
-                Some(NoticeAssessment {
-                    notice: event.key.clone(),
-                    kind: kind.clone(),
-                    route: if *kind == NoticeKind::Otp {
-                        Route::Timeline
-                    } else {
-                        Route::MediumReview
-                    },
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
+    Evidence::visible(events, now).assess_notices()
 }
 
 /// Claim checks concern observed consistency, not agent honesty.
 pub fn assess_claims(events: &[Event], now: DateTime<Utc>) -> Vec<ClaimCheck> {
-    let visible: Vec<_> = events
-        .iter()
-        .filter(|event| event.ingested_at <= now)
-        .cloned()
+    Evidence::visible(events, now).assess_claims(now)
+}
+
+fn effect_finding(assessment: Assessment) -> Finding {
+    Finding {
+        id: assessment.finding.clone(),
+        group: scoped_id(
+            "incident",
+            &[
+                assessment.effect.account.as_str(),
+                assessment.effect.source.as_str(),
+                assessment.effect.resource.as_str(),
+            ],
+        ),
+        route: assessment.route,
+        detail: FindingDetail::Effect(assessment),
+    }
+}
+
+fn claim_finding(claim: ClaimCheck) -> Finding {
+    let subject = claim.observed_effect.as_ref().unwrap_or(&claim.claim);
+    Finding {
+        id: key_finding_id("claim", &claim.claim),
+        group: scoped_id(
+            "incident",
+            &[
+                subject.account.as_str(),
+                subject.source.as_str(),
+                subject.resource.as_str(),
+            ],
+        ),
+        route: Route::Timeline,
+        detail: FindingDetail::Claim(claim),
+    }
+}
+
+fn notice_finding(notice: NoticeAssessment) -> Finding {
+    Finding {
+        id: key_finding_id("notice", &notice.notice),
+        group: scoped_id(
+            "incident",
+            &[
+                notice.notice.account.as_str(),
+                notice.notice.source.as_str(),
+                notice.notice.resource.as_str(),
+            ],
+        ),
+        route: notice.route,
+        detail: FindingDetail::Notice(notice),
+    }
+}
+
+fn notice_assessment(event: &Event) -> Option<NoticeAssessment> {
+    let EventPayload::Notice { kind, .. } = &event.payload else {
+        return None;
+    };
+    Some(NoticeAssessment {
+        notice: event.key.clone(),
+        kind: kind.clone(),
+        route: if *kind == NoticeKind::Otp {
+            Route::Timeline
+        } else {
+            Route::MediumReview
+        },
+    })
+}
+
+/// Lost data and states that need the user alert; a delay that catch-up repairs does not.
+fn coverage_route(evidence: &CoverageEvidence) -> Route {
+    match (&evidence.state, &evidence.reason) {
+        (CoverageState::Healthy, _) => Route::Timeline,
+        (CoverageState::Delayed, Some(CoverageReason::AuthUnavailable)) => Route::MediumReview,
+        (CoverageState::Delayed, _) => Route::Timeline,
+        (CoverageState::Gap | CoverageState::Disabled, _) => Route::MediumReview,
+    }
+}
+
+/// The account source a claimed action would change.
+fn claim_source(claim: &crate::event::Claim) -> Source {
+    if claim.action == Action::EmailSend {
+        Source::Gmail
+    } else {
+        Source::Calendar
+    }
+}
+
+fn effect_on<'e>(event: &'e Event, source: &Source) -> Option<&'e Effect> {
+    match &event.payload {
+        EventPayload::Effect(effect) if event.key.source == *source => Some(effect),
+        _ => None,
+    }
+}
+
+fn push_sorted(list: &mut Vec<i64>, seq: i64) {
+    let position = list.partition_point(|item| *item < seq);
+    if list.get(position) != Some(&seq) {
+        list.insert(position, seq);
+    }
+}
+
+/// Sequences of one account's entries whose time falls in the inclusive range, in log order.
+fn time_range(
+    index: &BTreeSet<(String, DateTime<Utc>, i64)>,
+    account: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> impl Iterator<Item = i64> {
+    let mut seqs: Vec<_> = index
+        .range((account.to_owned(), from, i64::MIN)..=(account.to_owned(), to, i64::MAX))
+        .map(|(_, _, seq)| *seq)
         .collect();
-    let events = visible.as_slice();
-    events
-        .iter()
-        .filter_map(|report| {
-            let EventPayload::Claim(claim) = &report.payload else {
-                return None;
-            };
-            if report.key.source != Source::Messages {
-                return None;
-            }
-            let source = if claim.action == Action::EmailSend {
-                Source::Gmail
-            } else {
-                Source::Calendar
-            };
-            let related: Vec<_> = events
-                .iter()
-                .filter_map(|event| {
-                    if event.key.account != report.key.account || event.key.source != source {
-                        return None;
-                    }
-                    match &event.payload {
-                        EventPayload::Effect(effect)
-                            if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
-                        {
-                            Some((event, effect))
-                        }
-                        _ => None,
-                    }
-                })
-                .collect();
-            let matched = related
-                .iter()
-                .find(|(event, effect)| claim_matches(events, report, claim, event, effect));
-            let contradicted = claim.provider_resource.as_ref().and_then(|resource| {
-                related
-                    .iter()
-                    .find(|(event, _)| event.key.resource == *resource)
-            });
-            let (status, observed_effect) = if let Some((event, _)) = matched {
-                (ClaimStatus::Matched, Some(event.key.clone()))
-            } else if let Some((event, _)) = contradicted {
-                (
-                    ClaimStatus::ContradictedByObservedEffect,
-                    Some(event.key.clone()),
-                )
-            } else if now < wait_from(report) + GRACE {
-                (ClaimStatus::Pending, None)
-            } else if coverage_state(events, &report.key.account, &source, "effects", now)
-                .is_some_and(|coverage| {
-                    coverage.state == CoverageState::Healthy
-                        && coverage.observed_at >= wait_from(report) + GRACE
-                })
-            {
-                (ClaimStatus::NotObservedInHealthySource, None)
-            } else {
-                (ClaimStatus::CoverageIncomplete, None)
-            };
-            Some(ClaimCheck {
-                claim: report.key.clone(),
-                status,
-                observed_effect,
-            })
-        })
-        .collect()
+    seqs.sort_unstable();
+    seqs.into_iter()
 }
 
 fn wait_from(event: &Event) -> DateTime<Utc> {
@@ -408,41 +1226,6 @@ fn wait_from(event: &Event) -> DateTime<Utc> {
     } else {
         event.ingested_at.max(event.occurred_at)
     }
-}
-
-fn coverage_for(events: &[Event], account: &str, now: DateTime<Utc>) -> Vec<CoverageEvidence> {
-    let mut latest = BTreeMap::new();
-    for event in events {
-        if event.key.account != account || event.ingested_at > now {
-            continue;
-        }
-        if let Some((source, value, observed_at)) = coverage_value(event) {
-            let key = (source.as_str(), value.capability.as_str());
-            let evidence = CoverageEvidence {
-                source,
-                capability: value.capability.clone(),
-                state: value.state.clone(),
-                observed_at,
-            };
-            let entry = latest.entry(key).or_insert_with(|| evidence.clone());
-            if observed_at >= entry.observed_at {
-                *entry = evidence;
-            }
-        }
-    }
-    latest.into_values().collect()
-}
-
-fn coverage_state(
-    events: &[Event],
-    account: &str,
-    source: &Source,
-    capability: &str,
-    now: DateTime<Utc>,
-) -> Option<CoverageEvidence> {
-    coverage_for(events, account, now)
-        .into_iter()
-        .find(|value| value.source == *source && value.capability == capability)
 }
 
 fn coverage_value(event: &Event) -> Option<(Source, &Coverage, DateTime<Utc>)> {
@@ -463,61 +1246,6 @@ fn coverage_value(event: &Event) -> Option<(Source, &Coverage, DateTime<Utc>)> {
     }
 }
 
-fn actor_for(events: &[Event], event: &Event, effect: &Effect, finding: &str) -> ActorEvidence {
-    if effect.external_change {
-        return ActorEvidence::Unknown;
-    }
-    let mut runtime = BTreeSet::new();
-    let mut reports = BTreeSet::new();
-    let mut confirmed = None;
-    for candidate in events
-        .iter()
-        .filter(|item| item.key.account == event.key.account)
-    {
-        match &candidate.payload {
-            EventPayload::ToolResult(tool)
-                if candidate.key.source == Source::OpenClaw
-                    && tool_matches(tool, event, effect) =>
-            {
-                runtime.insert(tool.agent.clone());
-            }
-            EventPayload::Claim(claim)
-                if candidate.key.source == Source::Messages
-                    && claim_matches(events, candidate, claim, event, effect) =>
-            {
-                reports.insert(claim.agent.clone());
-            }
-            _ => {}
-        }
-        if let Some((feedback, _)) = feedback(candidate)
-            && feedback.finding == finding
-            && candidate.ingested_at >= event.ingested_at
-            && let Some(actor) = &feedback.actor
-            && confirmed
-                .as_ref()
-                .is_none_or(|(at, _)| candidate.ingested_at > *at)
-        {
-            confirmed = Some((candidate.ingested_at, actor.clone()));
-        }
-    }
-    if let Some((_, actor)) = confirmed {
-        return ActorEvidence::UserConfirmed(actor);
-    }
-    if runtime.len() > 1 {
-        return ActorEvidence::Conflicting(runtime.into_iter().collect());
-    }
-    if let Some(agent) = runtime.into_iter().next() {
-        return ActorEvidence::RuntimeLinked(agent);
-    }
-    if reports.len() > 1 {
-        return ActorEvidence::Conflicting(reports.into_iter().collect());
-    }
-    reports
-        .into_iter()
-        .next()
-        .map_or(ActorEvidence::Unknown, ActorEvidence::Reported)
-}
-
 fn tool_matches(tool: &ToolResult, event: &Event, effect: &Effect) -> bool {
     tool.outcome == ToolOutcome::Succeeded
         && tool.provider_resource.as_deref() == Some(event.key.resource.as_str())
@@ -527,73 +1255,6 @@ fn tool_matches(tool: &ToolResult, event: &Event, effect: &Effect) -> bool {
         && same_targets(&tool.targets, &effect.targets)
         && (effect.action != Action::CalendarUpdate
             || tool.provider_revision.as_deref() == Some(event.key.revision.as_str()))
-}
-
-fn claim_matches(
-    events: &[Event],
-    report: &Event,
-    claim: &crate::event::Claim,
-    event: &Event,
-    effect: &Effect,
-) -> bool {
-    if claim.action != effect.action
-        || !effect.targets_complete
-        || !same_targets(&claim.targets, &effect.targets)
-    {
-        return false;
-    }
-    if let Some(resource) = &claim.provider_resource {
-        return resource == &event.key.resource;
-    }
-    if (report.occurred_at - event.occurred_at).num_seconds().abs() > CLAIM_WINDOW.num_seconds() {
-        return false;
-    }
-    // A report without a provider ID cannot identify one of two similar effects.
-    events
-        .iter()
-        .filter(|candidate| {
-            candidate.key.account == event.key.account
-                && (report.occurred_at - candidate.occurred_at)
-                    .num_seconds()
-                    .abs()
-                    <= CLAIM_WINDOW.num_seconds()
-                && matches!(&candidate.payload, EventPayload::Effect(other)
-                    if matches!(other.origin, Origin::Live | Origin::CatchUp) && other.action == claim.action
-                        && other.targets_complete && same_targets(&other.targets, &claim.targets))
-        })
-        .take(2)
-        .count()
-        == 1
-}
-
-fn policy_violations(events: &[Event], event: &Event, effect: &Effect) -> Vec<(String, bool)> {
-    let mut latest = BTreeMap::new();
-    for candidate in events {
-        if candidate.key.account != event.key.account {
-            continue;
-        }
-        if let Some((policy, occurred_at)) = policy(candidate) {
-            if occurred_at > event.occurred_at {
-                continue;
-            }
-            let entry = latest.entry(&policy.id).or_insert((occurred_at, policy));
-            if occurred_at > entry.0 {
-                *entry = (occurred_at, policy);
-            }
-        }
-    }
-    latest
-        .into_iter()
-        .filter(|(_, (_, policy))| {
-            policy.enabled
-                && (policy.forbidden_actions.contains(&effect.action)
-                    || effect
-                        .targets
-                        .iter()
-                        .any(|target| policy.forbidden_targets.contains(target)))
-        })
-        .map(|(id, (_, policy))| (id.clone(), policy.high_consequence))
-        .collect()
 }
 
 fn feedback(event: &Event) -> Option<(&Feedback, DateTime<Utc>)> {
@@ -629,97 +1290,6 @@ fn policy(event: &Event) -> Option<(&AccountPolicy, DateTime<Utc>)> {
             }
         }
         _ => None,
-    }
-}
-
-fn request_fit(
-    events: &[Event],
-    event: &Event,
-    effect: &Effect,
-    actor: &ActorEvidence,
-) -> RequestFit {
-    let agent = match actor {
-        ActorEvidence::Reported(agent) | ActorEvidence::RuntimeLinked(agent) => agent,
-        _ => return RequestFit::NotAssessed,
-    };
-    let task_hints: BTreeSet<_> = events
-        .iter()
-        .filter_map(|candidate| {
-            if candidate.key.account != event.key.account {
-                return None;
-            }
-            match (&actor, &candidate.payload) {
-                (ActorEvidence::RuntimeLinked(_), EventPayload::ToolResult(tool))
-                    if candidate.key.source == Source::OpenClaw
-                        && tool.agent == *agent
-                        && tool_matches(tool, event, effect) =>
-                {
-                    tool.task.as_ref()
-                }
-                (ActorEvidence::Reported(_), EventPayload::Claim(claim))
-                    if candidate.key.source == Source::Messages
-                        && claim.agent == *agent
-                        && claim.provider_resource.as_deref() == Some(&event.key.resource)
-                        && claim.action == effect.action
-                        && same_targets(&claim.targets, &effect.targets) =>
-                {
-                    claim.task.as_ref()
-                }
-                _ => None,
-            }
-        })
-        .collect();
-    if task_hints.len() > 1 {
-        return RequestFit::AmbiguousTask;
-    }
-    let task_hint = task_hints.into_iter().next();
-    let candidates: Vec<_> = events
-        .iter()
-        .filter_map(|candidate| {
-            if candidate.key.account != event.key.account
-                || candidate.key.source != Source::Messages
-                || candidate.occurred_at > event.occurred_at
-            {
-                return None;
-            }
-            match &candidate.payload {
-                EventPayload::Request(request)
-                    if request.agent == *agent
-                        && task_hint.is_none_or(|task| request.task == *task) =>
-                {
-                    Some((candidate.occurred_at, request))
-                }
-                _ => None,
-            }
-        })
-        .collect();
-    if candidates.len() > MAX_CANDIDATES {
-        return RequestFit::InsufficientEvidence;
-    }
-    let mut latest = BTreeMap::new();
-    for (at, request) in candidates {
-        let entry = latest.entry(&request.task).or_insert((at, request));
-        if at > entry.0 {
-            *entry = (at, request);
-        }
-    }
-    if task_hint.is_none() && latest.len() == 1 {
-        return RequestFit::InsufficientEvidence;
-    }
-    match latest.len() {
-        0 => RequestFit::NoObservedRequest,
-        1 => match latest.into_values().next() {
-            Some((_, request)) => {
-                let count = task_hint.and_then(|task| {
-                    matches!(actor, ActorEvidence::RuntimeLinked(_))
-                        .then(|| linked_action_count(events, event, agent, task))
-                        .flatten()
-                });
-                compare_request(request, effect, count, event.occurred_at)
-            }
-            None => RequestFit::NoObservedRequest,
-        },
-        _ => RequestFit::AmbiguousTask,
     }
 }
 
@@ -789,59 +1359,14 @@ fn compare_request(
     RequestFit::ConsistentWithVisibleRequest
 }
 
-fn linked_action_count(events: &[Event], current: &Event, agent: &str, task: &str) -> Option<u32> {
-    let first_request = events
-        .iter()
-        .filter_map(|event| {
-            if event.key.account == current.key.account
-                && event.key.source == Source::Messages
-                && let EventPayload::Request(request) = &event.payload
-                && request.agent == agent
-                && request.task == task
-                && event.occurred_at <= current.occurred_at
-            {
-                return Some(event.occurred_at);
-            }
-            None
-        })
-        .min()?;
-    let mut effects = BTreeSet::new();
-    for event in events {
-        if event.key.account != current.key.account
-            || event.occurred_at < first_request
-            || event.occurred_at > current.occurred_at
-        {
-            continue;
-        }
-        let EventPayload::Effect(effect) = &event.payload else {
-            continue;
-        };
-        if !matches!(effect.origin, Origin::Live | Origin::CatchUp) || effect.external_change {
-            continue;
-        }
-        if events.iter().any(|candidate| {
-            candidate.key.account == current.key.account
-                && candidate.key.source == Source::OpenClaw
-                && matches!(&candidate.payload, EventPayload::ToolResult(tool)
-                    if tool.agent == agent && tool.task.as_deref() == Some(task)
-                        && tool_matches(tool, event, effect))
-        }) {
-            effects.insert(finding_id(&event.key));
-            if effects.len() > MAX_CANDIDATES {
-                return None;
-            }
-        }
-    }
-    u32::try_from(effects.len()).ok()
-}
-
 fn same_targets(left: &[String], right: &[String]) -> bool {
     !left.is_empty()
         && left.len() == right.len()
         && left.iter().collect::<BTreeSet<_>>() == right.iter().collect::<BTreeSet<_>>()
 }
 
-fn finding_id(key: &EventKey) -> String {
+/// The stable finding identity for an observed effect, used by feedback.
+pub fn effect_finding_id(key: &EventKey) -> String {
     key_finding_id("effect", key)
 }
 
@@ -1378,6 +1903,96 @@ mod tests {
         );
     }
 
+    fn coverage(minute: i64, state: CoverageState, reason: Option<CoverageReason>) -> Event {
+        event(
+            Source::Gmail,
+            &format!("coverage-{minute}"),
+            minute,
+            EventPayload::Coverage(Coverage {
+                capability: "effects".into(),
+                state,
+                cursor: None,
+                gap_since: None,
+                reason,
+                partial_pages: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn claim_decision_is_anchored_to_its_deadline_and_later_coverage_cannot_undo_it() {
+        let claim = event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec!["a@example.test".into()],
+                provider_resource: None,
+            }),
+        );
+        let status = |inputs: &[Event]| assess_claims(inputs, time(60))[0].status;
+        let healthy = coverage(18, CoverageState::Healthy, None);
+        let later_gap = coverage(30, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[claim.clone(), healthy.clone(), later_gap]),
+            ClaimStatus::NotObservedInHealthySource
+        );
+        let gap_between = coverage(13, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[claim.clone(), gap_between, healthy.clone()]),
+            ClaimStatus::CoverageIncomplete
+        );
+        let delay_between = coverage(13, CoverageState::Delayed, None);
+        assert_eq!(
+            status(&[claim.clone(), delay_between, healthy.clone()]),
+            ClaimStatus::NotObservedInHealthySource
+        );
+        let gap_before = coverage(5, CoverageState::Gap, None);
+        assert_eq!(
+            status(&[gap_before, claim, healthy]),
+            ClaimStatus::CoverageIncomplete
+        );
+    }
+
+    #[test]
+    fn coverage_changes_do_not_revise_effect_verdicts_and_delays_do_not_alert() {
+        let effect_finding = |inputs: &[Event]| {
+            findings(inputs, time(60))
+                .into_iter()
+                .find(|finding| matches!(finding.detail, FindingDetail::Effect(_)))
+        };
+        let quiet = effect_finding(&[effect()]);
+        let busy = effect_finding(&[
+            effect(),
+            coverage(12, CoverageState::Healthy, None),
+            coverage(14, CoverageState::Gap, None),
+            coverage(16, CoverageState::Healthy, None),
+        ]);
+        assert!(quiet.is_some());
+        assert_eq!(quiet, busy);
+        let route = |state, reason| {
+            findings(&[coverage(12, state, reason)], time(60))
+                .into_iter()
+                .map(|finding| finding.route)
+                .next()
+        };
+        assert_eq!(
+            route(CoverageState::Delayed, Some(CoverageReason::RequestFailed)),
+            Some(Route::Timeline)
+        );
+        assert_eq!(
+            route(
+                CoverageState::Delayed,
+                Some(CoverageReason::AuthUnavailable)
+            ),
+            Some(Route::MediumReview)
+        );
+        assert_eq!(route(CoverageState::Gap, None), Some(Route::MediumReview));
+    }
+
     #[test]
     fn coverage_gap_survives_as_evidence_and_notice_is_only_a_review_prompt() {
         let gap = event(
@@ -1393,9 +2008,19 @@ mod tests {
                 partial_pages: None,
             }),
         );
-        let result = one(&[effect(), gap]);
-        assert_eq!(result.coverage.len(), 1);
-        assert_eq!(result.coverage[0].state, CoverageState::Gap);
+        let inputs = [effect(), gap];
+        let found = findings(&inputs, time(20));
+        let coverage: Vec<_> = found
+            .iter()
+            .filter_map(|finding| match &finding.detail {
+                FindingDetail::Coverage(value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].evidence.state, CoverageState::Gap);
+        assert_eq!(coverage[0].route, Route::MediumReview);
+        assert_eq!(one(&inputs).route, Route::Timeline);
         let notice = event(
             Source::Gmail,
             "notice-1",

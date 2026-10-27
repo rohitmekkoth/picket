@@ -7,12 +7,12 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    engine::{self, Finding, FindingDetail, Route},
-    event::{Event, canonical_json},
+    engine::{Finding, FindingDetail, Route},
+    event::canonical_json,
     store::Result,
 };
 
-const ENGINE_VERSION: i64 = 1;
+pub(crate) const ENGINE_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OutboxKind {
@@ -45,19 +45,23 @@ impl Deref for OutboxBatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReconcileSummary {
     pub through_sequence: i64,
+    /// Findings evaluated in this write; bounded by what the new input can affect.
+    pub assessed: usize,
     pub revised: usize,
     pub queued: usize,
 }
 
-pub(crate) fn reconcile(
+/// Stores changed findings and their notification intent with the engine position.
+pub(crate) fn persist(
     tx: &Transaction<'_>,
-    events: &[Event],
+    findings: Vec<Finding>,
     now: DateTime<Utc>,
     through_sequence: i64,
 ) -> Result<ReconcileSummary> {
+    let assessed = findings.len();
     let mut revised = 0;
     let mut queued = 0;
-    for finding in engine::findings(events, now) {
+    for finding in findings {
         let previous: Option<(i64, Vec<u8>)> = tx
             .query_row(
                 "SELECT revisions.revision, revisions.payload FROM assessment_current AS current
@@ -140,14 +144,85 @@ pub(crate) fn reconcile(
         }
     }
     tx.execute(
-        "UPDATE engine_state SET through_sequence=?1,engine_version=?2 WHERE id=1",
-        params![through_sequence, ENGINE_VERSION],
+        "UPDATE engine_state SET through_sequence=?1,engine_version=?2,clock=?3 WHERE id=1",
+        params![through_sequence, ENGINE_VERSION, now.to_rfc3339()],
     )?;
     Ok(ReconcileSummary {
         through_sequence,
+        assessed,
         revised,
         queued,
     })
+}
+
+/// Applies log retention to derived data. Findings about pruned events go with
+/// them; superseded revisions older than the cutoff go unless a pending notification
+/// still needs them. Beyond the horizon Picket keeps no history, including deliveries.
+pub(crate) fn prune(tx: &Transaction<'_>, cutoff: DateTime<Utc>) -> Result<usize> {
+    let mut orphaned = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT revisions.payload FROM assessment_current AS current
+             JOIN assessment_revisions AS revisions
+               ON revisions.finding=current.finding AND revisions.revision=current.revision",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let finding: Finding = serde_json::from_slice(&row.get::<_, Vec<u8>>(0)?)?;
+            let subject = match &finding.detail {
+                FindingDetail::Effect(value) => Some((&value.effect, "effect")),
+                FindingDetail::Claim(value) => Some((&value.claim, "claim")),
+                FindingDetail::Notice(value) => Some((&value.notice, "notice")),
+                FindingDetail::Coverage(_) => None,
+            };
+            if let Some((key, kind)) = subject {
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM events WHERE account=?1 AND source=?2
+                       AND resource=?3 AND revision=?4 AND kind=?5)",
+                    params![
+                        key.account,
+                        key.source.as_str(),
+                        key.resource,
+                        key.revision,
+                        kind
+                    ],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    orphaned.push(finding.id);
+                }
+            }
+        }
+    }
+    for finding in &orphaned {
+        tx.execute(
+            "DELETE FROM notification_outbox WHERE finding=?1",
+            [finding],
+        )?;
+        tx.execute("DELETE FROM assessment_current WHERE finding=?1", [finding])?;
+        tx.execute(
+            "DELETE FROM assessment_revisions WHERE finding=?1",
+            [finding],
+        )?;
+    }
+    let cutoff = cutoff.to_rfc3339();
+    tx.execute(
+        "DELETE FROM notification_outbox AS outbox
+         WHERE state!='pending' AND created_at<?1
+           AND NOT EXISTS (SELECT 1 FROM assessment_current AS current
+             WHERE current.finding=outbox.finding AND current.revision=outbox.revision)",
+        [&cutoff],
+    )?;
+    tx.execute(
+        "DELETE FROM assessment_revisions AS revisions
+         WHERE assessed_at<?1
+           AND NOT EXISTS (SELECT 1 FROM assessment_current AS current
+             WHERE current.finding=revisions.finding AND current.revision=revisions.revision)
+           AND NOT EXISTS (SELECT 1 FROM notification_outbox AS outbox
+             WHERE outbox.finding=revisions.finding AND outbox.revision=revisions.revision)",
+        [&cutoff],
+    )?;
+    Ok(orphaned.len())
 }
 
 fn ready_for_alert(finding: &Finding) -> bool {

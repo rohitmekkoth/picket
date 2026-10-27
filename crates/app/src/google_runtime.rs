@@ -8,7 +8,10 @@ use std::{
 };
 
 use chrono::{Duration as ChronoDuration, Utc};
-use picket_core::{event::Source, store::Store};
+use picket_core::{
+    event::{CoverageReason, Source},
+    store::Store,
+};
 use tauri::Manager;
 
 use crate::{
@@ -85,6 +88,10 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
             next_calendar = Instant::now();
             next_window = Instant::now() + Duration::from_secs(24 * 60 * 60);
         }
+        // Deadlines pass without new input; the store writes only when a finding changes.
+        if store.reconcile(Utc::now()).is_err() {
+            tracing::warn!("assessment tick failed");
+        }
         if Instant::now() < next_gmail
             && Instant::now() < next_calendar
             && (!calendar_healthy || Instant::now() < next_window)
@@ -95,12 +102,18 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         }
         if let Err(error) = google_auth::refresh(&mut session) {
             tracing::warn!(%error, "Google authorization unavailable");
+            let reason = if matches!(error, google_auth::AuthError::Network) {
+                CoverageReason::RequestFailed
+            } else {
+                CoverageReason::AuthUnavailable
+            };
             let now = Utc::now();
             for source in [Source::Gmail, Source::Calendar] {
                 let _ = google_collector::record_failure(
                     &mut store,
                     &session.credentials.account_id,
                     source,
+                    reason.clone(),
                     now,
                 );
             }
@@ -113,61 +126,29 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         }
         let now = Utc::now();
         if Instant::now() >= next_gmail {
-            let mut retry_seconds = 10;
-            gmail_healthy = match google_collector::poll_gmail(
+            let result = google_collector::poll_gmail(
                 &http,
                 &mut store,
                 &session.credentials.account_id,
                 &session.credentials.account_email,
                 &session.access_token,
                 now,
-            ) {
-                Ok(()) => true,
-                Err(error) => {
-                    if matches!(
-                        &error,
-                        google_collector::CollectorError::Http {
-                            source: HttpError::RateLimited,
-                            ..
-                        }
-                    ) {
-                        retry_seconds = 60;
-                    }
-                    tracing::warn!(%error, "Gmail collection degraded");
-                    let _ = google_collector::record_failure(
-                        &mut store,
-                        &session.credentials.account_id,
-                        Source::Gmail,
-                        now,
-                    );
-                    false
-                }
-            };
-            next_gmail = Instant::now()
-                + Duration::from_secs(if gmail_healthy { 45 } else { retry_seconds });
+            );
+            gmail_healthy = result.is_ok();
+            next_gmail =
+                Instant::now() + after_poll(&mut store, &session, Source::Gmail, result, 45);
         }
         if Instant::now() >= next_calendar {
-            calendar_healthy = match google_collector::poll_calendar(
+            let result = google_collector::poll_calendar(
                 &http,
                 &mut store,
                 &session.credentials.account_id,
                 &session.access_token,
                 now,
-            ) {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(%error, "Calendar collection degraded");
-                    let _ = google_collector::record_failure(
-                        &mut store,
-                        &session.credentials.account_id,
-                        Source::Calendar,
-                        now,
-                    );
-                    false
-                }
-            };
+            );
+            calendar_healthy = result.is_ok();
             next_calendar =
-                Instant::now() + Duration::from_secs(if calendar_healthy { 60 } else { 10 });
+                Instant::now() + after_poll(&mut store, &session, Source::Calendar, result, 60);
         }
         if calendar_healthy && Instant::now() >= next_window {
             if let Err(error) = google_collector::refresh_calendar_window(
@@ -178,13 +159,6 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
                 now,
             ) {
                 tracing::warn!(%error, "Calendar window refresh degraded");
-                let _ = google_collector::record_failure(
-                    &mut store,
-                    &session.credentials.account_id,
-                    Source::Calendar,
-                    now,
-                );
-                calendar_healthy = false;
                 window_healthy = false;
                 next_window = Instant::now() + Duration::from_secs(10 * 60);
             } else {
@@ -207,6 +181,39 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
             } else {
                 "degraded"
             };
+        }
+    }
+}
+
+/// Schedules the next poll: soon while catching up, later when current, and with
+/// backoff after a failure, which is recorded as a delay rather than a gap.
+fn after_poll(
+    store: &mut Store,
+    session: &google_auth::Session,
+    source: Source,
+    result: Result<google_collector::Progress, google_collector::CollectorError>,
+    interval: u64,
+) -> Duration {
+    match result {
+        Ok(google_collector::Progress::CaughtUp) => Duration::from_secs(interval),
+        Ok(google_collector::Progress::Behind) => Duration::from_secs(1),
+        Err(error) => {
+            tracing::warn!(%error, source = source.as_str(), "collection degraded");
+            let rate_limited = matches!(
+                &error,
+                google_collector::CollectorError::Http {
+                    source: HttpError::RateLimited,
+                    ..
+                }
+            );
+            let _ = google_collector::record_failure(
+                store,
+                &session.credentials.account_id,
+                source,
+                CoverageReason::RequestFailed,
+                Utc::now(),
+            );
+            Duration::from_secs(if rate_limited { 60 } else { 10 })
         }
     }
 }

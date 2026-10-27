@@ -31,7 +31,7 @@ Do not commit or paste credentials, account responses, or real message content i
 
 These checks do not prove future macOS permissions, notifications, direct tray clicking, or real account integration. The development app uses an ad hoc code signature so its bundle can be validated consistently. A public release still requires a Developer ID identity and notarization.
 
-Playwright artifacts are ignored under `test-results/`; failures keep traces and screenshots. CI runs without retries so flakes remain visible. The portable core and CLI run on Linux; the full desktop workspace compiles and tests on macOS.
+Playwright artifacts are ignored under `test-results/`; failures keep traces and screenshots. CI runs without retries so flakes remain visible. CI runs on pushes to `main` and on pull requests; open a draft pull request when starting a branch so each pushed increment is checked. The portable core and CLI run on Linux; the full desktop workspace compiles and tests on macOS.
 
 Introduce mock-model evaluation gates with the real replay engine and scenario baseline in M3/M4. Do not add an empty feature gate, fabricate a baseline, or report zero scenarios as a successful evaluation.
 

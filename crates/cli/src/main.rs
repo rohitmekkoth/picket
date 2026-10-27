@@ -89,27 +89,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&report, serde_json::to_vec_pretty(&result)?)?;
+            // Derived Debug output ignores width, so format names before padding them.
+            let ratio = |hit: usize, total: usize| format!("{hit}/{total}");
             println!(
-                "mode           cases   agent    link   conflict  high   medium  false/benign  gap"
+                "{:<14}{:>6}{:>9}{:>9}{:>10}{:>9}{:>9}{:>14}{:>8}",
+                "mode",
+                "cases",
+                "agent",
+                "link",
+                "conflict",
+                "high",
+                "medium",
+                "false/benign",
+                "gap"
             );
             for (mode, counts) in &result.modes {
                 println!(
-                    "{mode:<14?} {:>5} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3}",
+                    "{:<14}{:>6}{:>9}{:>9}{:>10}{:>9}{:>9}{:>14}{:>8}",
+                    format!("{mode:?}"),
                     counts.cases,
-                    counts.correct_named_agents,
-                    counts.named_agents,
-                    counts.linked_effects,
-                    counts.linkable_effects,
-                    counts.detected_conflicts,
-                    counts.explicit_conflicts,
-                    counts.correct_high,
-                    counts.expected_high,
-                    counts.correct_medium,
-                    counts.expected_medium,
-                    counts.alerts_on_benign,
-                    counts.benign_effects,
-                    counts.surfaced_coverage_gaps,
-                    counts.applicable_coverage_gaps,
+                    ratio(counts.correct_named_agents, counts.named_agents),
+                    ratio(counts.linked_effects, counts.linkable_effects),
+                    ratio(counts.detected_conflicts, counts.explicit_conflicts),
+                    ratio(counts.correct_high, counts.expected_high),
+                    ratio(counts.correct_medium, counts.expected_medium),
+                    ratio(counts.alerts_on_benign, counts.benign_effects),
+                    ratio(
+                        counts.surfaced_coverage_gaps,
+                        counts.applicable_coverage_gaps
+                    ),
                 );
             }
             println!(

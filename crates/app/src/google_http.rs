@@ -60,8 +60,20 @@ pub struct GmailList {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GmailRef {
     pub id: String,
+    /// Present in history records; message lists return ids only.
+    #[serde(default)]
+    pub label_ids: Vec<String>,
+}
+
+impl GmailRef {
+    /// Gmail replaces a draft with a new message on every autosave and deletes the old one.
+    pub fn is_draft(&self) -> bool {
+        self.label_ids.iter().any(|label| label == "DRAFT")
+            && !self.label_ids.iter().any(|label| label == "SENT")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -76,6 +88,8 @@ pub struct GmailHistory {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GmailHistoryRecord {
+    /// Records are ordered by id; a processed id is a valid resume cursor.
+    pub id: String,
     #[serde(default)]
     pub messages_added: Vec<GmailMessageAdded>,
     #[serde(default)]

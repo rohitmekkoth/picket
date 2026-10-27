@@ -9,14 +9,15 @@ use thiserror::Error;
 
 use crate::calendar::CalendarState;
 use crate::event::{
-    Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source, canonical_json,
+    Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source,
+    canonical_json,
 };
 use crate::{
-    engine::Finding,
-    incidents::{self, OutboxBatch, ReconcileSummary},
+    engine::{Assessor, Finding},
+    incidents::{self, ENGINE_VERSION, OutboxBatch, ReconcileSummary},
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -52,8 +53,34 @@ pub struct Verification {
 }
 
 /// A mutable store is the sole writer. Readers open separate read-only connections.
+/// The in-memory assessor is derived from the log; it is rebuilt after any failed write.
 pub struct Store {
     connection: Connection,
+    assessor: Option<Assessor>,
+}
+
+/// One atomic collector write: observations, their cursor, Calendar state and coverage.
+#[derive(Clone, Debug, Default)]
+pub struct Batch {
+    pub events: Vec<Event>,
+    pub cursor: Option<CollectorCursor>,
+    pub calendar: Vec<(String, CalendarState)>,
+    pub coverage: Vec<CoverageReport>,
+}
+
+/// A collector's current coverage. The store logs it only when its state or reason
+/// changes, or when an open claim needs a healthy confirmation; liveness stays in cursors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverageReport {
+    pub account: String,
+    pub source: Source,
+    pub coverage: Coverage,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Committed {
+    pub sequences: Vec<i64>,
+    pub summary: ReconcileSummary,
 }
 
 /// A source cursor advances only after every observation in its page is durable.
@@ -81,12 +108,18 @@ impl Store {
         if !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(StoreError::Schema(version));
         }
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            assessor: None,
+        })
     }
 
     fn initialize(connection: Connection) -> Result<Self> {
+        // WAL with synchronous=NORMAL cannot corrupt the log. A power loss may roll back the
+        // latest commits, and their cursors roll back with them, so sources are read again.
         connection.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;",
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;
+             PRAGMA secure_delete=ON;",
         )?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         match version {
@@ -181,7 +214,18 @@ impl Store {
                  COMMIT;",
             )?;
         }
-        Ok(Self { connection })
+        if version < 5 {
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE engine_state ADD COLUMN clock TEXT;
+                 PRAGMA user_version=5;
+                 COMMIT;",
+            )?;
+        }
+        Ok(Self {
+            connection,
+            assessor: None,
+        })
     }
 
     pub fn calendar_snapshot(
@@ -244,66 +288,10 @@ impl Store {
         Ok(exists != 0)
     }
 
-    /// Writes a complete collector page and its next cursor in one transaction.
-    pub fn append_collector_page(
-        &mut self,
-        events: &[Event],
-        cursor: &CollectorCursor,
-    ) -> Result<Vec<i64>> {
-        self.append_collector_page_with_snapshots(events, cursor, &[])
-    }
-
-    /// Calendar snapshots share the page transaction with the event log and cursor.
-    pub fn append_collector_page_with_snapshots(
-        &mut self,
-        events: &[Event],
-        cursor: &CollectorCursor,
-        snapshots: &[(String, CalendarState)],
-    ) -> Result<Vec<i64>> {
-        validate_cursor(cursor)?;
-        if !snapshots.is_empty() && cursor.source != Source::Calendar {
-            return Err(StoreError::Invalid("snapshots require a Calendar cursor"));
-        }
-        for event in events {
-            validate_event(event)?;
-            if event.key.account != cursor.account || event.key.source != cursor.source {
-                return Err(StoreError::Invalid(
-                    "collector page mixes accounts or sources",
-                ));
-            }
-        }
-        let tx = self.connection.transaction()?;
-        let sequences = events
-            .iter()
-            .map(|event| append_in_transaction(&tx, event))
-            .collect::<Result<Vec<_>>>()?;
-        for (resource, snapshot) in snapshots {
-            if resource.is_empty() || resource.len() > 512 || resource.chars().any(char::is_control)
-            {
-                return Err(StoreError::Invalid("invalid Calendar snapshot resource"));
-            }
-            let canonical = canonical_json(snapshot)?;
-            if canonical.len() > MAX_EVENT_BYTES {
-                return Err(StoreError::Invalid("Calendar snapshot exceeds 64 KiB"));
-            }
-            tx.execute(
-                "INSERT INTO calendar_snapshots(account, resource, canonical) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(account, resource) DO UPDATE SET canonical=excluded.canonical",
-                params![cursor.account, resource, canonical],
-            )?;
-        }
-        tx.execute(
-            "INSERT INTO collector_cursors(account, source, value, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(account, source) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            params![cursor.account, cursor.source.as_str(), cursor.value, cursor.updated_at.to_rfc3339()],
-        )?;
-        tx.commit()?;
-        Ok(sequences)
-    }
-
+    /// Appends without assessment. The next assessed write catches up from the log.
     pub fn append(&mut self, event: &Event) -> Result<i64> {
         validate_event(event)?;
+        self.assessor = None;
         let tx = self.connection.transaction()?;
         let sequence = append_in_transaction(&tx, event)?;
         tx.commit()?;
@@ -316,28 +304,124 @@ impl Store {
         event: &Event,
         now: DateTime<Utc>,
     ) -> Result<(i64, ReconcileSummary)> {
-        validate_event(event)?;
-        let mut inputs: Vec<_> = self.events()?.into_iter().map(|row| row.event).collect();
-        let previous_head = chain_state(&self.connection)?.2;
-        let tx = self.connection.transaction()?;
-        let sequence = append_in_transaction(&tx, event)?;
-        if sequence > previous_head {
-            inputs.push(event.clone());
-        }
-        let summary = incidents::reconcile(&tx, &inputs, now, previous_head.max(sequence))?;
-        tx.commit()?;
-        Ok((sequence, summary))
+        let batch = Batch {
+            events: vec![event.clone()],
+            ..Batch::default()
+        };
+        let committed = self.commit(batch, now)?;
+        let sequence = committed
+            .sequences
+            .first()
+            .copied()
+            .ok_or(StoreError::Invalid("missing committed sequence"))?;
+        Ok((sequence, committed.summary))
     }
 
-    /// Reassesses pending findings after the clock advances or a restart.
+    /// Reassesses findings whose deadlines passed, and any input not yet assessed.
     pub fn reconcile(&mut self, now: DateTime<Utc>) -> Result<ReconcileSummary> {
-        let rows = self.events()?;
-        let through_sequence = chain_state(&self.connection)?.2;
-        let inputs: Vec<_> = rows.into_iter().map(|row| row.event).collect();
-        let tx = self.connection.transaction()?;
-        let summary = incidents::reconcile(&tx, &inputs, now, through_sequence)?;
+        Ok(self.commit(Batch::default(), now)?.summary)
+    }
+
+    /// Commits a batch and the assessments it changes in one transaction. Work is
+    /// proportional to the batch and the findings it can affect, not to the log size.
+    pub fn commit(&mut self, batch: Batch, now: DateTime<Utc>) -> Result<Committed> {
+        validate_batch(&batch)?;
+        if self.assessor.is_none() {
+            self.assessor = Some(load_assessor(&self.connection)?);
+        }
+        let result = self.commit_loaded(&batch, now);
+        if result.is_err() {
+            self.assessor = None;
+        }
+        result
+    }
+
+    fn commit_loaded(&mut self, batch: &Batch, now: DateTime<Utc>) -> Result<Committed> {
+        let Self {
+            connection,
+            assessor,
+        } = self;
+        let assessor = assessor
+            .as_mut()
+            .ok_or(StoreError::Invalid("assessment state unavailable"))?;
+        let tx = connection.transaction()?;
+        let previous_head = chain_state(&tx)?.2;
+        let mut sequences = Vec::with_capacity(batch.events.len());
+        for event in &batch.events {
+            let sequence = append_in_transaction(&tx, event)?;
+            if sequence > previous_head {
+                assessor.observe(sequence, event.clone(), now);
+            }
+            sequences.push(sequence);
+        }
+        let mut changed =
+            !batch.events.is_empty() || batch.cursor.is_some() || !batch.calendar.is_empty();
+        for report in &batch.coverage {
+            let next = chain_state(&tx)?.2 + 1;
+            if let Some(event) = coverage_transition(assessor, report, next, now) {
+                validate_event(&event)?;
+                let sequence = append_in_transaction(&tx, &event)?;
+                assessor.observe(sequence, event, now);
+                changed = true;
+            }
+        }
+        for (resource, snapshot) in &batch.calendar {
+            let canonical = canonical_json(snapshot)?;
+            if canonical.len() > MAX_EVENT_BYTES {
+                return Err(StoreError::Invalid("Calendar snapshot exceeds 64 KiB"));
+            }
+            let account = batch
+                .cursor
+                .as_ref()
+                .map(|cursor| cursor.account.as_str())
+                .ok_or(StoreError::Invalid("snapshots require a Calendar cursor"))?;
+            tx.execute(
+                "INSERT INTO calendar_snapshots(account, resource, canonical) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(account, resource) DO UPDATE SET canonical=excluded.canonical",
+                params![account, resource, canonical],
+            )?;
+        }
+        if let Some(cursor) = &batch.cursor {
+            tx.execute(
+                "INSERT INTO collector_cursors(account, source, value, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(account, source) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![cursor.account, cursor.source.as_str(), cursor.value, cursor.updated_at.to_rfc3339()],
+            )?;
+        }
+        let findings = assessor.advance(now);
+        let head = chain_state(&tx)?.2;
+        // An idle tick that changes nothing skips the write. No deadline passed, so the
+        // older durable clock makes a restart recheck only subjects that are unchanged.
+        if !changed && findings.is_empty() {
+            return Ok(Committed {
+                sequences,
+                summary: ReconcileSummary {
+                    through_sequence: head,
+                    assessed: 0,
+                    revised: 0,
+                    queued: 0,
+                },
+            });
+        }
+        let summary = incidents::persist(&tx, findings, now, head)?;
         tx.commit()?;
-        Ok(summary)
+        Ok(Committed { sequences, summary })
+    }
+
+    /// Every retained revision of one finding, oldest first.
+    pub fn finding_history(&self, finding: &str) -> Result<Vec<(i64, Finding)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT revision, payload FROM assessment_revisions WHERE finding=?1 ORDER BY revision",
+        )?;
+        let rows = statement.query_map([finding], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (revision, payload) = row?;
+            Ok((revision, serde_json::from_slice(&payload)?))
+        })
+        .collect()
     }
 
     pub fn current_findings(&self) -> Result<Vec<(i64, Finding)>> {
@@ -371,93 +455,11 @@ impl Store {
     }
 
     pub fn verify(&self) -> Result<Verification> {
-        let (anchor_seq, anchor_hash, head_seq, head_hash) = chain_state(&self.connection)?;
-        let mut expected_seq = anchor_seq + 1;
-        let mut expected_prev = anchor_hash;
-        let mut retained = 0;
-        let mut statement = self.connection.prepare(
-            "SELECT seq, account, source, resource, revision, kind, canonical, prev_hash, hash
-             FROM events ORDER BY seq",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Vec<u8>>(6)?,
-                row.get::<_, Vec<u8>>(7)?,
-                row.get::<_, Vec<u8>>(8)?,
-            ))
-        })?;
-        for row in rows {
-            let (seq, account, source, resource, revision, kind, canonical, prev, hash) = row?;
-            if seq != expected_seq {
-                return broken(expected_seq, "missing or reordered row");
-            }
-            if prev.as_slice() != expected_prev {
-                return broken(seq, "previous hash changed");
-            }
-            let event: Event =
-                serde_json::from_slice(&canonical).map_err(|_| StoreError::Corrupt {
-                    sequence: seq,
-                    reason: "invalid event JSON",
-                })?;
-            if event.key.account != account
-                || event.key.source.as_str() != source
-                || event.key.resource != resource
-                || event.key.revision != revision
-                || event.payload.kind() != kind
-            {
-                return broken(seq, "indexed identity differs from event");
-            }
-            let value: serde_json::Value = serde_json::from_slice(&canonical)?;
-            let normalized = canonical_json(&value)?;
-            if normalized != canonical {
-                return broken(seq, "event JSON is not canonical");
-            }
-            let computed = hash_event(&expected_prev, &canonical);
-            if hash.as_slice() != computed {
-                return broken(seq, "event hash changed");
-            }
-            expected_prev = computed;
-            expected_seq += 1;
-            retained += 1;
-        }
-        if expected_seq != head_seq + 1 || expected_prev != head_hash {
-            return broken(expected_seq, "stored log head differs from rows");
-        }
-        Ok(Verification {
-            through_sequence: head_seq,
-            retained_events: retained,
-        })
+        verify_chain(&self.connection)
     }
 
     pub fn events(&self) -> Result<Vec<StoredEvent>> {
-        self.verify()?;
-        let mut statement = self
-            .connection
-            .prepare("SELECT seq, canonical, prev_hash, hash FROM events ORDER BY seq")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (sequence, json, prev, hash) = row?;
-            Ok(StoredEvent {
-                sequence,
-                event: serde_json::from_slice(&json)?,
-                prev_hash: checked_hash(sequence, prev)?,
-                hash: checked_hash(sequence, hash)?,
-            })
-        })
-        .collect()
+        read_events(&self.connection)
     }
 
     /// Retains a verified prefix older than the cutoff without crossing a newer row.
@@ -475,6 +477,7 @@ impl Store {
     /// The checkpoint and deletion commit together, so a crash cannot split them.
     pub fn retain_after(&mut self, through_sequence: i64) -> Result<u64> {
         self.verify()?;
+        self.assessor = None;
         let snapshots = self.retained_state(through_sequence)?;
         let tx = self.connection.transaction()?;
         let (anchor_seq, _, head_seq, _) = chain_state(&tx)?;
@@ -484,14 +487,16 @@ impl Store {
         if through_sequence > head_seq {
             return Err(StoreError::Invalid("retention exceeds log head"));
         }
-        let (hash, count): (Vec<u8>, i64) = tx.query_row(
-            "SELECT hash, (SELECT COUNT(*) FROM events WHERE seq <= ?1)
+        let (hash, canonical, count): (Vec<u8>, Vec<u8>, i64) = tx.query_row(
+            "SELECT hash, canonical, (SELECT COUNT(*) FROM events WHERE seq <= ?1)
              FROM events WHERE seq = ?1",
             [through_sequence],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let hash = checked_hash(through_sequence, hash)?;
+        let cutoff = serde_json::from_slice::<Event>(&canonical)?.ingested_at;
         tx.execute("DELETE FROM events WHERE seq <= ?1", [through_sequence])?;
+        incidents::prune(&tx, cutoff)?;
         tx.execute(
             "UPDATE chain_state SET anchor_seq=?1, anchor_hash=?2 WHERE id=1",
             params![through_sequence, hash.as_slice()],
@@ -595,6 +600,197 @@ impl Store {
             .map(|(_, account, snapshot)| (account, snapshot))
             .collect())
     }
+}
+
+fn verify_chain(connection: &Connection) -> Result<Verification> {
+    let (anchor_seq, anchor_hash, head_seq, head_hash) = chain_state(connection)?;
+    let mut expected_seq = anchor_seq + 1;
+    let mut expected_prev = anchor_hash;
+    let mut retained = 0;
+    let mut statement = connection.prepare(
+        "SELECT seq, account, source, resource, revision, kind, canonical, prev_hash, hash
+         FROM events ORDER BY seq",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Vec<u8>>(6)?,
+            row.get::<_, Vec<u8>>(7)?,
+            row.get::<_, Vec<u8>>(8)?,
+        ))
+    })?;
+    for row in rows {
+        let (seq, account, source, resource, revision, kind, canonical, prev, hash) = row?;
+        if seq != expected_seq {
+            return broken(expected_seq, "missing or reordered row");
+        }
+        if prev.as_slice() != expected_prev {
+            return broken(seq, "previous hash changed");
+        }
+        let event: Event = serde_json::from_slice(&canonical).map_err(|_| StoreError::Corrupt {
+            sequence: seq,
+            reason: "invalid event JSON",
+        })?;
+        if event.key.account != account
+            || event.key.source.as_str() != source
+            || event.key.resource != resource
+            || event.key.revision != revision
+            || event.payload.kind() != kind
+        {
+            return broken(seq, "indexed identity differs from event");
+        }
+        let value: serde_json::Value = serde_json::from_slice(&canonical)?;
+        let normalized = canonical_json(&value)?;
+        if normalized != canonical {
+            return broken(seq, "event JSON is not canonical");
+        }
+        let computed = hash_event(&expected_prev, &canonical);
+        if hash.as_slice() != computed {
+            return broken(seq, "event hash changed");
+        }
+        expected_prev = computed;
+        expected_seq += 1;
+        retained += 1;
+    }
+    if expected_seq != head_seq + 1 || expected_prev != head_hash {
+        return broken(expected_seq, "stored log head differs from rows");
+    }
+    Ok(Verification {
+        through_sequence: head_seq,
+        retained_events: retained,
+    })
+}
+
+fn read_events(connection: &Connection) -> Result<Vec<StoredEvent>> {
+    verify_chain(connection)?;
+    let mut statement =
+        connection.prepare("SELECT seq, canonical, prev_hash, hash FROM events ORDER BY seq")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, Vec<u8>>(3)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (sequence, json, prev, hash) = row?;
+        Ok(StoredEvent {
+            sequence,
+            event: serde_json::from_slice(&json)?,
+            prev_hash: checked_hash(sequence, prev)?,
+            hash: checked_hash(sequence, hash)?,
+        })
+    })
+    .collect()
+}
+
+fn load_assessor(connection: &Connection) -> Result<Assessor> {
+    let rows = read_events(connection)?;
+    let (through, version, clock): (i64, i64, Option<String>) = connection.query_row(
+        "SELECT through_sequence, engine_version, clock FROM engine_state WHERE id=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    // A different engine version reassesses everything once, on purpose.
+    let clock = clock
+        .filter(|_| version == ENGINE_VERSION)
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|time| time.with_timezone(&Utc))
+                .map_err(|_| StoreError::Invalid("invalid assessment clock"))
+        })
+        .transpose()?;
+    Ok(Assessor::resume(
+        rows.into_iter().map(|row| (row.sequence, row.event)),
+        through,
+        clock,
+    ))
+}
+
+/// Builds a coverage event when the report differs from the logged state, or when an
+/// open claim needs healthy evidence after its deadline.
+fn coverage_transition(
+    assessor: &Assessor,
+    report: &CoverageReport,
+    sequence: i64,
+    now: DateTime<Utc>,
+) -> Option<Event> {
+    let coverage = &report.coverage;
+    let latest =
+        assessor
+            .evidence()
+            .coverage_latest(&report.account, &report.source, &coverage.capability);
+    let changed = latest.is_none_or(|(logged, _)| {
+        logged.state != coverage.state || logged.reason != coverage.reason
+    });
+    let confirm = coverage.state == CoverageState::Healthy
+        && assessor
+            .evidence()
+            .confirmation_due(&report.account, &report.source, now);
+    (changed || confirm).then(|| Event {
+        schema_version: 1,
+        key: EventKey {
+            account: report.account.clone(),
+            source: report.source.clone(),
+            resource: format!("coverage/{}", coverage.capability),
+            revision: sequence.to_string(),
+        },
+        occurred_at: now,
+        ingested_at: now,
+        source_time_quality: None,
+        adapter: None,
+        payload: EventPayload::Coverage(coverage.clone()),
+    })
+}
+
+fn validate_batch(batch: &Batch) -> Result<()> {
+    for event in &batch.events {
+        validate_event(event)?;
+    }
+    if let Some(cursor) = &batch.cursor {
+        validate_cursor(cursor)?;
+        if batch
+            .events
+            .iter()
+            .any(|event| event.key.account != cursor.account || event.key.source != cursor.source)
+        {
+            return Err(StoreError::Invalid(
+                "collector page mixes accounts or sources",
+            ));
+        }
+    }
+    if !batch.calendar.is_empty()
+        && batch
+            .cursor
+            .as_ref()
+            .is_none_or(|cursor| cursor.source != Source::Calendar)
+    {
+        return Err(StoreError::Invalid("snapshots require a Calendar cursor"));
+    }
+    for (resource, _) in &batch.calendar {
+        if resource.is_empty() || resource.len() > 512 || resource.chars().any(char::is_control) {
+            return Err(StoreError::Invalid("invalid Calendar snapshot resource"));
+        }
+    }
+    for report in &batch.coverage {
+        let capability = &report.coverage.capability;
+        if report.source == Source::Picket
+            || capability.is_empty()
+            || capability.len() > 64
+            || !capability
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        {
+            return Err(StoreError::Invalid("invalid coverage report"));
+        }
+    }
+    Ok(())
 }
 
 fn validate_event(event: &Event) -> Result<()> {
@@ -732,6 +928,19 @@ mod tests {
         AccountPolicy, Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
     };
 
+    fn page(
+        events: Vec<Event>,
+        cursor: &CollectorCursor,
+        calendar: Vec<(String, CalendarState)>,
+    ) -> Batch {
+        Batch {
+            events,
+            cursor: Some(cursor.clone()),
+            calendar,
+            coverage: Vec::new(),
+        }
+    }
+
     fn event(resource: &str, revision: &str) -> Event {
         let timestamp = DateTime::<Utc>::UNIX_EPOCH;
         Event {
@@ -796,7 +1005,10 @@ mod tests {
             value: "history-10".into(),
             updated_at: DateTime::<Utc>::UNIX_EPOCH,
         };
-        store.append_collector_page(&[event("message-1", "rev-1")], &cursor)?;
+        store.commit(
+            page(vec![event("message-1", "rev-1")], &cursor, vec![]),
+            cursor.updated_at,
+        )?;
         assert_eq!(
             store.collector_cursor(&cursor.account, &cursor.source)?,
             Some(cursor.value.clone())
@@ -810,7 +1022,10 @@ mod tests {
             ..cursor.clone()
         };
         assert!(matches!(
-            store.append_collector_page(&[event("message-2", "rev-1"), conflict], &later),
+            store.commit(
+                page(vec![event("message-2", "rev-1"), conflict], &later, vec![]),
+                later.updated_at
+            ),
             Err(StoreError::DuplicateConflict)
         ));
         assert_eq!(store.verify()?.retained_events, 1);
@@ -836,10 +1051,13 @@ mod tests {
             value: "sync-1".into(),
             updated_at: Utc::now(),
         };
-        store.append_collector_page_with_snapshots(
-            &[event.ok_or("missing event")?],
-            &cursor,
-            &[("meeting_1".into(), state.clone())],
+        store.commit(
+            page(
+                vec![event.ok_or("missing event")?],
+                &cursor,
+                vec![("meeting_1".into(), state.clone())],
+            ),
+            cursor.updated_at,
         )?;
         assert_eq!(
             store.calendar_snapshot("account-1", "meeting_1")?,
@@ -855,10 +1073,13 @@ mod tests {
         };
         assert!(
             store
-                .append_collector_page_with_snapshots(
-                    &[],
-                    &later,
-                    &[("bad\nresource".into(), state.clone())],
+                .commit(
+                    page(
+                        vec![],
+                        &later,
+                        vec![("bad\nresource".into(), state.clone())]
+                    ),
+                    later.updated_at,
                 )
                 .is_err()
         );

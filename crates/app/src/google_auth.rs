@@ -168,7 +168,7 @@ pub fn restore() -> Result<Option<Session>, AuthError> {
     let token = oauth
         .exchange_refresh_token(&RefreshToken::new(credentials.refresh_token.clone()))
         .request(&http_client()?)
-        .map_err(|_| AuthError::Token)?;
+        .map_err(refresh_error)?;
     if token.scopes().is_some() {
         check_scopes(token.scopes())?;
     }
@@ -203,7 +203,7 @@ pub fn refresh(session: &mut Session) -> Result<(), AuthError> {
             session.credentials.refresh_token.clone(),
         ))
         .request(&http_client()?)
-        .map_err(|_| AuthError::Token)?;
+        .map_err(refresh_error)?;
     if token.scopes().is_some() {
         check_scopes(token.scopes())?;
     }
@@ -214,6 +214,16 @@ pub fn refresh(session: &mut Session) -> Result<(), AuthError> {
     session.access_token = token.access_token().secret().clone();
     session.expires_at = expiry(token.expires_in());
     Ok(())
+}
+
+/// A rejected grant needs the user to reconnect; anything else is a transient failure.
+fn refresh_error<E: std::error::Error + 'static, T: oauth2::ErrorResponse>(
+    error: oauth2::RequestTokenError<E, T>,
+) -> AuthError {
+    match error {
+        oauth2::RequestTokenError::ServerResponse(_) => AuthError::Authorization,
+        _ => AuthError::Network,
+    }
 }
 
 fn expiry(duration: Option<Duration>) -> Instant {
