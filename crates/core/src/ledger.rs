@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     calendar::CalendarState,
-    event::{EventKey, Source},
+    event::{AgentRegistration, EventKey, Source},
     store::{Batch, CollectorCursor, Committed, Result, Store, StoreError},
 };
 
@@ -23,12 +23,21 @@ const RETENTION_DAYS: i64 = 180;
 /// Pending commits per writer; a full queue makes producers wait, not drop.
 const QUEUE: usize = 64;
 
+/// Whether a poll reached the source's current state. A source that is behind
+/// continues from its committed position on the next poll.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Progress {
+    CaughtUp,
+    Behind,
+}
+
 /// What a collector needs from the store: committed reads and atomic batch writes.
 pub trait Ledger {
     fn checkpoint(&self, account: &str, source: &Source) -> Result<Option<CollectorCursor>>;
     fn contains(&self, key: &EventKey, kind: &str) -> Result<bool>;
     fn calendar_snapshot(&self, account: &str, resource: &str) -> Result<Option<CalendarState>>;
     fn commit(&mut self, batch: Batch, now: DateTime<Utc>) -> Result<Committed>;
+    fn agents(&self) -> Result<Vec<AgentRegistration>>;
 }
 
 impl Ledger for Store {
@@ -46,6 +55,10 @@ impl Ledger for Store {
 
     fn commit(&mut self, batch: Batch, now: DateTime<Utc>) -> Result<Committed> {
         Store::commit(self, batch, now)
+    }
+
+    fn agents(&self) -> Result<Vec<AgentRegistration>> {
+        Store::agents(self)
     }
 }
 
@@ -115,6 +128,10 @@ impl Ledger for Writer {
             .send(Request { batch, now, reply })
             .map_err(|_| StoreError::Unavailable)?;
         response.recv().map_err(|_| StoreError::Unavailable)?
+    }
+
+    fn agents(&self) -> Result<Vec<AgentRegistration>> {
+        self.reader.agents()
     }
 }
 

@@ -147,17 +147,28 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
                 actor: (rng.below(2) == 0).then_some(agent),
             }),
         ),
-        8 | 9 => (
-            [Source::Gmail, Source::Calendar][rng.below(2) as usize].clone(),
-            EventPayload::Coverage(Coverage {
-                capability: "effects".into(),
-                state: [CoverageState::Healthy, CoverageState::Gap][rng.below(2) as usize].clone(),
-                cursor: None,
-                gap_since: None,
-                reason: None,
-                partial_pages: None,
-            }),
-        ),
+        8 | 9 => {
+            let (source, capability) = match rng.below(3) {
+                0 => (Source::Gmail, "effects".to_owned()),
+                1 => (Source::Calendar, "effects".to_owned()),
+                _ => (
+                    Source::Messages,
+                    picket_core::engine::request_capability(&agent),
+                ),
+            };
+            (
+                source,
+                EventPayload::Coverage(Coverage {
+                    capability,
+                    state: [CoverageState::Healthy, CoverageState::Gap][rng.below(2) as usize]
+                        .clone(),
+                    cursor: None,
+                    gap_since: None,
+                    reason: None,
+                    partial_pages: None,
+                }),
+            )
+        }
         _ => (
             Source::Gmail,
             EventPayload::Notice {

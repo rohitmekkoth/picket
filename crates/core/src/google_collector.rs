@@ -7,7 +7,7 @@ use crate::{
     calendar::{CalendarEvent, CalendarState},
     event::{Coverage, CoverageReason, CoverageState, Event, Origin, Source},
     google::{CalendarPage, GmailHistory, GmailList, GmailMessage, GmailProfile, HttpError},
-    ledger::Ledger,
+    ledger::{Ledger, Progress},
     store::{Batch, CollectorCursor, CoverageReport},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -39,13 +39,6 @@ pub enum CollectorError {
     Limit,
     #[error("Google account identity changed")]
     Account,
-}
-
-/// Whether a poll reached the source's current state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Progress {
-    CaughtUp,
-    Behind,
 }
 
 pub trait GoogleApi {

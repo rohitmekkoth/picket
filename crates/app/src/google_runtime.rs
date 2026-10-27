@@ -54,6 +54,9 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         .map_err(|_| "connection state failed")?
         .take()
         .ok_or("Google connection missing")?;
+    if let Ok(mut account) = state.account.lock() {
+        *account = Some(session.credentials.account_id.clone());
+    }
     let mut store = crate::ledger(app)?;
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);
     let mut next_gmail = Instant::now();
@@ -166,12 +169,12 @@ fn after_poll(
     store: &mut Writer,
     session: &google_auth::Session,
     source: Source,
-    result: Result<google_collector::Progress, google_collector::CollectorError>,
+    result: Result<picket_core::ledger::Progress, google_collector::CollectorError>,
     interval: u64,
 ) -> Duration {
     match result {
-        Ok(google_collector::Progress::CaughtUp) => Duration::from_secs(interval),
-        Ok(google_collector::Progress::Behind) => Duration::from_secs(1),
+        Ok(picket_core::ledger::Progress::CaughtUp) => Duration::from_secs(interval),
+        Ok(picket_core::ledger::Progress::Behind) => Duration::from_secs(1),
         Err(error) => {
             tracing::warn!(%error, source = source.as_str(), "collection degraded");
             let rate_limited = matches!(

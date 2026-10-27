@@ -9,8 +9,8 @@ use thiserror::Error;
 
 use crate::calendar::CalendarState;
 use crate::event::{
-    Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot, SnapshotValue, Source,
-    canonical_json,
+    AgentRegistration, Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot,
+    SnapshotValue, Source, canonical_json,
 };
 use crate::{
     engine::{Assessor, Finding},
@@ -411,6 +411,28 @@ impl Store {
         Ok(Committed { sequences, summary })
     }
 
+    /// The latest registration of every agent, including retained snapshots.
+    pub fn agents(&self) -> Result<Vec<AgentRegistration>> {
+        let mut statement = self.connection.prepare(
+            "SELECT canonical FROM events WHERE kind IN ('agent', 'snapshot') ORDER BY seq",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut latest = BTreeMap::new();
+        for row in rows {
+            let event: Event = serde_json::from_slice(&row?)?;
+            let agent = match event.payload {
+                EventPayload::Agent(value) => value,
+                EventPayload::Snapshot(Snapshot {
+                    value: SnapshotValue::Agent(value),
+                    ..
+                }) => value,
+                _ => continue,
+            };
+            latest.insert(agent.id.clone(), agent);
+        }
+        Ok(latest.into_values().collect())
+    }
+
     /// Every retained revision of one finding, oldest first.
     pub fn finding_history(&self, finding: &str) -> Result<Vec<(i64, Finding)>> {
         let mut statement = self.connection.prepare(
@@ -546,7 +568,7 @@ impl Store {
         let mut latest = BTreeMap::new();
         let mut statement = self.connection.prepare(
             "SELECT seq, canonical FROM events
-             WHERE seq <= ?1 AND kind IN ('feedback', 'contact_observed', 'coverage', 'policy', 'snapshot') ORDER BY seq",
+             WHERE seq <= ?1 AND kind IN ('feedback', 'contact_observed', 'coverage', 'policy', 'agent', 'snapshot') ORDER BY seq",
         )?;
         let rows = statement.query_map([through_sequence], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -575,6 +597,11 @@ impl Store {
                     original_occurred_at: event.occurred_at,
                     value: SnapshotValue::Policy(value),
                 },
+                EventPayload::Agent(value) => Snapshot {
+                    original_source: event.key.source,
+                    original_occurred_at: event.occurred_at,
+                    value: SnapshotValue::Agent(value),
+                },
                 EventPayload::Snapshot(value) => value,
                 _ => continue,
             };
@@ -594,6 +621,7 @@ impl Store {
                 SnapshotValue::Policy(value) => {
                     format!("policy/{}/{}", event.key.account, value.id)
                 }
+                SnapshotValue::Agent(value) => format!("agent/{}", value.id),
             };
             latest.insert(identity, (sequence, event.key.account, snapshot));
         }
@@ -785,9 +813,9 @@ fn validate_batch(batch: &Batch) -> Result<()> {
         if report.source == Source::Picket
             || capability.is_empty()
             || capability.len() > 64
-            || !capability
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            || !capability.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+            })
         {
             return Err(StoreError::Invalid("invalid coverage report"));
         }
@@ -817,10 +845,27 @@ fn validate_event(event: &Event) -> Result<()> {
     {
         return Err(StoreError::Invalid("invalid adapter provenance"));
     }
-    if matches!(event.payload, EventPayload::Checkpoint { .. })
-        && event.key.source != Source::Picket
+    if matches!(
+        event.payload,
+        EventPayload::Checkpoint { .. } | EventPayload::Agent(_)
+    ) && event.key.source != Source::Picket
     {
-        return Err(StoreError::Invalid("only Picket may write a checkpoint"));
+        return Err(StoreError::Invalid("only Picket may write this record"));
+    }
+    match &event.payload {
+        EventPayload::Agent(agent) => crate::agent::validate(agent)
+            .map_err(|_| StoreError::Invalid("invalid agent registration"))?,
+        EventPayload::Message(message)
+            if event.key.source != Source::Messages
+                || !crate::agent::valid_id(&message.agent)
+                || message.service.is_empty()
+                || message.service.len() > 32
+                || message.snippet.chars().count() > crate::agent::SNIPPET_CHARS
+                || message.snippet.chars().any(char::is_control) =>
+        {
+            return Err(StoreError::Invalid("invalid message observation"));
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -832,7 +877,10 @@ fn validate_cursor(cursor: &CollectorCursor) -> Result<()> {
         || cursor.value.len() > 4096
         || cursor.account.chars().any(char::is_control)
         || cursor.value.chars().any(char::is_control)
-        || !matches!(cursor.source, Source::Gmail | Source::Calendar)
+        || !matches!(
+            cursor.source,
+            Source::Gmail | Source::Calendar | Source::Messages
+        )
     {
         return Err(StoreError::Invalid("invalid collector cursor"));
     }
@@ -1261,6 +1309,37 @@ mod tests {
                 if Some(value) == match &coverage.payload { EventPayload::Coverage(value) => Some(value), _ => None })));
         assert_eq!(store.retain_after(6)?, 3);
         assert_eq!(store.events()?.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_registration_survives_retention_and_only_picket_writes_it() -> Result<()> {
+        let mut store = Store::memory()?;
+        let mut registration = event("agent/instinct", "1");
+        registration.key.source = Source::Picket;
+        registration.payload = EventPayload::Agent(crate::event::AgentRegistration {
+            id: "instinct".into(),
+            name: "Instinct".into(),
+            mode: crate::event::AgentMode::Messages,
+            handles: vec!["+14155550132".into()],
+            connected_since: None,
+            enabled: true,
+            region: None,
+        });
+        let mut forged = registration.clone();
+        forged.key.source = Source::Messages;
+        assert!(store.append(&forged).is_err());
+        store.append(&registration)?;
+        store.append(&event("message-1", "rev-1"))?;
+        store.retain_after(2)?;
+        assert!(
+            store
+                .events()?
+                .iter()
+                .any(|row| matches!(&row.event.payload,
+            EventPayload::Snapshot(Snapshot { value: SnapshotValue::Agent(value), .. })
+                if value.id == "instinct"))
+        );
         Ok(())
     }
 

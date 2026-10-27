@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+pub mod agent;
 pub mod calendar;
 pub mod engine;
 pub mod eval;
@@ -11,6 +12,7 @@ pub mod google;
 pub mod google_collector;
 pub mod incidents;
 pub mod ledger;
+pub mod messages;
 pub mod store;
 
 /// Read-only process details shared by the CLI and desktop shell.

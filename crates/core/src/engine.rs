@@ -32,7 +32,11 @@ pub enum ActorEvidence {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RequestFit {
     NotAssessed,
+    /// Request capture for this agent was healthy and found no request.
     NoObservedRequest,
+    /// The agent's request channel was not captured or not yet extracted, so the
+    /// absence of a request means nothing.
+    RequestNotCaptured,
     AmbiguousTask,
     InsufficientEvidence,
     ConsistentWithVisibleRequest,
@@ -438,16 +442,46 @@ impl Evidence {
     /// True when the source recorded no lossy coverage from the claim until its first
     /// healthy confirmation after the deadline. Later coverage cannot change the answer.
     fn observed_without_gap(&self, report: &Event, source: &Source) -> bool {
-        let deadline = wait_from(report) + GRACE;
-        let Some(history) = self.coverage.get(&(
-            report.key.account.clone(),
-            source.as_str(),
-            "effects".to_owned(),
-        )) else {
+        self.covered(
+            &report.key.account,
+            source,
+            "effects",
+            report.occurred_at,
+            wait_from(report) + GRACE,
+        )
+    }
+
+    /// Whether request capture for `agent` covered `at`: no lossy coverage from the
+    /// last entry before `at` until a healthy confirmation at or after it.
+    fn request_captured(&self, account: &str, agent: &str, at: DateTime<Utc>) -> bool {
+        self.covered(
+            account,
+            &Source::Messages,
+            &request_capability(agent),
+            at,
+            at,
+        )
+    }
+
+    /// Walks one capability's coverage from the entry in force at `from` until the
+    /// first healthy entry at or after `deadline`. A delay is repaired by catch-up; a
+    /// gap or disabled source is not.
+    fn covered(
+        &self,
+        account: &str,
+        source: &Source,
+        capability: &str,
+        from: DateTime<Utc>,
+        deadline: DateTime<Utc>,
+    ) -> bool {
+        let Some(history) =
+            self.coverage
+                .get(&(account.to_owned(), source.as_str(), capability.to_owned()))
+        else {
             return false;
         };
         let start = history
-            .partition_point(|(observed_at, _)| *observed_at <= report.occurred_at)
+            .partition_point(|(observed_at, _)| *observed_at <= from)
             .saturating_sub(1);
         for (observed_at, seq) in &history[start..] {
             let Some((_, coverage, _)) = self.get(*seq).and_then(coverage_value) else {
@@ -707,7 +741,10 @@ impl Evidence {
             return RequestFit::InsufficientEvidence;
         }
         match latest.len() {
-            0 => RequestFit::NoObservedRequest,
+            0 if self.request_captured(account, agent, event.occurred_at) => {
+                RequestFit::NoObservedRequest
+            }
+            0 => RequestFit::RequestNotCaptured,
             1 => match latest.into_values().next() {
                 Some((_, request)) => {
                     let count = task_hint.and_then(|task| {
@@ -863,7 +900,7 @@ impl Evidence {
             }
             EventPayload::Coverage(_) => {
                 subjects.insert(Subject::Coverage(account.clone()));
-                self.claims_awaiting_coverage(&mut subjects, event);
+                self.awaiting_coverage(&mut subjects, event);
             }
             EventPayload::Notice { .. } => {
                 subjects.insert(Subject::Notice(seq));
@@ -893,10 +930,10 @@ impl Evidence {
         }
     }
 
-    /// A claim's coverage walk ends at the first healthy confirmation after its
-    /// deadline. Claims whose deadline or report time precedes the source's latest
-    /// earlier healthy entry already ended their walk, so a new entry cannot affect them.
-    fn claims_awaiting_coverage(&self, subjects: &mut BTreeSet<Subject>, event: &Event) {
+    /// A coverage walk ends at the first healthy entry at or after its deadline. Claims
+    /// and effects whose deadline and start precede the capability's latest earlier
+    /// healthy entry already ended their walk, so a new entry cannot affect them.
+    fn awaiting_coverage(&self, subjects: &mut BTreeSet<Subject>, event: &Event) {
         let Some((source, value, observed_at)) = coverage_value(event) else {
             return;
         };
@@ -934,6 +971,18 @@ impl Evidence {
             {
                 subjects.insert(Subject::Claim(seq));
             }
+        }
+        // Request capture decides "no observed request" for effects after `healthy_before`.
+        if source == Source::Messages && value.capability.starts_with(REQUEST_CAPTURE) {
+            subjects.extend(
+                time_range(
+                    &self.effects,
+                    account,
+                    healthy_before,
+                    DateTime::<Utc>::MAX_UTC,
+                )
+                .map(Subject::Effect),
+            );
         }
     }
 
@@ -1180,6 +1229,13 @@ fn coverage_route(evidence: &CoverageEvidence) -> Route {
         (CoverageState::Delayed, _) => Route::Timeline,
         (CoverageState::Gap | CoverageState::Disabled, _) => Route::MediumReview,
     }
+}
+
+/// Coverage of extracted requests for one agent, recorded by the request extractor.
+const REQUEST_CAPTURE: &str = "requests_";
+
+pub fn request_capability(agent: &str) -> String {
+    format!("{REQUEST_CAPTURE}{agent}")
 }
 
 /// The account source a claimed action would change.
@@ -1477,6 +1533,22 @@ mod tests {
         )
     }
 
+    fn capture(minute: i64, state: CoverageState) -> Event {
+        event(
+            Source::Messages,
+            &format!("capture-{minute}"),
+            minute,
+            EventPayload::Coverage(Coverage {
+                capability: request_capability("agent-1"),
+                state,
+                cursor: None,
+                gap_since: None,
+                reason: None,
+                partial_pages: None,
+            }),
+        )
+    }
+
     fn one(events: &[Event]) -> Assessment {
         assess(events, time(20)).remove(0)
     }
@@ -1639,8 +1711,31 @@ mod tests {
         let mut late = request();
         late.occurred_at = time(11);
         assert_eq!(
-            one(&[late, effect(), tool()]).request_fit,
+            one(&[late.clone(), effect(), tool()]).request_fit,
+            RequestFit::RequestNotCaptured,
+            "without request capture, absence means nothing"
+        );
+        assert_eq!(
+            one(&[
+                late.clone(),
+                effect(),
+                tool(),
+                capture(15, CoverageState::Healthy)
+            ])
+            .request_fit,
             RequestFit::NoObservedRequest
+        );
+        assert_eq!(
+            one(&[
+                late,
+                effect(),
+                tool(),
+                capture(5, CoverageState::Gap),
+                capture(15, CoverageState::Healthy)
+            ])
+            .request_fit,
+            RequestFit::RequestNotCaptured,
+            "a gap before the effect leaves capture incomplete"
         );
         let mut incomplete = effect();
         if let EventPayload::Effect(value) = &mut incomplete.payload {
