@@ -1,6 +1,6 @@
 # M6 Messages and OpenClaw plan
 
-Status: planned 2026-10-27; implementation starts with the collector write-path refactor. This plan implements the M6 scope in [design.md](design.md) and the E2/E4 experiments in [alignment-engine-plan.md](alignment-engine-plan.md). It adds no network hosts, Google scopes or telemetry.
+Status: planned 2026-10-27; increment 1 (shared write path) implemented in PR #14. This plan implements the M6 scope in [design.md](design.md) and the E2/E4 experiments in [alignment-engine-plan.md](alignment-engine-plan.md). It adds no network hosts, Google scopes or telemetry.
 
 ## Outcome and boundaries
 
