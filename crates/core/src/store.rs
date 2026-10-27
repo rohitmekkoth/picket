@@ -32,6 +32,8 @@ pub enum StoreError {
     DuplicateConflict,
     #[error("unsupported database schema version {0}")]
     Schema(i64),
+    #[error("store writer is not running")]
+    Unavailable,
     #[error("log broken at sequence {sequence}: {reason}")]
     Corrupt { sequence: i64, reason: &'static str },
 }

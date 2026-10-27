@@ -41,6 +41,31 @@ impl Default for GoogleState {
     }
 }
 
+/// The single store writer, started on first use and shared by every collector thread.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct LedgerState(Mutex<Option<picket_core::ledger::Writer>>);
+
+/// A writer handle for one collector thread.
+#[cfg(target_os = "macos")]
+fn ledger(app: &tauri::AppHandle) -> Result<picket_core::ledger::Writer, &'static str> {
+    let state = app.state::<LedgerState>();
+    let mut writer = state.0.lock().map_err(|_| "event store state failed")?;
+    if writer.is_none() {
+        let directory = app.path().app_data_dir().map_err(|_| "data path failed")?;
+        std::fs::create_dir_all(&directory).map_err(|_| "data directory failed")?;
+        // The writer thread runs for the app's lifetime because this handle is kept.
+        let (started, _thread) = picket_core::ledger::Writer::start(&directory.join("picket.db"))
+            .map_err(|_| "event store failed")?;
+        *writer = Some(started);
+    }
+    writer
+        .as_ref()
+        .ok_or("event store failed")?
+        .connect()
+        .map_err(|_| "event store failed")
+}
+
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn google_connected(state: tauri::State<'_, GoogleState>) -> String {
@@ -174,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "macos")]
             {
                 app.manage(GoogleState::default());
+                app.manage(LedgerState::default());
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     loop {

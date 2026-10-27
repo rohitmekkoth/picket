@@ -7,7 +7,8 @@ use crate::{
     calendar::{CalendarEvent, CalendarState},
     event::{Coverage, CoverageReason, CoverageState, Event, Origin, Source},
     google::{CalendarPage, GmailHistory, GmailList, GmailMessage, GmailProfile, HttpError},
-    store::{Batch, CollectorCursor, CoverageReport, Store},
+    ledger::Ledger,
+    store::{Batch, CollectorCursor, CoverageReport},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -76,14 +77,14 @@ pub trait GoogleApi {
 /// the next poll instead of repeating. Healthy coverage is reported only once caught up.
 pub fn poll_gmail(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     account_email: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Progress, CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Gmail)
+        .checkpoint(account, &Source::Gmail)
         .map_err(|_| CollectorError::Store)?;
     let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
     let start = match checkpoint {
@@ -233,13 +234,13 @@ fn fetch_message(
 
 /// Adds observations that are neither stored nor already in this page.
 fn push_new(
-    store: &Store,
+    store: &impl Ledger,
     events: &mut Vec<Event>,
     observations: Vec<Event>,
 ) -> Result<(), CollectorError> {
     for event in observations {
         let known = store
-            .event_exists(&event.key, event.payload.kind())
+            .contains(&event.key, event.payload.kind())
             .map_err(|_| CollectorError::Store)?
             || events.iter().any(|existing| {
                 existing.key == event.key && existing.payload.kind() == event.payload.kind()
@@ -253,7 +254,7 @@ fn push_new(
 
 fn bootstrap_gmail(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     account_email: &str,
     token: &str,
@@ -334,7 +335,7 @@ fn bootstrap_gmail(
 }
 
 fn commit(
-    store: &mut Store,
+    store: &mut impl Ledger,
     events: Vec<Event>,
     cursor: Option<CollectorCursor>,
     calendar: Vec<(String, CalendarState)>,
@@ -380,14 +381,14 @@ fn report(
 /// Records that a source could not be read. The cursor is intact, so this is a delay
 /// that catch-up repairs, not a gap; the store logs it once per state change.
 pub fn record_failure(
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     source: Source,
     reason: CoverageReason,
     now: DateTime<Utc>,
 ) -> Result<(), CollectorError> {
     let since = store
-        .collector_checkpoint(account, &source)
+        .checkpoint(account, &source)
         .map_err(|_| CollectorError::Store)?
         .map(|value| value.updated_at);
     let delayed = report(
@@ -452,13 +453,13 @@ impl CalendarCursor {
 
 pub fn poll_calendar(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Progress, CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Calendar)
+        .checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?;
     let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
     let mut cursor = match &checkpoint {
@@ -575,13 +576,13 @@ pub fn poll_calendar(
 /// It keeps the incremental cursor; a window too large to list is a visible gap.
 pub fn refresh_calendar_window(
     api: &impl GoogleApi,
-    store: &mut Store,
+    store: &mut impl Ledger,
     account: &str,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<(), CollectorError> {
     let checkpoint = store
-        .collector_checkpoint(account, &Source::Calendar)
+        .checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?
         .ok_or(CollectorError::Source)?;
     if !matches!(
@@ -629,7 +630,7 @@ pub fn refresh_calendar_window(
 }
 
 fn calendar_observations(
-    store: &Store,
+    store: &impl Ledger,
     account: &str,
     items: Vec<CalendarEvent>,
     origin: Origin,
@@ -653,7 +654,7 @@ fn calendar_observations(
 }
 
 fn select_calendar_items(
-    store: &Store,
+    store: &impl Ledger,
     account: &str,
     items: Vec<CalendarEvent>,
     now: DateTime<Utc>,
@@ -716,7 +717,7 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{engine::FindingDetail, event::EventPayload};
+    use crate::{engine::FindingDetail, event::EventPayload, store::Store};
     use std::{collections::VecDeque, sync::Mutex};
 
     struct FakeApi {
