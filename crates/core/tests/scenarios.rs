@@ -4,8 +4,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use picket_core::{
     engine::{ActorEvidence, ConflictReason, FindingDetail, RequestFit, Route},
     event::{
-        AccountPolicy, Action, Claim, Effect, Event, EventKey, EventPayload, Field, Origin,
-        Request, Source, ToolOutcome, ToolResult,
+        AccountPolicy, Action, Claim, Coverage, CoverageState, Effect, Event, EventKey,
+        EventPayload, Field, Origin, Request, Source, ToolOutcome, ToolResult,
     },
     store::Store,
 };
@@ -178,6 +178,49 @@ fn case(
         fit,
         route,
     }
+}
+
+/// Healthy request capture for an agent, as the request extractor records it.
+fn captured(agent: &str, minute: i64) -> Event {
+    event(
+        Source::Messages,
+        &format!("capture-{agent}"),
+        minute,
+        EventPayload::Coverage(Coverage {
+            capability: picket_core::engine::request_capability(agent),
+            state: CoverageState::Healthy,
+            cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
+        }),
+    )
+}
+
+#[test]
+fn without_request_capture_a_missing_request_is_not_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut late = asked("send the email to A");
+    late.occurred_at = at(11);
+    late.ingested_at = at(11);
+    let mut store = Store::memory()?;
+    for visible in [
+        late,
+        sent("message-1", 10),
+        runtime("message-1", "agent-1", Some("task-1")),
+    ] {
+        store.append_assessed(&visible, at(30))?;
+    }
+    store.reconcile(at(30))?;
+    let fit = store
+        .current_findings()?
+        .into_iter()
+        .find_map(|(_, finding)| match finding.detail {
+            FindingDetail::Effect(value) => Some(value.request_fit),
+            _ => None,
+        });
+    assert_eq!(fit, Some(RequestFit::RequestNotCaptured));
+    Ok(())
 }
 
 #[test]
@@ -524,6 +567,10 @@ fn twenty_four_labeled_scenarios_replay_through_store() -> Result<(), Box<dyn st
 
     for scenario in cases {
         let mut store = Store::memory()?;
+        // These scenarios model a captured, extracted request channel for both agents.
+        for agent in ["agent-1", "agent-2"] {
+            store.append_assessed(&captured(agent, 20), at(30))?;
+        }
         for visible in &scenario.visible {
             store.append_assessed(visible, at(30))?;
         }

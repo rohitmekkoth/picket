@@ -372,3 +372,88 @@ fn retention_prunes_findings_about_removed_events_and_old_revisions() -> Result<
     );
     Ok(())
 }
+
+#[test]
+fn later_request_capture_settles_no_observed_request_for_earlier_effects() -> Result<()> {
+    use picket_core::{
+        engine::{FindingDetail, RequestFit, request_capability},
+        event::{
+            Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload, Origin, Source,
+            ToolOutcome, ToolResult,
+        },
+    };
+    let event = |source: Source, resource: &str, minute: i64, payload: EventPayload| Event {
+        schema_version: 1,
+        key: EventKey {
+            account: "acct-1".into(),
+            source,
+            resource: resource.into(),
+            revision: "1".into(),
+        },
+        occurred_at: at(minute),
+        ingested_at: at(minute),
+        source_time_quality: None,
+        adapter: None,
+        payload,
+    };
+    let send = event(
+        Source::Gmail,
+        "m1",
+        10,
+        EventPayload::Effect(Effect {
+            action: Action::EmailSend,
+            targets: vec!["a@example.test".into()],
+            targets_complete: true,
+            calendar_start: None,
+            origin: Origin::Live,
+            external_change: false,
+            email: None,
+            calendar: None,
+        }),
+    );
+    let tool = event(
+        Source::OpenClaw,
+        "call-1",
+        10,
+        EventPayload::ToolResult(ToolResult {
+            agent: "agent-1".into(),
+            task: None,
+            action: Action::EmailSend,
+            targets: vec!["a@example.test".into()],
+            provider_resource: Some("m1".into()),
+            provider_revision: None,
+            outcome: ToolOutcome::Succeeded,
+        }),
+    );
+    // Before the effect's review deadline (minute 15), so only the dependency rule
+    // can reassess it.
+    let captured = event(
+        Source::Messages,
+        "capture-1",
+        13,
+        EventPayload::Coverage(Coverage {
+            capability: request_capability("agent-1"),
+            state: CoverageState::Healthy,
+            cursor: None,
+            gap_since: None,
+            reason: None,
+            partial_pages: None,
+        }),
+    );
+    let fit = |store: &Store| -> Result<Option<RequestFit>> {
+        Ok(stored(store)?
+            .into_values()
+            .find_map(|finding| match finding.detail {
+                FindingDetail::Effect(value) => Some(value.request_fit),
+                _ => None,
+            }))
+    };
+    let mut store = Store::memory()?;
+    store.append_assessed(&send, at(11))?;
+    store.append_assessed(&tool, at(11))?;
+    assert_eq!(fit(&store)?, Some(RequestFit::RequestNotCaptured));
+    store.append_assessed(&captured, at(13))?;
+    assert_eq!(fit(&store)?, Some(RequestFit::NoObservedRequest));
+    assert_eq!(stored(&store)?, replayed(&store, at(13))?);
+    Ok(())
+}
