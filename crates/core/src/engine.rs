@@ -142,6 +142,8 @@ pub struct Evidence {
     policies: BTreeMap<String, Vec<i64>>,
     coverage: BTreeMap<CoverageKey, CoverageHistory>,
     notices: Vec<i64>,
+    effect_findings: BTreeMap<String, i64>,
+    deadlines: BTreeSet<(DateTime<Utc>, i64)>,
 }
 
 impl Evidence {
@@ -168,6 +170,9 @@ impl Evidence {
             {
                 self.effects
                     .insert((account.clone(), event.occurred_at, seq));
+                self.effect_findings
+                    .insert(effect_finding_id(&event.key), seq);
+                self.deadlines.insert((wait_from(&event) + GRACE, seq));
                 push_sorted(
                     self.resources
                         .entry((account, event.key.resource.clone()))
@@ -178,6 +183,7 @@ impl Evidence {
             EventPayload::Claim(claim) if event.key.source == Source::Messages => {
                 self.claims
                     .insert((account.clone(), event.occurred_at, seq));
+                self.deadlines.insert((wait_from(&event) + GRACE, seq));
                 if let Some(resource) = &claim.provider_resource {
                     push_sorted(
                         self.resources
@@ -387,11 +393,7 @@ impl Evidence {
         let EventPayload::Claim(claim) = &report.payload else {
             return None;
         };
-        let source = if claim.action == Action::EmailSend {
-            Source::Gmail
-        } else {
-            Source::Calendar
-        };
+        let source = claim_source(claim);
         let account = &report.key.account;
         let mut candidates: BTreeMap<i64, &Event> = self
             .effects_near(account, report.occurred_at)
@@ -768,6 +770,324 @@ impl Evidence {
     }
 }
 
+/// The input event an assessment is about.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Subject {
+    Effect(i64),
+    Claim(i64),
+    Notice(i64),
+    Coverage(String),
+}
+
+impl Evidence {
+    /// Subjects whose assessment can change because `seq` became visible. Each rule
+    /// mirrors a lookup in the assessment code; retention housekeeping changes nothing.
+    fn affected_by(&self, seq: i64) -> BTreeSet<Subject> {
+        let mut subjects = BTreeSet::new();
+        let Some(event) = self.get(seq) else {
+            return subjects;
+        };
+        let account = &event.key.account;
+        let effects = |subjects: &mut BTreeSet<Subject>, events: Vec<(i64, &Event)>| {
+            subjects.extend(
+                events
+                    .into_iter()
+                    .filter(|(_, item)| matches!(item.payload, EventPayload::Effect(_)))
+                    .map(|(seq, _)| Subject::Effect(seq)),
+            );
+        };
+        match &event.payload {
+            EventPayload::Effect(_) => {
+                subjects.insert(Subject::Effect(seq));
+                // A report without a provider ID matches only a unique nearby effect, so a
+                // new effect can change the matches of reports and effects around it.
+                let window = CLAIM_WINDOW * 2 + Duration::seconds(2);
+                effects(
+                    &mut subjects,
+                    time_range(
+                        &self.effects,
+                        account,
+                        event.occurred_at - window,
+                        event.occurred_at + window,
+                    )
+                    .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                    .collect(),
+                );
+                subjects.extend(
+                    self.claims_near(account, event.occurred_at)
+                        .into_iter()
+                        .map(|(seq, _)| Subject::Claim(seq)),
+                );
+                for (other, item) in self.by_resource(account, &event.key.resource) {
+                    match &item.payload {
+                        EventPayload::Claim(_) => {
+                            subjects.insert(Subject::Claim(other));
+                        }
+                        EventPayload::ToolResult(tool) => {
+                            self.task_effects(&mut subjects, account, tool);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            EventPayload::Claim(claim) => {
+                subjects.insert(Subject::Claim(seq));
+                effects(&mut subjects, self.effects_near(account, event.occurred_at));
+                if let Some(resource) = &claim.provider_resource {
+                    effects(&mut subjects, self.by_resource(account, resource));
+                }
+            }
+            EventPayload::ToolResult(tool) => {
+                if let Some(resource) = &tool.provider_resource {
+                    effects(&mut subjects, self.by_resource(account, resource));
+                }
+                self.task_effects(&mut subjects, account, tool);
+            }
+            EventPayload::Request(_) | EventPayload::Policy(_) => {
+                effects(
+                    &mut subjects,
+                    time_range(
+                        &self.effects,
+                        account,
+                        event.occurred_at,
+                        DateTime::<Utc>::MAX_UTC,
+                    )
+                    .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                    .collect(),
+                );
+            }
+            EventPayload::Feedback(value) => {
+                if let Some(effect) = self.effect_findings.get(&value.finding) {
+                    subjects.insert(Subject::Effect(*effect));
+                }
+            }
+            EventPayload::Coverage(_) => {
+                subjects.insert(Subject::Coverage(account.clone()));
+                self.claims_awaiting_coverage(&mut subjects, event);
+            }
+            EventPayload::Notice { .. } => {
+                subjects.insert(Subject::Notice(seq));
+            }
+            _ => {}
+        }
+        subjects
+    }
+
+    /// Effects linked to the tool result's task, whose linked-action counts may change.
+    fn task_effects(&self, subjects: &mut BTreeSet<Subject>, account: &str, tool: &ToolResult) {
+        let Some(task) = &tool.task else {
+            return;
+        };
+        let key = (account.to_owned(), tool.agent.clone(), task.clone());
+        for linked in self.list(self.tasks.get(&key)) {
+            if let EventPayload::ToolResult(linked) = &linked.payload
+                && let Some(resource) = &linked.provider_resource
+            {
+                subjects.extend(
+                    self.by_resource(account, resource)
+                        .into_iter()
+                        .filter(|(_, item)| matches!(item.payload, EventPayload::Effect(_)))
+                        .map(|(seq, _)| Subject::Effect(seq)),
+                );
+            }
+        }
+    }
+
+    /// A claim's coverage walk ends at the first healthy confirmation after its
+    /// deadline. Claims whose deadline or report time precedes the source's latest
+    /// earlier healthy entry already ended their walk, so a new entry cannot affect them.
+    fn claims_awaiting_coverage(&self, subjects: &mut BTreeSet<Subject>, event: &Event) {
+        let Some((source, value, observed_at)) = coverage_value(event) else {
+            return;
+        };
+        let account = &event.key.account;
+        let history =
+            self.coverage
+                .get(&(account.clone(), source.as_str(), value.capability.clone()));
+        let healthy_before = history
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter(|(at, _)| *at < observed_at)
+            .filter_map(|(at, seq)| {
+                self.get(*seq)
+                    .and_then(coverage_value)
+                    .map(|item| (at, item))
+            })
+            .find(|(_, (_, coverage, _))| coverage.state == CoverageState::Healthy)
+            .map_or(DateTime::<Utc>::MIN_UTC, |(at, _)| *at);
+        let by_deadline = self
+            .deadlines
+            .range((healthy_before, i64::MAX)..)
+            .map(|(_, seq)| *seq);
+        let by_report = time_range(
+            &self.claims,
+            account,
+            healthy_before,
+            DateTime::<Utc>::MAX_UTC,
+        );
+        for seq in by_deadline.chain(by_report) {
+            if let Some(report) = self.get(seq)
+                && report.key.account == *account
+                && let EventPayload::Claim(claim) = &report.payload
+                && claim_source(claim) == source
+            {
+                subjects.insert(Subject::Claim(seq));
+            }
+        }
+    }
+
+    /// Effects and claims whose review deadline passed in `(after, until]`.
+    fn due(&self, after: DateTime<Utc>, until: DateTime<Utc>) -> BTreeSet<Subject> {
+        if until <= after {
+            return BTreeSet::new();
+        }
+        self.deadlines
+            .range((after, i64::MAX)..=(until, i64::MAX))
+            .filter_map(
+                |(_, seq)| match self.get(*seq).map(|event| &event.payload) {
+                    Some(EventPayload::Effect(_)) => Some(Subject::Effect(*seq)),
+                    Some(EventPayload::Claim(_)) => Some(Subject::Claim(*seq)),
+                    _ => None,
+                },
+            )
+            .collect()
+    }
+
+    fn assess_subject(&self, subject: &Subject, now: DateTime<Utc>) -> Vec<Finding> {
+        match subject {
+            Subject::Effect(seq) => self
+                .get(*seq)
+                .and_then(|event| self.assess_effect(event, now))
+                .map(effect_finding)
+                .into_iter()
+                .collect(),
+            Subject::Claim(seq) => self
+                .get(*seq)
+                .and_then(|report| self.claim_check(report, now))
+                .map(claim_finding)
+                .into_iter()
+                .collect(),
+            Subject::Notice(seq) => self
+                .get(*seq)
+                .and_then(notice_assessment)
+                .map(notice_finding)
+                .into_iter()
+                .collect(),
+            Subject::Coverage(account) => self.coverage_findings(account),
+        }
+    }
+
+    /// True when an open claim needs healthy evidence recorded after its deadline.
+    pub fn confirmation_due(&self, account: &str, source: &Source, now: DateTime<Utc>) -> bool {
+        let confirmed = self
+            .coverage
+            .get(&(account.to_owned(), source.as_str(), "effects".to_owned()))
+            .into_iter()
+            .flatten()
+            .rev()
+            .filter_map(|(at, seq)| {
+                self.get(*seq)
+                    .and_then(coverage_value)
+                    .map(|item| (at, item))
+            })
+            .find(|(_, (_, coverage, _))| coverage.state == CoverageState::Healthy)
+            .map_or(DateTime::<Utc>::MIN_UTC, |(at, _)| *at);
+        if now <= confirmed {
+            return false;
+        }
+        self.deadlines
+            .range((confirmed, i64::MAX)..=(now, i64::MAX))
+            .any(|(_, seq)| {
+                self.get(*seq).is_some_and(|report| {
+                    report.key.account == account
+                        && matches!(&report.payload, EventPayload::Claim(claim)
+                            if claim_source(claim) == *source)
+                })
+            })
+    }
+}
+
+/// Incremental assessment over a growing log. Each `advance` reassesses only the
+/// subjects that new visible events or passed deadlines can change; the result equals
+/// a full replay of the same visible events at the same time.
+#[derive(Clone, Debug, Default)]
+pub struct Assessor {
+    evidence: Evidence,
+    waiting: BTreeMap<i64, Event>,
+    arrivals: Vec<i64>,
+    clock: Option<DateTime<Utc>>,
+}
+
+impl Assessor {
+    /// Resumes from durable state: events through `assessed_through` were already
+    /// assessed at `clock`. Without a clock, the next advance reassesses everything.
+    pub fn resume(
+        events: impl IntoIterator<Item = (i64, Event)>,
+        assessed_through: i64,
+        clock: Option<DateTime<Utc>>,
+    ) -> Self {
+        let mut assessor = Self {
+            clock,
+            ..Self::default()
+        };
+        for (seq, event) in events {
+            if seq <= assessed_through && clock.is_some_and(|clock| event.ingested_at <= clock) {
+                assessor.evidence.insert(seq, event);
+            } else {
+                assessor.waiting.insert(seq, event);
+            }
+        }
+        assessor
+    }
+
+    pub fn evidence(&self) -> &Evidence {
+        &self.evidence
+    }
+
+    /// Records a newly committed event; it is assessed once visible.
+    pub fn observe(&mut self, seq: i64, event: Event, now: DateTime<Utc>) {
+        if event.ingested_at <= now {
+            self.evidence.insert(seq, event);
+            self.arrivals.push(seq);
+        } else {
+            self.waiting.insert(seq, event);
+        }
+    }
+
+    /// Returns the current findings for every subject that may have changed.
+    pub fn advance(&mut self, now: DateTime<Utc>) -> Vec<Finding> {
+        let visible: Vec<_> = self
+            .waiting
+            .iter()
+            .filter(|(_, event)| event.ingested_at <= now)
+            .map(|(seq, _)| *seq)
+            .collect();
+        for seq in visible {
+            if let Some(event) = self.waiting.remove(&seq) {
+                self.evidence.insert(seq, event);
+                self.arrivals.push(seq);
+            }
+        }
+        let arrivals = std::mem::take(&mut self.arrivals);
+        let Some(clock) = self.clock else {
+            self.clock = Some(now);
+            return self.evidence.findings(now);
+        };
+        let mut subjects = self.evidence.due(clock, now);
+        for seq in arrivals {
+            subjects.extend(self.evidence.affected_by(seq));
+        }
+        self.clock = Some(clock.max(now));
+        let mut result: Vec<_> = subjects
+            .iter()
+            .flat_map(|subject| self.evidence.assess_subject(subject, now))
+            .collect();
+        result.sort_by(|left, right| left.id.cmp(&right.id));
+        result
+    }
+}
+
 pub fn findings(events: &[Event], now: DateTime<Utc>) -> Vec<Finding> {
     Evidence::visible(events, now).findings(now)
 }
@@ -859,6 +1179,15 @@ fn coverage_route(evidence: &CoverageEvidence) -> Route {
         (CoverageState::Delayed, Some(CoverageReason::AuthUnavailable)) => Route::MediumReview,
         (CoverageState::Delayed, _) => Route::Timeline,
         (CoverageState::Gap | CoverageState::Disabled, _) => Route::MediumReview,
+    }
+}
+
+/// The account source a claimed action would change.
+fn claim_source(claim: &crate::event::Claim) -> Source {
+    if claim.action == Action::EmailSend {
+        Source::Gmail
+    } else {
+        Source::Calendar
     }
 }
 

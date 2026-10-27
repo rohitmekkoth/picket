@@ -7,12 +7,12 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    engine::{self, Finding, FindingDetail, Route},
-    event::{Event, canonical_json},
+    engine::{Finding, FindingDetail, Route},
+    event::canonical_json,
     store::Result,
 };
 
-const ENGINE_VERSION: i64 = 2;
+pub(crate) const ENGINE_VERSION: i64 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OutboxKind {
@@ -45,19 +45,23 @@ impl Deref for OutboxBatch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReconcileSummary {
     pub through_sequence: i64,
+    /// Findings evaluated in this write; bounded by what the new input can affect.
+    pub assessed: usize,
     pub revised: usize,
     pub queued: usize,
 }
 
-pub(crate) fn reconcile(
+/// Stores changed findings and their notification intent with the engine position.
+pub(crate) fn persist(
     tx: &Transaction<'_>,
-    events: &[Event],
+    findings: Vec<Finding>,
     now: DateTime<Utc>,
     through_sequence: i64,
 ) -> Result<ReconcileSummary> {
+    let assessed = findings.len();
     let mut revised = 0;
     let mut queued = 0;
-    for finding in engine::findings(events, now) {
+    for finding in findings {
         let previous: Option<(i64, Vec<u8>)> = tx
             .query_row(
                 "SELECT revisions.revision, revisions.payload FROM assessment_current AS current
@@ -140,11 +144,12 @@ pub(crate) fn reconcile(
         }
     }
     tx.execute(
-        "UPDATE engine_state SET through_sequence=?1,engine_version=?2 WHERE id=1",
-        params![through_sequence, ENGINE_VERSION],
+        "UPDATE engine_state SET through_sequence=?1,engine_version=?2,clock=?3 WHERE id=1",
+        params![through_sequence, ENGINE_VERSION, now.to_rfc3339()],
     )?;
     Ok(ReconcileSummary {
         through_sequence,
+        assessed,
         revised,
         queued,
     })
