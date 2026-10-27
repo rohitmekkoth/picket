@@ -76,6 +76,8 @@ pub struct GmailHistory {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GmailHistoryRecord {
+    /// Records are ordered by id; a processed id is a valid resume cursor.
+    pub id: String,
     #[serde(default)]
     pub messages_added: Vec<GmailMessageAdded>,
     #[serde(default)]

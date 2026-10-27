@@ -1,25 +1,28 @@
-//! Bounded, restart-safe polling over the approved Google resources.
+//! Bounded, restart-safe polling over the approved Google resources. Every poll makes
+//! durable progress: a source that is behind resumes from its committed position.
 
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Duration, Utc};
 use picket_core::{
     calendar::{CalendarEvent, CalendarState},
-    event::{
-        Coverage, CoverageReason, CoverageState, Event, EventKey, EventPayload, Origin, Source,
-    },
+    event::{Coverage, CoverageReason, CoverageState, Event, Origin, Source},
     google::GmailMessage,
-    store::{CollectorCursor, Store},
+    store::{Batch, CollectorCursor, CoverageReport, Store},
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::google_http::{
     CalendarPage, GmailHistory, GmailList, GmailProfile, GoogleHttp, HttpError,
 };
 
-const MAX_PAGES: usize = 40;
-const MAX_MESSAGES: usize = 5000;
+/// Pages read per poll before yielding to other sources.
+const PAGES_PER_POLL: usize = 10;
+/// Metadata reads per poll; about 30 s at the Gmail pacing interval.
+const MESSAGES_PER_POLL: usize = 100;
+/// The daily rolling-window refresh is bounded separately because it does not move the cursor.
+const WINDOW_PAGES: usize = 40;
 const BASELINE_MESSAGES_PER_LABEL: usize = 50;
 type CalendarUpdates = (Vec<Event>, Vec<(String, CalendarState)>);
 
@@ -39,6 +42,13 @@ pub enum CollectorError {
     Limit,
     #[error("Google account identity changed")]
     Account,
+}
+
+/// Whether a poll reached the source's current state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Progress {
+    CaughtUp,
+    Behind,
 }
 
 pub trait GoogleApi {
@@ -99,6 +109,9 @@ impl GoogleApi for GoogleHttp {
     }
 }
 
+/// Replays Gmail history from the committed cursor. Each page commits its observations
+/// with the id of the last fully processed history record, so a large backlog resumes on
+/// the next poll instead of repeating. Healthy coverage is reported only once caught up.
 pub fn poll_gmail(
     api: &impl GoogleApi,
     store: &mut Store,
@@ -106,14 +119,14 @@ pub fn poll_gmail(
     account_email: &str,
     token: &str,
     now: DateTime<Utc>,
-) -> Result<(), CollectorError> {
+) -> Result<Progress, CollectorError> {
     let checkpoint = store
         .collector_checkpoint(account, &Source::Gmail)
         .map_err(|_| CollectorError::Store)?;
-    let cursor = if let Some(checkpoint) = &checkpoint {
-        checkpoint.value.clone()
-    } else {
-        bootstrap_gmail(
+    let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
+    let start = match checkpoint {
+        Some(checkpoint) => checkpoint.value,
+        None => bootstrap_gmail(
             api,
             store,
             account,
@@ -121,33 +134,30 @@ pub fn poll_gmail(
             token,
             now,
             Origin::Baseline,
-        )?
+        )?,
     };
-    let origin = if checkpoint
-        .as_ref()
-        .is_some_and(|value| now - value.updated_at > Duration::minutes(2))
-    {
+    let origin = if caught_up_at.is_some_and(|at| now - at > Duration::minutes(2)) {
         Origin::CatchUp
     } else {
         Origin::Live
     };
+    let mut durable = start.clone();
     let mut page_token = None;
-    let mut message_ids = BTreeSet::new();
-    let mut last_history = None;
-    for _ in 0..MAX_PAGES {
-        let page = match api.gmail_history(token, &cursor, page_token.as_deref()) {
+    let mut budget = MESSAGES_PER_POLL;
+    for _ in 0..PAGES_PER_POLL {
+        let page = match api.gmail_history(token, &start, page_token.as_deref()) {
             Ok(page) => page,
             Err(HttpError::ExpiredCursor) => {
-                record_gap(
-                    store,
+                let gap = report(
                     account,
                     Source::Gmail,
-                    Some(cursor),
+                    "effects",
+                    CoverageState::Gap,
                     Some(CoverageReason::CursorExpired),
-                    checkpoint.map(|value| value.updated_at),
-                    now,
-                )?;
-                return bootstrap_gmail(
+                    caught_up_at,
+                );
+                commit(store, Vec::new(), None, Vec::new(), vec![gap], now)?;
+                bootstrap_gmail(
                     api,
                     store,
                     account,
@@ -155,8 +165,8 @@ pub fn poll_gmail(
                     token,
                     now,
                     Origin::CatchUp,
-                )
-                .map(|_| ());
+                )?;
+                return Ok(Progress::Behind);
             }
             Err(source) => {
                 return Err(CollectorError::Http {
@@ -165,84 +175,117 @@ pub fn poll_gmail(
                 });
             }
         };
+        let mut events = Vec::new();
+        let mut missing = false;
+        let mut page_complete = true;
         for record in &page.history {
-            for item in record.messages_added.iter().chain(&record.labels_added) {
-                message_ids.insert(item.message.id.clone());
+            let ids: BTreeSet<_> = record
+                .messages_added
+                .iter()
+                .chain(&record.labels_added)
+                .map(|item| item.message.id.as_str())
+                .collect();
+            // A record is processed whole. One larger than a full budget still proceeds,
+            // so every poll advances.
+            if ids.len() > budget && budget < MESSAGES_PER_POLL {
+                page_complete = false;
+                break;
             }
+            for id in ids {
+                budget = budget.saturating_sub(1);
+                match fetch_message(api, token, id)? {
+                    Some(message) => push_new(
+                        store,
+                        &mut events,
+                        message
+                            .observations(account, origin.clone(), now)
+                            .map_err(|_| CollectorError::Source)?,
+                    )?,
+                    None => missing = true,
+                }
+            }
+            durable.clone_from(&record.id);
         }
-        if message_ids.len() > MAX_MESSAGES {
-            record_gap(
-                store,
+        let caught_up = page_complete && page.next_page_token.is_none();
+        if caught_up {
+            durable = page.history_id.clone();
+        }
+        let mut coverage = Vec::new();
+        if missing {
+            coverage.push(report(
                 account,
                 Source::Gmail,
-                Some(cursor),
-                Some(CoverageReason::PageLimit),
-                checkpoint.map(|value| value.updated_at),
-                now,
-            )?;
-            return Err(CollectorError::Limit);
+                "effects",
+                CoverageState::Gap,
+                Some(CoverageReason::MissingResource),
+                caught_up_at,
+            ));
+        } else if caught_up {
+            coverage.push(report(
+                account,
+                Source::Gmail,
+                "effects",
+                CoverageState::Healthy,
+                None,
+                None,
+            ));
         }
-        last_history = Some(page.history_id);
-        page_token = page.next_page_token;
-        if page_token.is_none() {
-            break;
-        }
-    }
-    if page_token.is_some() {
-        record_gap(
-            store,
-            account,
-            Source::Gmail,
-            Some(cursor),
-            Some(CoverageReason::PageLimit),
-            checkpoint.map(|value| value.updated_at),
-            now,
-        )?;
-        return Err(CollectorError::Limit);
-    }
-    let mut events = Vec::new();
-    let mut missing = false;
-    for id in message_ids {
-        let message = match api.gmail_message(token, &id) {
-            Ok(message) => message,
-            Err(HttpError::MissingResource) => {
-                missing = true;
-                continue;
-            }
-            Err(source) => {
-                return Err(CollectorError::Http {
-                    operation: "message",
-                    source,
-                });
-            }
+        let cursor = CollectorCursor {
+            account: account.into(),
+            source: Source::Gmail,
+            value: durable.clone(),
+            updated_at: if caught_up {
+                now
+            } else {
+                caught_up_at.unwrap_or(now)
+            },
         };
-        for event in message
-            .observations(account, origin.clone(), now)
-            .map_err(|_| CollectorError::Source)?
-        {
-            if !store
-                .event_exists(&event.key, event.payload.kind())
-                .map_err(|_| CollectorError::Store)?
-            {
-                events.push(event);
-            }
+        commit(store, events, Some(cursor), Vec::new(), coverage, now)?;
+        if caught_up {
+            return Ok(Progress::CaughtUp);
+        }
+        if !page_complete {
+            return Ok(Progress::Behind);
+        }
+        page_token = page.next_page_token;
+    }
+    Ok(Progress::Behind)
+}
+
+/// Fetches one message's metadata; `None` when it no longer exists.
+fn fetch_message(
+    api: &impl GoogleApi,
+    token: &str,
+    id: &str,
+) -> Result<Option<GmailMessage>, CollectorError> {
+    match api.gmail_message(token, id) {
+        Ok(message) => Ok(Some(message)),
+        Err(HttpError::MissingResource) => Ok(None),
+        Err(source) => Err(CollectorError::Http {
+            operation: "message",
+            source,
+        }),
+    }
+}
+
+/// Adds observations that are neither stored nor already in this page.
+fn push_new(
+    store: &Store,
+    events: &mut Vec<Event>,
+    observations: Vec<Event>,
+) -> Result<(), CollectorError> {
+    for event in observations {
+        let known = store
+            .event_exists(&event.key, event.payload.kind())
+            .map_err(|_| CollectorError::Store)?
+            || events.iter().any(|existing| {
+                existing.key == event.key && existing.payload.kind() == event.payload.kind()
+            });
+        if !known {
+            events.push(event);
         }
     }
-    let next = last_history.ok_or(CollectorError::Source)?;
-    events.push(coverage_event(
-        account,
-        Source::Gmail,
-        if missing {
-            CoverageState::Gap
-        } else {
-            CoverageState::Healthy
-        },
-        Some(next.clone()),
-        missing.then_some(CoverageReason::MissingResource),
-        checkpoint.map(|value| value.updated_at),
-        now,
-    ));
-    commit_page(store, &events, account, Source::Gmail, next, now)
+    Ok(())
 }
 
 fn bootstrap_gmail(
@@ -285,150 +328,162 @@ fn bootstrap_gmail(
     }
     let mut events = Vec::new();
     for id in ids {
-        let message = match api.gmail_message(token, &id) {
-            Ok(message) => message,
-            Err(HttpError::MissingResource) => {
-                complete = false;
-                missing = true;
-                continue;
-            }
-            Err(source) => {
-                return Err(CollectorError::Http {
-                    operation: "message",
-                    source,
-                });
-            }
+        let Some(message) = fetch_message(api, token, &id)? else {
+            complete = false;
+            missing = true;
+            continue;
         };
         let milliseconds: i64 = message
             .internal_date
             .parse()
             .map_err(|_| CollectorError::Source)?;
         if DateTime::from_timestamp_millis(milliseconds).is_some_and(|date| date >= cutoff) {
-            for event in message
+            let observations = message
                 .observations(account, origin.clone(), now)
-                .map_err(|_| CollectorError::Source)?
-            {
-                if !store
-                    .event_exists(&event.key, event.payload.kind())
-                    .map_err(|_| CollectorError::Store)?
-                    && !events.iter().any(|existing: &Event| {
-                        existing.key == event.key && existing.payload.kind() == event.payload.kind()
-                    })
-                {
-                    events.push(event);
-                }
-            }
+                .map_err(|_| CollectorError::Source)?;
+            push_new(store, &mut events, observations)?;
         }
     }
-    let mut baseline = coverage_event(
+    let baseline = report(
         account,
         Source::Gmail,
+        "baseline",
         if complete {
             CoverageState::Healthy
         } else {
             CoverageState::Gap
         },
-        None,
         (!complete).then_some(if missing {
             CoverageReason::MissingResource
         } else {
             CoverageReason::PageLimit
         }),
         (!complete).then_some(cutoff),
-        now,
     );
-    baseline.key.resource = "coverage/baseline".into();
-    if let EventPayload::Coverage(coverage) = &mut baseline.payload {
-        coverage.capability = "baseline".into();
-    }
-    events.push(baseline);
-    commit_page(
-        store,
-        &events,
-        account,
-        Source::Gmail,
-        profile.history_id.clone(),
-        now,
-    )?;
+    let cursor = CollectorCursor {
+        account: account.into(),
+        source: Source::Gmail,
+        value: profile.history_id.clone(),
+        updated_at: now,
+    };
+    commit(store, events, Some(cursor), Vec::new(), vec![baseline], now)?;
     Ok(profile.history_id)
 }
 
-fn commit_page(
+fn commit(
     store: &mut Store,
-    events: &[Event],
-    account: &str,
-    source: Source,
-    cursor: String,
+    events: Vec<Event>,
+    cursor: Option<CollectorCursor>,
+    calendar: Vec<(String, CalendarState)>,
+    coverage: Vec<CoverageReport>,
     now: DateTime<Utc>,
 ) -> Result<(), CollectorError> {
     store
-        .append_collector_page(
-            events,
-            &CollectorCursor {
-                account: account.into(),
-                source,
-                value: cursor,
-                updated_at: now,
+        .commit(
+            Batch {
+                events,
+                cursor,
+                calendar,
+                coverage,
             },
+            now,
         )
         .map_err(|_| CollectorError::Store)?;
-    store.reconcile(now).map_err(|_| CollectorError::Store)?;
     Ok(())
 }
 
-fn record_gap(
-    store: &mut Store,
+fn report(
     account: &str,
     source: Source,
-    cursor: Option<String>,
-    reason: Option<CoverageReason>,
-    gap_since: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-) -> Result<(), CollectorError> {
-    let event = coverage_event(
-        account,
-        source,
-        CoverageState::Gap,
-        cursor,
-        reason,
-        gap_since,
-        now,
-    );
-    store
-        .append_assessed(&event, now)
-        .map_err(|_| CollectorError::Store)?;
-    Ok(())
-}
-
-fn coverage_event(
-    account: &str,
-    source: Source,
+    capability: &str,
     state: CoverageState,
-    cursor: Option<String>,
     reason: Option<CoverageReason>,
     gap_since: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-) -> Event {
-    Event {
-        schema_version: 1,
-        key: EventKey {
-            account: account.into(),
-            source,
-            resource: "coverage/effects".into(),
-            revision: Uuid::new_v4().to_string(),
-        },
-        occurred_at: now,
-        ingested_at: now,
-        source_time_quality: None,
-        adapter: None,
-        payload: EventPayload::Coverage(Coverage {
-            capability: "effects".into(),
+) -> CoverageReport {
+    CoverageReport {
+        account: account.into(),
+        source,
+        coverage: Coverage {
+            capability: capability.into(),
             state,
-            cursor,
+            cursor: None,
             gap_since,
             reason,
             partial_pages: None,
-        }),
+        },
+    }
+}
+
+/// Records that a source could not be read. The cursor is intact, so this is a delay
+/// that catch-up repairs, not a gap; the store logs it once per state change.
+pub fn record_failure(
+    store: &mut Store,
+    account: &str,
+    source: Source,
+    reason: CoverageReason,
+    now: DateTime<Utc>,
+) -> Result<(), CollectorError> {
+    let since = store
+        .collector_checkpoint(account, &source)
+        .map_err(|_| CollectorError::Store)?
+        .map(|value| value.updated_at);
+    let delayed = report(
+        account,
+        source,
+        "effects",
+        CoverageState::Delayed,
+        Some(reason),
+        since,
+    );
+    commit(store, Vec::new(), None, Vec::new(), vec![delayed], now)
+}
+
+/// Durable Calendar position. Bootstrap imports the rolling window, then lists without
+/// bounds to obtain the first sync token; page tokens persist so large listings resume.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum CalendarCursor {
+    Window {
+        origin: Origin,
+        page: Option<String>,
+    },
+    Initial {
+        origin: Origin,
+        page: Option<String>,
+    },
+    Sync {
+        token: String,
+        page: Option<String>,
+    },
+}
+
+impl CalendarCursor {
+    /// A caught-up sync token is stored as itself, as earlier versions did.
+    fn decode(value: &str) -> Result<Self, CollectorError> {
+        Ok(match value {
+            "bootstrap" => Self::Window {
+                origin: Origin::Baseline,
+                page: None,
+            },
+            "resync" => Self::Window {
+                origin: Origin::CatchUp,
+                page: None,
+            },
+            value if value.starts_with('{') => {
+                serde_json::from_str(value).map_err(|_| CollectorError::Source)?
+            }
+            token => Self::Sync {
+                token: token.into(),
+                page: None,
+            },
+        })
+    }
+
+    fn encode(&self) -> Result<String, CollectorError> {
+        match self {
+            Self::Sync { token, page: None } => Ok(token.clone()),
+            other => serde_json::to_string(other).map_err(|_| CollectorError::Source),
+        }
     }
 }
 
@@ -438,150 +493,123 @@ pub fn poll_calendar(
     account: &str,
     token: &str,
     now: DateTime<Utc>,
-) -> Result<(), CollectorError> {
+) -> Result<Progress, CollectorError> {
     let checkpoint = store
         .collector_checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?;
-    match checkpoint {
-        None => bootstrap_calendar(api, store, account, token, now, Origin::Baseline),
-        Some(checkpoint) if matches!(checkpoint.value.as_str(), "bootstrap" | "resync") => {
-            let origin = if checkpoint.value == "resync" {
-                Origin::CatchUp
-            } else {
-                Origin::Baseline
-            };
-            bootstrap_calendar(api, store, account, token, now, origin)
-        }
-        Some(checkpoint) => {
-            let origin = if now - checkpoint.updated_at > Duration::minutes(2) {
-                Origin::CatchUp
-            } else {
-                Origin::Live
-            };
-            let mut page_token = None;
-            for _ in 0..MAX_PAGES {
-                let page = match api.calendar_list(
-                    token,
-                    Some(&checkpoint.value),
-                    page_token.as_deref(),
-                    None,
-                ) {
-                    Ok(page) => page,
-                    Err(HttpError::ExpiredCursor) => {
-                        record_gap(
-                            store,
-                            account,
-                            Source::Calendar,
-                            Some(checkpoint.value),
-                            Some(CoverageReason::CursorExpired),
-                            Some(checkpoint.updated_at),
-                            now,
-                        )?;
-                        store
-                            .append_collector_page(
-                                &[],
-                                &CollectorCursor {
-                                    account: account.into(),
-                                    source: Source::Calendar,
-                                    value: "resync".into(),
-                                    updated_at: now,
-                                },
-                            )
-                            .map_err(|_| CollectorError::Store)?;
-                        return bootstrap_calendar(
-                            api,
-                            store,
-                            account,
-                            token,
-                            now,
-                            Origin::CatchUp,
-                        );
-                    }
-                    Err(source) => {
-                        return Err(CollectorError::Http {
-                            operation: "calendar sync",
-                            source,
-                        });
-                    }
+    let caught_up_at = checkpoint.as_ref().map(|value| value.updated_at);
+    let mut cursor = match &checkpoint {
+        Some(checkpoint) => CalendarCursor::decode(&checkpoint.value)?,
+        None => CalendarCursor::Window {
+            origin: Origin::Baseline,
+            page: None,
+        },
+    };
+    let from = (now - Duration::days(30)).to_rfc3339();
+    let to = (now + Duration::days(90)).to_rfc3339();
+    let live = if caught_up_at.is_some_and(|at| now - at > Duration::minutes(2)) {
+        Origin::CatchUp
+    } else {
+        Origin::Live
+    };
+    for _ in 0..PAGES_PER_POLL {
+        let (sync, page_token, bounds, origin) = match &cursor {
+            CalendarCursor::Window { origin, page } => {
+                (None, page, Some((from.as_str(), to.as_str())), origin)
+            }
+            CalendarCursor::Initial { origin, page } => (None, page, None, origin),
+            CalendarCursor::Sync { token, page } => (Some(token.as_str()), page, None, &live),
+        };
+        let page = match api.calendar_list(token, sync, page_token.as_deref(), bounds) {
+            Ok(page) => page,
+            Err(HttpError::ExpiredCursor) if sync.is_some() => {
+                cursor = CalendarCursor::Window {
+                    origin: Origin::CatchUp,
+                    page: None,
                 };
-                let items = select_calendar_items(store, account, page.items, now)?;
-                let (events, snapshots) =
-                    calendar_observations(store, account, items, origin.clone(), now)?;
-                let next_page = page.next_page_token;
-                let final_page = next_page.is_none();
-                let next_cursor = if final_page {
-                    page.next_sync_token.ok_or(CollectorError::Source)?
-                } else {
-                    checkpoint.value.clone()
+                let gap = report(
+                    account,
+                    Source::Calendar,
+                    "effects",
+                    CoverageState::Gap,
+                    Some(CoverageReason::CursorExpired),
+                    caught_up_at,
+                );
+                let restart = CollectorCursor {
+                    account: account.into(),
+                    source: Source::Calendar,
+                    value: cursor.encode()?,
+                    updated_at: caught_up_at.unwrap_or(now),
                 };
-                let mut events = events;
-                if final_page {
-                    events.push(coverage_event(
-                        account,
-                        Source::Calendar,
-                        CoverageState::Healthy,
-                        Some(next_cursor.clone()),
-                        None,
-                        None,
-                        now,
-                    ));
-                }
-                store
-                    .append_collector_page_with_snapshots(
-                        &events,
-                        &CollectorCursor {
-                            account: account.into(),
-                            source: Source::Calendar,
-                            value: next_cursor,
-                            updated_at: if final_page {
-                                now
-                            } else {
-                                checkpoint.updated_at
-                            },
-                        },
-                        &snapshots,
-                    )
-                    .map_err(|_| CollectorError::Store)?;
-                store.reconcile(now).map_err(|_| CollectorError::Store)?;
-                page_token = next_page;
-                if final_page {
-                    return Ok(());
+                commit(store, Vec::new(), Some(restart), Vec::new(), vec![gap], now)?;
+                continue;
+            }
+            Err(source) => {
+                return Err(CollectorError::Http {
+                    operation: "calendar list",
+                    source,
+                });
+            }
+        };
+        let origin = origin.clone();
+        let items = select_calendar_items(store, account, page.items, now)?;
+        let (events, snapshots) =
+            calendar_observations(store, account, items, origin.clone(), now)?;
+        let next = match (cursor, page.next_page_token) {
+            (CalendarCursor::Window { .. }, Some(page)) => CalendarCursor::Window {
+                origin,
+                page: Some(page),
+            },
+            (CalendarCursor::Window { .. }, None) => CalendarCursor::Initial { origin, page: None },
+            (CalendarCursor::Initial { .. }, Some(page)) => CalendarCursor::Initial {
+                origin,
+                page: Some(page),
+            },
+            (CalendarCursor::Sync { token, .. }, Some(page)) => CalendarCursor::Sync {
+                token,
+                page: Some(page),
+            },
+            (CalendarCursor::Initial { .. } | CalendarCursor::Sync { .. }, None) => {
+                CalendarCursor::Sync {
+                    token: page.next_sync_token.ok_or(CollectorError::Source)?,
+                    page: None,
                 }
             }
-            record_gap(
-                store,
+        };
+        let caught_up = matches!(next, CalendarCursor::Sync { page: None, .. });
+        let coverage = if caught_up {
+            vec![report(
                 account,
                 Source::Calendar,
-                Some(checkpoint.value),
-                Some(CoverageReason::PageLimit),
-                Some(checkpoint.updated_at),
-                now,
-            )?;
-            Err(CollectorError::Limit)
+                "effects",
+                CoverageState::Healthy,
+                None,
+                None,
+            )]
+        } else {
+            Vec::new()
+        };
+        let position = CollectorCursor {
+            account: account.into(),
+            source: Source::Calendar,
+            value: next.encode()?,
+            updated_at: if caught_up {
+                now
+            } else {
+                caught_up_at.unwrap_or(now)
+            },
+        };
+        commit(store, events, Some(position), snapshots, coverage, now)?;
+        if caught_up {
+            return Ok(Progress::CaughtUp);
         }
+        cursor = next;
     }
+    Ok(Progress::Behind)
 }
 
-pub fn record_failure(
-    store: &mut Store,
-    account: &str,
-    source: Source,
-    now: DateTime<Utc>,
-) -> Result<(), CollectorError> {
-    let checkpoint = store
-        .collector_checkpoint(account, &source)
-        .map_err(|_| CollectorError::Store)?;
-    record_gap(
-        store,
-        account,
-        source,
-        checkpoint.as_ref().map(|value| value.value.clone()),
-        Some(CoverageReason::RequestFailed),
-        checkpoint.map(|value| value.updated_at),
-        now,
-    )
-}
-
+/// Re-lists the rolling window daily so unchanged events that enter it become known.
+/// It keeps the incremental cursor; a window too large to list is a visible gap.
 pub fn refresh_calendar_window(
     api: &impl GoogleApi,
     store: &mut Store,
@@ -593,13 +621,16 @@ pub fn refresh_calendar_window(
         .collector_checkpoint(account, &Source::Calendar)
         .map_err(|_| CollectorError::Store)?
         .ok_or(CollectorError::Source)?;
-    if matches!(checkpoint.value.as_str(), "bootstrap" | "resync") {
+    if !matches!(
+        CalendarCursor::decode(&checkpoint.value)?,
+        CalendarCursor::Sync { page: None, .. }
+    ) {
         return Err(CollectorError::Source);
     }
     let from = (now - Duration::days(30)).to_rfc3339();
     let to = (now + Duration::days(90)).to_rfc3339();
     let mut page_token = None;
-    for _ in 0..MAX_PAGES {
+    for _ in 0..WINDOW_PAGES {
         let page = api
             .calendar_list(token, None, page_token.as_deref(), Some((&from, &to)))
             .map_err(|source| CollectorError::Http {
@@ -609,108 +640,29 @@ pub fn refresh_calendar_window(
         let items = select_calendar_items(store, account, page.items, now)?;
         let (events, snapshots) =
             calendar_observations(store, account, items, Origin::Baseline, now)?;
-        store
-            .append_collector_page_with_snapshots(&events, &checkpoint, &snapshots)
-            .map_err(|_| CollectorError::Store)?;
-        store.reconcile(now).map_err(|_| CollectorError::Store)?;
+        commit(
+            store,
+            events,
+            Some(checkpoint.clone()),
+            snapshots,
+            Vec::new(),
+            now,
+        )?;
         page_token = page.next_page_token;
         if page_token.is_none() {
             return Ok(());
         }
     }
-    record_gap(
-        store,
+    let gap = report(
         account,
         Source::Calendar,
-        Some(checkpoint.value),
+        "effects",
+        CoverageState::Gap,
         Some(CoverageReason::PageLimit),
         Some(checkpoint.updated_at),
-        now,
-    )?;
+    );
+    commit(store, Vec::new(), None, Vec::new(), vec![gap], now)?;
     Err(CollectorError::Limit)
-}
-
-fn bootstrap_calendar(
-    api: &impl GoogleApi,
-    store: &mut Store,
-    account: &str,
-    token: &str,
-    now: DateTime<Utc>,
-    origin: Origin,
-) -> Result<(), CollectorError> {
-    let from = (now - Duration::days(30)).to_rfc3339();
-    let to = (now + Duration::days(90)).to_rfc3339();
-    let marker = if origin == Origin::CatchUp {
-        "resync"
-    } else {
-        "bootstrap"
-    };
-    for bounded in [true, false] {
-        let mut page_token = None;
-        let mut complete = false;
-        for _ in 0..MAX_PAGES {
-            let bounds = bounded.then_some((from.as_str(), to.as_str()));
-            let page = api
-                .calendar_list(token, None, page_token.as_deref(), bounds)
-                .map_err(|source| CollectorError::Http {
-                    operation: "calendar bootstrap",
-                    source,
-                })?;
-            let items = select_calendar_items(store, account, page.items, now)?;
-            let (events, snapshots) =
-                calendar_observations(store, account, items, origin.clone(), now)?;
-            let next_page = page.next_page_token;
-            let final_page = next_page.is_none();
-            let cursor = if !bounded && final_page {
-                page.next_sync_token.ok_or(CollectorError::Source)?
-            } else {
-                marker.into()
-            };
-            let mut events = events;
-            if !bounded && final_page {
-                events.push(coverage_event(
-                    account,
-                    Source::Calendar,
-                    CoverageState::Healthy,
-                    Some(cursor.clone()),
-                    None,
-                    None,
-                    now,
-                ));
-            }
-            store
-                .append_collector_page_with_snapshots(
-                    &events,
-                    &CollectorCursor {
-                        account: account.into(),
-                        source: Source::Calendar,
-                        value: cursor,
-                        updated_at: now,
-                    },
-                    &snapshots,
-                )
-                .map_err(|_| CollectorError::Store)?;
-            store.reconcile(now).map_err(|_| CollectorError::Store)?;
-            page_token = next_page;
-            if final_page {
-                complete = true;
-                break;
-            }
-        }
-        if !complete {
-            record_gap(
-                store,
-                account,
-                Source::Calendar,
-                Some(marker.into()),
-                Some(CoverageReason::PageLimit),
-                Some(now),
-                now,
-            )?;
-            return Err(CollectorError::Limit);
-        }
-    }
-    Ok(())
 }
 
 fn calendar_observations(
@@ -801,8 +753,9 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use picket_core::engine::FindingDetail;
+    use picket_core::{engine::FindingDetail, event::EventPayload};
     use std::{collections::VecDeque, sync::Mutex};
+    use uuid::Uuid;
 
     struct FakeApi {
         calendar: Mutex<VecDeque<Result<CalendarPage, HttpError>>>,
@@ -854,8 +807,11 @@ mod tests {
                 next_page_token: (label == "SENT" && self.sent_more).then(|| "more".into()),
             })
         }
-        fn gmail_message(&self, _: &str, _: &str) -> Result<GmailMessage, HttpError> {
-            Ok(self.message.clone())
+        fn gmail_message(&self, _: &str, id: &str) -> Result<GmailMessage, HttpError> {
+            let mut message = self.message.clone();
+            message.id = id.into();
+            message.thread_id = id.into();
+            Ok(message)
         }
         fn gmail_history(
             &self,
@@ -909,7 +865,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
         for _ in 0..2 {
             api.history.lock().map_err(|_| "lock")?.push_back(Ok(serde_json::from_value(serde_json::json!({
-                "historyId": "11", "history": [{"messagesAdded": [{"message": {"id": "abc123"}}]}]
+                "historyId": "11", "history": [{"id": "11", "messagesAdded": [{"message": {"id": "abc123"}}]}]
             }))?));
         }
         poll_gmail(
@@ -1149,6 +1105,176 @@ mod tests {
                 .filter(|record| matches!(record.event.payload, EventPayload::Effect(_)))
                 .count(),
             1
+        );
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Calendar)?
+                .as_deref(),
+            Some("sync1")
+        );
+        Ok(())
+    }
+
+    fn count(store: &Store, predicate: fn(&EventPayload) -> bool) -> usize {
+        store
+            .events()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|row| predicate(&row.event.payload))
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn gmail_backlog_resumes_from_the_last_processed_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        let records: Vec<_> = (0..150)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("{}", 100 + index),
+                    "messagesAdded": [{"message": {"id": format!("m{index}")}}]
+                })
+            })
+            .collect();
+        {
+            let mut history = api.history.lock().map_err(|_| "lock")?;
+            history.push_back(Ok(serde_json::from_value(
+                serde_json::json!({"historyId": "300", "history": records}),
+            )?));
+            history.push_back(Ok(serde_json::from_value(serde_json::json!({
+                "historyId": "300", "history": records[MESSAGES_PER_POLL..]
+            }))?));
+        }
+        let progress = poll_gmail(
+            &api,
+            &mut store,
+            "synthetic-account",
+            "sender@example.test",
+            "token",
+            now,
+        )?;
+        assert_eq!(progress, Progress::Behind);
+        let resumed = format!("{}", 100 + MESSAGES_PER_POLL - 1);
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Gmail)?
+                .as_deref(),
+            Some(resumed.as_str())
+        );
+        let progress = poll_gmail(
+            &api,
+            &mut store,
+            "synthetic-account",
+            "sender@example.test",
+            "token",
+            now,
+        )?;
+        assert_eq!(progress, Progress::CaughtUp);
+        assert_eq!(
+            store
+                .collector_cursor("synthetic-account", &Source::Gmail)?
+                .as_deref(),
+            Some("300")
+        );
+        assert_eq!(
+            count(&store, |payload| matches!(payload, EventPayload::Effect(_))),
+            151
+        );
+        assert_eq!(
+            count(&store, |payload| matches!(
+                payload,
+                EventPayload::Coverage(Coverage {
+                    state: CoverageState::Gap,
+                    ..
+                })
+            )),
+            0,
+            "a backlog is not a gap"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn idle_polls_and_repeated_failures_add_no_events() -> Result<(), Box<dyn std::error::Error>> {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        for _ in 0..20 {
+            api.history
+                .lock()
+                .map_err(|_| "lock")?
+                .push_back(Ok(serde_json::from_value(
+                    serde_json::json!({"historyId": "11"}),
+                )?));
+        }
+        let poll = |store: &mut Store, minute| {
+            poll_gmail(
+                &api,
+                store,
+                "synthetic-account",
+                "sender@example.test",
+                "token",
+                now + Duration::minutes(minute),
+            )
+        };
+        poll(&mut store, 0)?;
+        let settled = store.events()?.len();
+        for minute in 1..10 {
+            poll(&mut store, minute)?;
+        }
+        assert_eq!(store.events()?.len(), settled);
+        for minute in 10..15 {
+            record_failure(
+                &mut store,
+                "synthetic-account",
+                Source::Gmail,
+                CoverageReason::RequestFailed,
+                now + Duration::minutes(minute),
+            )?;
+        }
+        assert_eq!(store.events()?.len(), settled + 1);
+        poll(&mut store, 15)?;
+        assert_eq!(store.events()?.len(), settled + 2);
+        Ok(())
+    }
+
+    #[test]
+    fn large_calendar_listing_resumes_with_its_page_token() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut store = Store::memory()?;
+        let api = FakeApi::new()?;
+        let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
+        {
+            let mut pages = api.calendar.lock().map_err(|_| "lock")?;
+            pages.push_back(Ok(calendar_page("rev1", None)?));
+            for _ in 0..PAGES_PER_POLL + 3 {
+                let mut page = calendar_page("rev1", None)?;
+                page.next_page_token = Some("next".into());
+                pages.push_back(Ok(page));
+            }
+            pages.push_back(Ok(calendar_page("rev1", Some("sync1"))?));
+        }
+        assert_eq!(
+            poll_calendar(&api, &mut store, "synthetic-account", "token", now)?,
+            Progress::Behind
+        );
+        let position = store
+            .collector_cursor("synthetic-account", &Source::Calendar)?
+            .ok_or("cursor")?;
+        assert_eq!(
+            CalendarCursor::decode(&position)?,
+            CalendarCursor::Initial {
+                origin: Origin::Baseline,
+                page: Some("next".into())
+            }
+        );
+        assert_eq!(
+            poll_calendar(&api, &mut store, "synthetic-account", "token", now)?,
+            Progress::CaughtUp
         );
         assert_eq!(
             store

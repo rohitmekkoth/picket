@@ -288,31 +288,6 @@ impl Store {
         Ok(exists != 0)
     }
 
-    /// Writes a complete collector page and its next cursor in one transaction.
-    pub fn append_collector_page(
-        &mut self,
-        events: &[Event],
-        cursor: &CollectorCursor,
-    ) -> Result<Vec<i64>> {
-        self.append_collector_page_with_snapshots(events, cursor, &[])
-    }
-
-    /// Calendar snapshots share the page transaction with the event log and cursor.
-    pub fn append_collector_page_with_snapshots(
-        &mut self,
-        events: &[Event],
-        cursor: &CollectorCursor,
-        snapshots: &[(String, CalendarState)],
-    ) -> Result<Vec<i64>> {
-        let batch = Batch {
-            events: events.to_vec(),
-            cursor: Some(cursor.clone()),
-            calendar: snapshots.to_vec(),
-            coverage: Vec::new(),
-        };
-        Ok(self.commit(batch, cursor.updated_at)?.sequences)
-    }
-
     /// Appends without assessment. The next assessed write catches up from the log.
     pub fn append(&mut self, event: &Event) -> Result<i64> {
         validate_event(event)?;
@@ -379,12 +354,15 @@ impl Store {
             }
             sequences.push(sequence);
         }
+        let mut changed =
+            !batch.events.is_empty() || batch.cursor.is_some() || !batch.calendar.is_empty();
         for report in &batch.coverage {
             let next = chain_state(&tx)?.2 + 1;
             if let Some(event) = coverage_transition(assessor, report, next, now) {
                 validate_event(&event)?;
                 let sequence = append_in_transaction(&tx, &event)?;
                 assessor.observe(sequence, event, now);
+                changed = true;
             }
         }
         for (resource, snapshot) in &batch.calendar {
@@ -413,6 +391,19 @@ impl Store {
         }
         let findings = assessor.advance(now);
         let head = chain_state(&tx)?.2;
+        // An idle tick that changes nothing skips the write. No deadline passed, so the
+        // older durable clock makes a restart recheck only subjects that are unchanged.
+        if !changed && findings.is_empty() {
+            return Ok(Committed {
+                sequences,
+                summary: ReconcileSummary {
+                    through_sequence: head,
+                    assessed: 0,
+                    revised: 0,
+                    queued: 0,
+                },
+            });
+        }
         let summary = incidents::persist(&tx, findings, now, head)?;
         tx.commit()?;
         Ok(Committed { sequences, summary })
@@ -937,6 +928,19 @@ mod tests {
         AccountPolicy, Action, ContactObserved, Coverage, CoverageState, Effect, Feedback, Origin,
     };
 
+    fn page(
+        events: Vec<Event>,
+        cursor: &CollectorCursor,
+        calendar: Vec<(String, CalendarState)>,
+    ) -> Batch {
+        Batch {
+            events,
+            cursor: Some(cursor.clone()),
+            calendar,
+            coverage: Vec::new(),
+        }
+    }
+
     fn event(resource: &str, revision: &str) -> Event {
         let timestamp = DateTime::<Utc>::UNIX_EPOCH;
         Event {
@@ -1001,7 +1005,10 @@ mod tests {
             value: "history-10".into(),
             updated_at: DateTime::<Utc>::UNIX_EPOCH,
         };
-        store.append_collector_page(&[event("message-1", "rev-1")], &cursor)?;
+        store.commit(
+            page(vec![event("message-1", "rev-1")], &cursor, vec![]),
+            cursor.updated_at,
+        )?;
         assert_eq!(
             store.collector_cursor(&cursor.account, &cursor.source)?,
             Some(cursor.value.clone())
@@ -1015,7 +1022,10 @@ mod tests {
             ..cursor.clone()
         };
         assert!(matches!(
-            store.append_collector_page(&[event("message-2", "rev-1"), conflict], &later),
+            store.commit(
+                page(vec![event("message-2", "rev-1"), conflict], &later, vec![]),
+                later.updated_at
+            ),
             Err(StoreError::DuplicateConflict)
         ));
         assert_eq!(store.verify()?.retained_events, 1);
@@ -1041,10 +1051,13 @@ mod tests {
             value: "sync-1".into(),
             updated_at: Utc::now(),
         };
-        store.append_collector_page_with_snapshots(
-            &[event.ok_or("missing event")?],
-            &cursor,
-            &[("meeting_1".into(), state.clone())],
+        store.commit(
+            page(
+                vec![event.ok_or("missing event")?],
+                &cursor,
+                vec![("meeting_1".into(), state.clone())],
+            ),
+            cursor.updated_at,
         )?;
         assert_eq!(
             store.calendar_snapshot("account-1", "meeting_1")?,
@@ -1060,10 +1073,13 @@ mod tests {
         };
         assert!(
             store
-                .append_collector_page_with_snapshots(
-                    &[],
-                    &later,
-                    &[("bad\nresource".into(), state.clone())],
+                .commit(
+                    page(
+                        vec![],
+                        &later,
+                        vec![("bad\nresource".into(), state.clone())]
+                    ),
+                    later.updated_at,
                 )
                 .is_err()
         );
