@@ -855,7 +855,10 @@ fn validate_cursor(cursor: &CollectorCursor) -> Result<()> {
         || cursor.value.len() > 4096
         || cursor.account.chars().any(char::is_control)
         || cursor.value.chars().any(char::is_control)
-        || !matches!(cursor.source, Source::Gmail | Source::Calendar)
+        || !matches!(
+            cursor.source,
+            Source::Gmail | Source::Calendar | Source::Messages
+        )
     {
         return Err(StoreError::Invalid("invalid collector cursor"));
     }

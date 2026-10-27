@@ -166,12 +166,12 @@ fn after_poll(
     store: &mut Writer,
     session: &google_auth::Session,
     source: Source,
-    result: Result<google_collector::Progress, google_collector::CollectorError>,
+    result: Result<picket_core::ledger::Progress, google_collector::CollectorError>,
     interval: u64,
 ) -> Duration {
     match result {
-        Ok(google_collector::Progress::CaughtUp) => Duration::from_secs(interval),
-        Ok(google_collector::Progress::Behind) => Duration::from_secs(1),
+        Ok(picket_core::ledger::Progress::CaughtUp) => Duration::from_secs(interval),
+        Ok(picket_core::ledger::Progress::Behind) => Duration::from_secs(1),
         Err(error) => {
             tracing::warn!(%error, source = source.as_str(), "collection degraded");
             let rate_limited = matches!(

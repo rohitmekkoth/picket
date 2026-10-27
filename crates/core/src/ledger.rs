@@ -23,6 +23,14 @@ const RETENTION_DAYS: i64 = 180;
 /// Pending commits per writer; a full queue makes producers wait, not drop.
 const QUEUE: usize = 64;
 
+/// Whether a poll reached the source's current state. A source that is behind
+/// continues from its committed position on the next poll.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Progress {
+    CaughtUp,
+    Behind,
+}
+
 /// What a collector needs from the store: committed reads and atomic batch writes.
 pub trait Ledger {
     fn checkpoint(&self, account: &str, source: &Source) -> Result<Option<CollectorCursor>>;
