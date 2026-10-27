@@ -3,19 +3,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, Utc};
-use picket_core::{
+use crate::{
     calendar::{CalendarEvent, CalendarState},
     event::{Coverage, CoverageReason, CoverageState, Event, Origin, Source},
-    google::GmailMessage,
+    google::{CalendarPage, GmailHistory, GmailList, GmailMessage, GmailProfile, HttpError},
     store::{Batch, CollectorCursor, CoverageReport, Store},
 };
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::google_http::{
-    CalendarPage, GmailHistory, GmailList, GmailProfile, GoogleHttp, HttpError,
-};
 
 /// Pages read per poll before yielding to other sources.
 const PAGES_PER_POLL: usize = 10;
@@ -73,40 +69,6 @@ pub trait GoogleApi {
         page: Option<&str>,
         bounds: Option<(&str, &str)>,
     ) -> Result<CalendarPage, HttpError>;
-}
-
-impl GoogleApi for GoogleHttp {
-    fn gmail_profile(&self, token: &str) -> Result<GmailProfile, HttpError> {
-        GoogleHttp::gmail_profile(self, token)
-    }
-    fn gmail_list(
-        &self,
-        token: &str,
-        label: &str,
-        page: Option<&str>,
-    ) -> Result<GmailList, HttpError> {
-        GoogleHttp::gmail_list(self, token, label, page)
-    }
-    fn gmail_message(&self, token: &str, id: &str) -> Result<GmailMessage, HttpError> {
-        GoogleHttp::gmail_message(self, token, id)
-    }
-    fn gmail_history(
-        &self,
-        token: &str,
-        cursor: &str,
-        page: Option<&str>,
-    ) -> Result<GmailHistory, HttpError> {
-        GoogleHttp::gmail_history(self, token, cursor, page)
-    }
-    fn calendar_list(
-        &self,
-        token: &str,
-        sync: Option<&str>,
-        page: Option<&str>,
-        bounds: Option<(&str, &str)>,
-    ) -> Result<CalendarPage, HttpError> {
-        GoogleHttp::calendar_list(self, token, sync, page, bounds)
-    }
 }
 
 /// Replays Gmail history from the committed cursor. Each page commits its observations
@@ -754,9 +716,8 @@ fn calendar_in_window(event: &CalendarEvent, now: DateTime<Utc>) -> Result<bool,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use picket_core::{engine::FindingDetail, event::EventPayload};
+    use crate::{engine::FindingDetail, event::EventPayload};
     use std::{collections::VecDeque, sync::Mutex};
-    use uuid::Uuid;
 
     struct FakeApi {
         calendar: Mutex<VecDeque<Result<CalendarPage, HttpError>>>,
@@ -799,7 +760,7 @@ mod tests {
         ) -> Result<GmailList, HttpError> {
             Ok(GmailList {
                 messages: if label == "SENT" {
-                    vec![crate::google_http::GmailRef {
+                    vec![crate::google::GmailRef {
                         id: "abc123".into(),
                         label_ids: Vec::new(),
                     }]
@@ -845,9 +806,11 @@ mod tests {
         }
     }
 
-    fn test_store() -> Result<(Store, std::path::PathBuf), Box<dyn std::error::Error>> {
-        let path = std::env::temp_dir().join(format!("picket-m5-{}.db", Uuid::new_v4()));
-        Ok((Store::open(&path)?, path))
+    fn test_store()
+    -> Result<(Store, std::path::PathBuf, tempfile::TempDir), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("picket.db");
+        Ok((Store::open(&path)?, path, directory))
     }
 
     fn calendar_page(etag: &str, sync: Option<&str>) -> Result<CalendarPage, serde_json::Error> {
@@ -865,7 +828,7 @@ mod tests {
     #[test]
     fn gmail_baseline_and_replayed_history_do_not_duplicate_send()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (mut store, path) = test_store()?;
+        let (mut store, path, _directory) = test_store()?;
         let api = FakeApi::new()?;
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
         for _ in 0..2 {
@@ -949,7 +912,7 @@ mod tests {
 
     #[test]
     fn calendar_revision_and_cursor_survive_restart() -> Result<(), Box<dyn std::error::Error>> {
-        let (mut store, path) = test_store()?;
+        let (mut store, path, _directory) = test_store()?;
         let api = FakeApi::new()?;
         let now = DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z")?.with_timezone(&Utc);
         {

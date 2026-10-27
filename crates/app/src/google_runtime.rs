@@ -10,14 +10,13 @@ use std::{
 use chrono::{Duration as ChronoDuration, Utc};
 use picket_core::{
     event::{CoverageReason, Source},
+    google::HttpError,
+    google_collector,
     store::Store,
 };
 use tauri::Manager;
 
-use crate::{
-    GoogleState, google_auth, google_collector,
-    google_http::{GoogleHttp, HttpError},
-};
+use crate::{GoogleState, google_auth, google_http::GoogleHttp};
 
 pub fn start_worker(app: tauri::AppHandle) {
     let state = app.state::<GoogleState>();

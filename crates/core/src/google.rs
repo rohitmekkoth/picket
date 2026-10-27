@@ -6,6 +6,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::calendar::CalendarEvent;
 use crate::event::{
     Action, AdapterProvenance, ContactObserved, Effect, EmailMetadata, Event, EventKey,
     EventPayload, NoticeKind, Origin, Source, SourceTimeQuality,
@@ -232,6 +233,93 @@ fn notice_kind(subject: &str) -> Option<NoticeKind> {
     } else {
         None
     }
+}
+
+/// Transport failures, classified only as far as collection needs.
+#[derive(Debug, Error)]
+pub enum HttpError {
+    #[error("Google authorization expired")]
+    Unauthorized,
+    #[error("Google denied the request: {0}")]
+    Forbidden(&'static str),
+    #[error("Google rate limit exceeded")]
+    RateLimited,
+    #[error("Google cursor expired")]
+    ExpiredCursor,
+    #[error("Google resource disappeared during collection")]
+    MissingResource,
+    #[error("Google request failed or exceeded its limit")]
+    Request,
+    #[error("Google returned HTTP {0}")]
+    Status(u16),
+    #[error("Google returned invalid metadata")]
+    InvalidResponse,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GmailProfile {
+    pub email_address: String,
+    pub history_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GmailList {
+    #[serde(default)]
+    pub messages: Vec<GmailRef>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GmailRef {
+    pub id: String,
+    /// Present in history records; message lists return ids only.
+    #[serde(default)]
+    pub label_ids: Vec<String>,
+}
+
+impl GmailRef {
+    /// Gmail replaces a draft with a new message on every autosave and deletes the old one.
+    pub fn is_draft(&self) -> bool {
+        self.label_ids.iter().any(|label| label == "DRAFT")
+            && !self.label_ids.iter().any(|label| label == "SENT")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GmailHistory {
+    #[serde(default)]
+    pub history: Vec<GmailHistoryRecord>,
+    pub history_id: String,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GmailHistoryRecord {
+    /// Records are ordered by id; a processed id is a valid resume cursor.
+    pub id: String,
+    #[serde(default)]
+    pub messages_added: Vec<GmailMessageAdded>,
+    #[serde(default)]
+    pub labels_added: Vec<GmailMessageAdded>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GmailMessageAdded {
+    pub message: GmailRef,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarPage {
+    #[serde(default)]
+    pub items: Vec<CalendarEvent>,
+    pub next_page_token: Option<String>,
+    pub next_sync_token: Option<String>,
 }
 
 #[cfg(test)]

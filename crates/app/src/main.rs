@@ -6,8 +6,6 @@ use tauri::{
 #[cfg(target_os = "macos")]
 mod google_auth;
 #[cfg(target_os = "macos")]
-mod google_collector;
-#[cfg(target_os = "macos")]
 mod google_http;
 #[cfg(target_os = "macos")]
 mod google_runtime;
