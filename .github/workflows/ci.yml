@@ -1,8 +1,10 @@
 name: CI
 
+# Feature branches run through their pull request; a push run for the same commit would
+# share the concurrency group and be cancelled, which reports as a failed check.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
