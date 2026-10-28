@@ -458,6 +458,36 @@ impl Store {
         rows.map(|row| Ok(serde_json::from_slice(&row?)?)).collect()
     }
 
+    /// The user's latest message to `agent` before `before`, for reading a reply in
+    /// context.
+    pub fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        let mut statement = self.connection.prepare(
+            "SELECT canonical FROM events WHERE kind = 'message' AND account = ?1
+             ORDER BY seq DESC LIMIT 200",
+        )?;
+        let rows = statement.query_map([account], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut latest: Option<Event> = None;
+        for row in rows {
+            let event: Event = serde_json::from_slice(&row?)?;
+            if let EventPayload::Message(message) = &event.payload
+                && message.agent == agent
+                && message.direction == crate::event::MessageDirection::FromUser
+                && event.occurred_at < before
+                && latest
+                    .as_ref()
+                    .is_none_or(|current| event.occurred_at > current.occurred_at)
+            {
+                latest = Some(event);
+            }
+        }
+        Ok(latest)
+    }
+
     /// An agent's extracted requests and failed extractions since `since`, oldest first.
     pub fn extractions_since(
         &self,

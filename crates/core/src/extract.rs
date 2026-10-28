@@ -111,12 +111,18 @@ pub fn extract_pending(
             _ => None,
         };
         let open = open_tasks(ledger, account, &agent.id, message.occurred_at)?;
+        let context = match observed.direction {
+            MessageDirection::FromAgent => ledger
+                .previous_user_message(account, &agent.id, message.occurred_at)?
+                .and_then(|previous| text(&previous.key.resource)),
+            MessageDirection::FromUser => None,
+        };
         let events = match extract_one(
             model,
             message,
-            observed,
             content.as_deref(),
             &open,
+            context.as_deref(),
             zone,
             now,
         ) {
@@ -234,12 +240,15 @@ fn open_tasks(
 fn extract_one(
     model: &mut dyn LocalModel,
     message: &Event,
-    observed: &MessageObserved,
     text: Option<&str>,
     open: &BTreeMap<String, Request>,
+    context: Option<&str>,
     zone: &dyn Fn(DateTime<Utc>) -> FixedOffset,
     now: DateTime<Utc>,
 ) -> Result<Vec<Event>, ModelError> {
+    let EventPayload::Message(observed) = &message.payload else {
+        return Ok(Vec::new());
+    };
     let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
         let outcome = match observed.text {
             MessageText::Undecodable => ExtractionOutcome::Failed,
@@ -255,6 +264,7 @@ fn extract_one(
         agent: &observed.agent,
         id: &message.key.resource,
         open,
+        context,
     };
     let model_id = model.id().to_owned();
     let proposal = propose(model, &input)?;
@@ -307,6 +317,9 @@ pub struct Input<'a> {
     /// The message identity: the task id of a new request and the data delimiter's seed.
     pub id: &'a str,
     pub open: &'a BTreeMap<String, Request>,
+    /// For an agent reply, the user's latest message before it. A reply such as "Sent!"
+    /// names its task only through what it answers; the context is never a claim.
+    pub context: Option<&'a str>,
 }
 
 /// The validated extraction of one message: at most one request from the user, or
@@ -334,8 +347,15 @@ pub fn propose(model: &mut dyn LocalModel, input: &Input) -> Result<Proposal, Mo
             .collect::<Vec<_>>(),
     )
     .map_err(|_| ModelError::Invalid)?;
+    let context = match (&input.direction, input.context) {
+        (MessageDirection::FromAgent, Some(context)) => format!(
+            "The person's latest message before this reply, only for choosing the task:\n<{tag}-context>\n{}\n</{tag}-context>\n",
+            context.chars().take(MAX_TEXT).collect::<String>()
+        ),
+        _ => String::new(),
+    };
     let user = format!(
-        "Message time: {} ({}), UTC offset {}\nOpen tasks: {}\n<{tag}>\n{}\n</{tag}>",
+        "Message time: {} ({}), UTC offset {}\nOpen tasks: {}\n{context}<{tag}>\n{}\n</{tag}>",
         local.format("%Y-%m-%d %H:%M"),
         local.format("%A"),
         input.offset,
@@ -756,15 +776,13 @@ fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
         .take(MAX_CLAIMS)
         .filter_map(|claim| {
             let action = action(&claim.action)?;
-            let (targets, names) = recipients(&claim.addresses, &claim.names);
-            // An ungrounded recipient would let a fabricated claim match an effect.
-            let grounded = targets
-                .iter()
-                .all(|address| text.to_lowercase().contains(address.as_str()))
-                && names.iter().all(|name| names_in(text, name));
-            if !grounded {
-                return None;
-            }
+            let (mut targets, mut names) = recipients(&claim.addresses, &claim.names);
+            // Keep only recipients the agent's own words name, for example not a person
+            // copied from the user's context. A claim left naming nobody can match only a
+            // unique nearby effect.
+            let lower = text.to_lowercase();
+            targets.retain(|address| lower.contains(address.as_str()));
+            names.retain(|name| names_in(text, name));
             // Placing the email in the user's account lets its absence count, so the
             // message must say so.
             let channel = match claim.channel.as_str() {
@@ -937,9 +955,11 @@ impl LocalModel for ScriptedModel {
         _: u32,
     ) -> Result<Value, ModelError> {
         self.calls += 1;
+        // Answer for the message being extracted, not the context shown before it.
+        let message = user.rsplit("-context>").next().unwrap_or(user);
         self.responses
             .iter()
-            .find(|(needle, _)| user.contains(needle.as_str()))
+            .find(|(needle, _)| message.contains(needle.as_str()))
             .map(|(_, response)| response.clone())
             .ok_or(ModelError::Invalid)
     }

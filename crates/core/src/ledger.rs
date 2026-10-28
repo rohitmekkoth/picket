@@ -45,6 +45,12 @@ pub trait Ledger {
         agent: &str,
         since: DateTime<Utc>,
     ) -> Result<Vec<Event>>;
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>>;
 }
 
 impl Ledger for Store {
@@ -79,6 +85,15 @@ impl Ledger for Store {
         since: DateTime<Utc>,
     ) -> Result<Vec<Event>> {
         Store::extractions_since(self, account, agent, since)
+    }
+
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        Store::previous_user_message(self, account, agent, before)
     }
 }
 
@@ -165,6 +180,15 @@ impl Ledger for Writer {
         since: DateTime<Utc>,
     ) -> Result<Vec<Event>> {
         self.reader.extractions_since(account, agent, since)
+    }
+
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        self.reader.previous_user_message(account, agent, before)
     }
 }
 
