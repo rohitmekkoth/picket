@@ -1,6 +1,6 @@
 # M7 local extraction plan
 
-Status: planned 2026-10-27. The owner prioritized Instinct, and Meta Muse if possible; the OpenClaw increment of M6 is deferred. This plan implements M7 in [design.md](design.md) under the AI boundary in [alignment-engine-plan.md](alignment-engine-plan.md).
+Status: increments 1-3 implemented on `feature/m7-extraction` (PR #16); Qwen3.5 4B selected, see [decisions](decisions.md#m7-extraction-model-and-validation-2026-10-27). The owner prioritized Instinct, and Meta Muse if possible; the OpenClaw increment of M6 is deferred. This plan implements M7 in [design.md](design.md) under the AI boundary in [alignment-engine-plan.md](alignment-engine-plan.md).
 
 ## Outcome
 

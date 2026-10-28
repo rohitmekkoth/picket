@@ -602,8 +602,8 @@ const ANY_ACTION_CUES: [&str; 6] = [
     "you decide",
     "however you",
 ];
-/// Wording that forbids sending.
-const NO_SEND_CUES: [&str; 8] = [
+/// Wording that forbids sending, for now or at all.
+const NO_SEND_CUES: [&str; 12] = [
     "don't send",
     "do not send",
     "dont send",
@@ -612,6 +612,10 @@ const NO_SEND_CUES: [&str; 8] = [
     "do not email",
     "draft only",
     "only draft",
+    "hold off",
+    "not yet",
+    "don't send yet",
+    "wait to send",
 ];
 /// Wording that places a claimed email in the user's own account.
 const USER_ACCOUNT_CUES: [&str; 6] = [
