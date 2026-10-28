@@ -231,48 +231,43 @@ fn extract_one(
         };
         return Ok(vec![record(message, observed, outcome, model.id(), now)]);
     };
-    let text: String = text.chars().take(MAX_TEXT).collect();
-    let offset = zone(message.occurred_at);
-    let local = message.occurred_at.with_timezone(&offset);
-    let tag = format!(
-        "message-{:x}",
-        Sha256::digest(format!("{}/{}", message.key.resource, message.key.revision))
-    )
-    .chars()
-    .take(16)
-    .collect::<String>();
-    let tasks = serde_json::to_string(
-        &open
-            .iter()
-            .map(|(id, request)| task_summary(id, request))
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|_| ModelError::Invalid)?;
-    let user = format!(
-        "Message time: {} ({}), UTC offset {}\nOpen tasks: {}\n<{tag}>\n{}\n</{tag}>",
-        local.format("%Y-%m-%d %H:%M"),
-        local.format("%A"),
-        offset,
-        if open.is_empty() {
-            "none".into()
-        } else {
-            tasks
-        },
-        text
-    );
-    let model_id = model.id().to_owned();
-    let mut events = match observed.direction {
-        MessageDirection::FromUser => {
-            let raw = model.complete_json(REQUEST_PROMPT, &user, &request_schema(), MAX_TOKENS)?;
-            let raw: RawRequest = serde_json::from_value(raw).map_err(|_| ModelError::Invalid)?;
-            request_events(message, observed, raw, &text, open, offset, &model_id)?
-        }
-        MessageDirection::FromAgent => {
-            let raw = model.complete_json(CLAIM_PROMPT, &user, &claim_schema(), MAX_TOKENS)?;
-            let raw: RawClaims = serde_json::from_value(raw).map_err(|_| ModelError::Invalid)?;
-            claim_events(message, observed, raw, &text, open, &model_id)
-        }
+    let input = Input {
+        direction: observed.direction.clone(),
+        text,
+        at: message.occurred_at,
+        offset: zone(message.occurred_at),
+        agent: &observed.agent,
+        id: &message.key.resource,
+        open,
     };
+    let model_id = model.id().to_owned();
+    let proposal = propose(model, &input)?;
+    let mut events: Vec<_> = proposal
+        .request
+        .map(|request| {
+            derived(
+                message,
+                format!("{}#request", message.key.resource),
+                EventPayload::Request(request),
+                &model_id,
+            )
+        })
+        .into_iter()
+        .collect();
+    events.extend(
+        proposal
+            .claims
+            .into_iter()
+            .enumerate()
+            .map(|(index, claim)| {
+                derived(
+                    message,
+                    format!("{}#claim{index}", message.key.resource),
+                    EventPayload::Claim(claim),
+                    &model_id,
+                )
+            }),
+    );
     let outcome = if events.is_empty() {
         ExtractionOutcome::NotATask
     } else if observed.direction == MessageDirection::FromUser {
@@ -282,6 +277,75 @@ fn extract_one(
     };
     events.push(record(message, observed, outcome, &model_id, now));
     Ok(events)
+}
+
+/// One message to extract, independent of storage.
+pub struct Input<'a> {
+    pub direction: MessageDirection,
+    pub text: &'a str,
+    pub at: DateTime<Utc>,
+    pub offset: FixedOffset,
+    pub agent: &'a str,
+    /// The message identity: the task id of a new request and the data delimiter's seed.
+    pub id: &'a str,
+    pub open: &'a BTreeMap<String, Request>,
+}
+
+/// The validated extraction of one message: at most one request from the user, or
+/// claims from the agent.
+#[derive(Debug, Default, PartialEq)]
+pub struct Proposal {
+    pub request: Option<Request>,
+    pub claims: Vec<Claim>,
+}
+
+/// Asks the model about one message and keeps only what validation accepts. The
+/// pipeline and the evaluation both use this, so they measure the same behavior.
+pub fn propose(model: &mut dyn LocalModel, input: &Input) -> Result<Proposal, ModelError> {
+    let text: String = input.text.chars().take(MAX_TEXT).collect();
+    let local = input.at.with_timezone(&input.offset);
+    let tag = format!("message-{:x}", Sha256::digest(input.id))
+        .chars()
+        .take(16)
+        .collect::<String>();
+    let tasks = serde_json::to_string(
+        &input
+            .open
+            .iter()
+            .map(|(id, request)| task_summary(id, request))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| ModelError::Invalid)?;
+    let user = format!(
+        "Message time: {} ({}), UTC offset {}\nOpen tasks: {}\n<{tag}>\n{}\n</{tag}>",
+        local.format("%Y-%m-%d %H:%M"),
+        local.format("%A"),
+        input.offset,
+        if input.open.is_empty() {
+            "none".into()
+        } else {
+            tasks
+        },
+        text
+    );
+    match input.direction {
+        MessageDirection::FromUser => {
+            let raw = model.complete_json(REQUEST_PROMPT, &user, &request_schema(), MAX_TOKENS)?;
+            let raw: RawRequest = serde_json::from_value(raw).map_err(|_| ModelError::Invalid)?;
+            Ok(Proposal {
+                request: request_from(raw, input, &text),
+                claims: Vec::new(),
+            })
+        }
+        MessageDirection::FromAgent => {
+            let raw = model.complete_json(CLAIM_PROMPT, &user, &claim_schema(), MAX_TOKENS)?;
+            let raw: RawClaims = serde_json::from_value(raw).map_err(|_| ModelError::Invalid)?;
+            Ok(Proposal {
+                request: None,
+                claims: claims_from(raw, input, &text),
+            })
+        }
+    }
 }
 
 /// What a user message asks for; the wire names match the prompt.
@@ -439,22 +503,19 @@ fn task_summary(id: &str, request: &Request) -> Value {
     })
 }
 
-fn request_events(
-    message: &Event,
-    observed: &MessageObserved,
-    raw: RawRequest,
-    text: &str,
-    open: &BTreeMap<String, Request>,
-    offset: FixedOffset,
-    model: &str,
-) -> Result<Vec<Event>, ModelError> {
+fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     let base = match raw.kind {
-        RawKind::None => return Ok(Vec::new()),
+        RawKind::None => return None,
         // An unknown task id is not trusted as a follow-up; the message stands alone.
-        RawKind::Revise => raw.task.as_ref().and_then(|task| open.get(task)).cloned(),
+        RawKind::Revise => raw
+            .task
+            .as_ref()
+            .and_then(|task| input.open.get(task))
+            .cloned(),
         RawKind::New => None,
     };
-    let at = message.occurred_at;
+    let at = input.at;
+    let offset = input.offset;
     let grounded_time = |value: &Option<String>| {
         value
             .as_deref()
@@ -514,11 +575,12 @@ fn request_events(
         .iter()
         .filter_map(|value| action(value))
         .collect();
-    let task = base
-        .as_ref()
-        .map_or_else(|| task_id(message), |request| request.task.clone());
+    let task = base.as_ref().map_or_else(
+        || input.id.chars().take(128).collect(),
+        |request| request.task.clone(),
+    );
     let mut request = Request {
-        agent: observed.agent.clone(),
+        agent: input.agent.to_owned(),
         task,
         actions,
         targets,
@@ -540,12 +602,7 @@ fn request_events(
     if raw.cancels {
         request.valid_until = Some(at);
     }
-    Ok(vec![derived(
-        message,
-        format!("{}#request", message.key.resource),
-        EventPayload::Request(request),
-        model,
-    )])
+    Some(request)
 }
 
 /// A follow-up field marked unknown leaves the task's earlier value in place.
@@ -584,19 +641,11 @@ fn merge(base: Request, update: Request) -> Request {
     }
 }
 
-fn claim_events(
-    message: &Event,
-    observed: &MessageObserved,
-    raw: RawClaims,
-    text: &str,
-    open: &BTreeMap<String, Request>,
-    model: &str,
-) -> Vec<Event> {
+fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
     raw.claims
         .into_iter()
         .take(MAX_CLAIMS)
-        .enumerate()
-        .filter_map(|(index, claim)| {
+        .filter_map(|claim| {
             let action = action(&claim.action)?;
             let targets: Vec<_> = claim
                 .addresses
@@ -620,20 +669,15 @@ fn claim_events(
                 "agent_account" => ClaimChannel::AgentAccount,
                 _ => ClaimChannel::Unknown,
             };
-            Some(derived(
-                message,
-                format!("{}#claim{index}", message.key.resource),
-                EventPayload::Claim(Claim {
-                    agent: observed.agent.clone(),
-                    task: claim.task.filter(|task| open.contains_key(task)),
-                    action,
-                    targets,
-                    provider_resource: None,
-                    target_names: names,
-                    channel,
-                }),
-                model,
-            ))
+            Some(Claim {
+                agent: input.agent.to_owned(),
+                task: claim.task.filter(|task| input.open.contains_key(task)),
+                action,
+                targets,
+                provider_resource: None,
+                target_names: names,
+                channel,
+            })
         })
         .collect()
 }
@@ -722,10 +766,6 @@ fn local_time(value: &str, offset: FixedOffset) -> Option<DateTime<Utc>> {
         .from_local_datetime(&naive)
         .single()
         .map(|time| time.with_timezone(&Utc))
-}
-
-fn task_id(message: &Event) -> String {
-    message.key.resource.chars().take(128).collect()
 }
 
 fn derived(message: &Event, resource: String, payload: EventPayload, model: &str) -> Event {

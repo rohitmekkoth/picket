@@ -9,6 +9,7 @@ pub mod engine;
 pub mod eval;
 pub mod event;
 pub mod extract;
+pub mod extract_eval;
 pub mod google;
 pub mod google_collector;
 pub mod incidents;
