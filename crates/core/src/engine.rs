@@ -1440,8 +1440,14 @@ fn compare_request(
 
 /// A claim's addresses and names describe exactly the effect's recipients: every
 /// recipient is listed or named, every address is a recipient, and every name matches
-/// a recipient's display name in the effect's own headers.
+/// a recipient's display name in the effect's own headers. A claim naming nobody is
+/// compatible with any recipients.
 fn claim_targets_match(claim: &crate::event::Claim, effect: &Effect) -> bool {
+    // "Sent it!" names nobody. It can then match only through the uniqueness rule in
+    // `claim_matches`: exactly one effect of that action in its window, or a provider id.
+    if claim.targets.is_empty() && claim.target_names.is_empty() {
+        return true;
+    }
     if claim.target_names.is_empty() {
         return same_targets(&claim.targets, &effect.targets);
     }
@@ -2215,6 +2221,42 @@ mod tests {
         assert_eq!(
             assess_claims(&[named], time(60))[0].status,
             ClaimStatus::CoverageIncomplete
+        );
+    }
+
+    #[test]
+    fn a_claim_naming_nobody_links_only_a_unique_nearby_effect() {
+        let claim = event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec![],
+                provider_resource: None,
+                target_names: vec![],
+                channel: ClaimChannel::UserAccount,
+            }),
+        );
+        assert_eq!(
+            one(&[effect(), claim.clone()]).actor,
+            ActorEvidence::Reported("agent-1".into())
+        );
+        assert_eq!(
+            assess_claims(&[effect(), claim.clone()], time(60))[0].status,
+            ClaimStatus::Matched
+        );
+        let mut second = effect();
+        second.key.resource = "message-2".into();
+        if let EventPayload::Effect(value) = &mut second.payload {
+            value.targets = vec!["b@example.test".into()];
+        }
+        assert_eq!(
+            one(&[effect(), second.clone(), claim]).actor,
+            ActorEvidence::Unknown,
+            "two candidate sends: abstain"
         );
     }
 
