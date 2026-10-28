@@ -60,6 +60,8 @@ pub struct CalendarPerson {
 pub struct CalendarAttendee {
     pub email: String,
     #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
     pub response_status: Option<String>,
     #[serde(default, rename = "self")]
     pub is_self: bool,
@@ -226,6 +228,14 @@ impl CalendarEvent {
                 scope: "https://www.googleapis.com/auth/calendar.events.readonly".into(),
             }),
             payload: EventPayload::Effect(Effect {
+                target_names: self
+                    .attendees
+                    .iter()
+                    .filter_map(|attendee| {
+                        let name = crate::google::display_name(attendee.display_name.as_deref())?;
+                        Some((normalize_address(&attendee.email).ok()?, name))
+                    })
+                    .collect(),
                 action,
                 targets: state.metadata.attendees.clone(),
                 targets_complete: !self.attendees.is_empty() || (deleted && previous.is_some()),

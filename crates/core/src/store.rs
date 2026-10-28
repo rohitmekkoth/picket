@@ -1006,6 +1006,7 @@ mod tests {
             source_time_quality: None,
             adapter: None,
             payload: EventPayload::Effect(Effect {
+                target_names: Default::default(),
                 action: Action::EmailSend,
                 targets: vec!["person@example.test".into()],
                 targets_complete: true,

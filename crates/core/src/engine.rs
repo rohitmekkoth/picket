@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, Coverage, CoverageReason, CoverageState, Effect, Event, EventKey,
-    EventPayload, Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source, ToolOutcome,
-    ToolResult,
+    AccountPolicy, Action, ClaimChannel, Coverage, CoverageReason, CoverageState, Effect, Event,
+    EventKey, EventPayload, Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source,
+    ToolOutcome, ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
@@ -90,6 +90,9 @@ pub enum ClaimStatus {
     ContradictedByObservedEffect,
     NotObservedInHealthySource,
     CoverageIncomplete,
+    /// The claimed email was not, or not known to be, sent from the observed account,
+    /// for example from the agent's own mailbox. Its absence proves nothing.
+    OutsideObservedScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -425,6 +428,8 @@ impl Evidence {
                 ClaimStatus::ContradictedByObservedEffect,
                 Some(event.key.clone()),
             )
+        } else if claim.action == Action::EmailSend && claim.channel != ClaimChannel::UserAccount {
+            (ClaimStatus::OutsideObservedScope, None)
         } else if now < wait_from(report) + GRACE {
             (ClaimStatus::Pending, None)
         } else if self.observed_without_gap(report, &source) {
@@ -626,7 +631,7 @@ impl Evidence {
     ) -> bool {
         if claim.action != effect.action
             || !effect.targets_complete
-            || !same_targets(&claim.targets, &effect.targets)
+            || !claim_targets_match(claim, effect)
         {
             return false;
         }
@@ -647,7 +652,7 @@ impl Evidence {
                     <= CLAIM_WINDOW.num_seconds()
                     && matches!(&candidate.payload, EventPayload::Effect(other)
                         if other.action == claim.action
-                            && other.targets_complete && same_targets(&other.targets, &claim.targets))
+                            && other.targets_complete && claim_targets_match(claim, other))
             })
             .take(2)
             .count()
@@ -700,7 +705,7 @@ impl Evidence {
                     if claim.agent == *agent
                         && claim.provider_resource.as_deref() == Some(&event.key.resource)
                         && claim.action == effect.action
-                        && same_targets(&claim.targets, &effect.targets) =>
+                        && claim_targets_match(claim, effect) =>
                 {
                     claim.task.as_ref()
                 }
@@ -1365,10 +1370,9 @@ fn compare_request(
         conflicts.push(ConflictReason::DifferentAction);
     }
     if let Field::Known(targets) = &request.targets
-        && effect
-            .targets
-            .iter()
-            .any(|target| !targets.contains(target))
+        && effect.targets.iter().any(|target| {
+            !targets.contains(target) && !named_in(&request.target_names, effect, target)
+        })
     {
         conflicts.push(ConflictReason::ExtraTarget);
     }
@@ -1413,6 +1417,50 @@ fn compare_request(
         return RequestFit::InsufficientEvidence;
     }
     RequestFit::ConsistentWithVisibleRequest
+}
+
+/// A claim's addresses and names describe exactly the effect's recipients: every
+/// recipient is listed or named, every address is a recipient, and every name matches
+/// a recipient's display name in the effect's own headers.
+fn claim_targets_match(claim: &crate::event::Claim, effect: &Effect) -> bool {
+    if claim.target_names.is_empty() {
+        return same_targets(&claim.targets, &effect.targets);
+    }
+    !effect.targets.is_empty()
+        && claim
+            .targets
+            .iter()
+            .all(|target| effect.targets.contains(target))
+        && claim.target_names.iter().all(|name| {
+            effect
+                .targets
+                .iter()
+                .any(|target| named_in(std::slice::from_ref(name), effect, target))
+        })
+        && effect.targets.iter().all(|target| {
+            claim.targets.contains(target) || named_in(&claim.target_names, effect, target)
+        })
+}
+
+/// Whether one of `names` matches the display name the effect recorded for `target`.
+/// Every word of the name must appear in the display name; an address is never
+/// inferred from a name.
+fn named_in(names: &[String], effect: &Effect, target: &str) -> bool {
+    let Some(display) = effect.target_names.get(target) else {
+        return false;
+    };
+    let display = words(display);
+    names.iter().any(|name| {
+        let name = words(name);
+        !name.is_empty() && name.iter().all(|word| display.contains(word))
+    })
+}
+
+fn words(text: &str) -> BTreeSet<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 fn same_targets(left: &[String], right: &[String]) -> bool {
@@ -1484,6 +1532,7 @@ mod tests {
             "message-1",
             10,
             EventPayload::Effect(Effect {
+                target_names: Default::default(),
                 action: Action::EmailSend,
                 targets: vec!["a@example.test".into()],
                 targets_complete: true,
@@ -1519,6 +1568,7 @@ mod tests {
             "user-request",
             0,
             EventPayload::Request(Request {
+                target_names: Vec::new(),
                 agent: "agent-1".into(),
                 task: "task-1".into(),
                 actions: Field::Known(vec![Action::EmailSend]),
@@ -1603,6 +1653,8 @@ mod tests {
             "claim-1",
             11,
             EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: crate::event::ClaimChannel::UserAccount,
                 agent: "agent-2".into(),
                 task: None,
                 action: Action::EmailSend,
@@ -1627,6 +1679,8 @@ mod tests {
             "claim-1",
             11,
             EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: crate::event::ClaimChannel::UserAccount,
                 agent: "agent-1".into(),
                 task: None,
                 action: Action::EmailSend,
@@ -1946,6 +2000,8 @@ mod tests {
             "claim-1",
             11,
             EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: crate::event::ClaimChannel::UserAccount,
                 agent: "agent-1".into(),
                 task: None,
                 action: Action::EmailSend,
@@ -2021,6 +2077,8 @@ mod tests {
             "claim-1",
             11,
             EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: crate::event::ClaimChannel::UserAccount,
                 agent: "agent-1".into(),
                 task: None,
                 action: Action::EmailSend,
@@ -2048,6 +2106,95 @@ mod tests {
         let gap_before = coverage(5, CoverageState::Gap, None);
         assert_eq!(
             status(&[gap_before, claim, healthy]),
+            ClaimStatus::CoverageIncomplete
+        );
+    }
+
+    fn named_send(recipients: &[(&str, Option<&str>)]) -> Event {
+        let mut sent = effect();
+        if let EventPayload::Effect(value) = &mut sent.payload {
+            value.targets = recipients
+                .iter()
+                .map(|(address, _)| (*address).into())
+                .collect();
+            value.target_names = recipients
+                .iter()
+                .filter_map(|(address, name)| Some(((*address).into(), (*name)?.into())))
+                .collect();
+        }
+        sent
+    }
+
+    #[test]
+    fn named_people_match_only_through_the_effects_own_display_names() {
+        let mut asked = request();
+        if let EventPayload::Request(value) = &mut asked.payload {
+            value.targets = Field::Known(vec![]);
+            value.target_names = vec!["Sam".into()];
+        }
+        // The runtime reports the same recipients, so the actor is linked and the
+        // request is compared.
+        let fit = |sent: Event| {
+            let mut linked = tool();
+            if let (EventPayload::ToolResult(value), EventPayload::Effect(effect)) =
+                (&mut linked.payload, &sent.payload)
+            {
+                value.targets = effect.targets.clone();
+            }
+            one(&[asked.clone(), sent, linked]).request_fit
+        };
+        assert_eq!(
+            fit(named_send(&[("a@example.test", Some("Sam Lee"))])),
+            RequestFit::ConsistentWithVisibleRequest
+        );
+        assert_eq!(
+            fit(named_send(&[
+                ("a@example.test", Some("Sam Lee")),
+                ("b@example.test", Some("Boss Person"))
+            ])),
+            RequestFit::Conflicts(vec![ConflictReason::ExtraTarget])
+        );
+        assert_eq!(
+            fit(named_send(&[("a@example.test", None)])),
+            RequestFit::Conflicts(vec![ConflictReason::ExtraTarget]),
+            "without a display name the recipient cannot be confirmed as Sam"
+        );
+    }
+
+    #[test]
+    fn named_claims_link_and_mail_outside_the_observed_account_is_out_of_scope() {
+        let claim = |names: Vec<String>, channel: ClaimChannel| {
+            event(
+                Source::Messages,
+                "claim-1",
+                11,
+                EventPayload::Claim(Claim {
+                    agent: "agent-1".into(),
+                    task: None,
+                    action: Action::EmailSend,
+                    targets: vec![],
+                    provider_resource: None,
+                    target_names: names,
+                    channel,
+                }),
+            )
+        };
+        let sent = named_send(&[("a@example.test", Some("Sam Lee"))]);
+        let named = claim(vec!["Sam".into()], ClaimChannel::UserAccount);
+        assert_eq!(
+            one(&[sent.clone(), named.clone()]).actor,
+            ActorEvidence::Reported("agent-1".into())
+        );
+        let wrong = claim(vec!["Alex".into()], ClaimChannel::UserAccount);
+        assert_eq!(one(&[sent, wrong]).actor, ActorEvidence::Unknown);
+        for channel in [ClaimChannel::AgentAccount, ClaimChannel::Unknown] {
+            assert_eq!(
+                assess_claims(&[claim(vec!["Sam".into()], channel)], time(60))[0].status,
+                ClaimStatus::OutsideObservedScope
+            );
+        }
+        assert_eq!(
+            assess_claims(&[named], time(60))[0].status,
             ClaimStatus::CoverageIncomplete
         );
     }

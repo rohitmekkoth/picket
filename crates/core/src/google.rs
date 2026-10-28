@@ -88,8 +88,14 @@ impl GmailMessage {
 
         if labels.iter().any(|label| label == "SENT") {
             let mut recipients = Vec::new();
+            let mut target_names = std::collections::BTreeMap::new();
             for name in ["To", "Cc", "Bcc"] {
-                recipients.extend(self.addresses(name)?);
+                for (address, display) in self.named_addresses(name)? {
+                    if let Some(display) = display {
+                        target_names.entry(address.clone()).or_insert(display);
+                    }
+                    recipients.push(address);
+                }
             }
             recipients.sort();
             recipients.dedup();
@@ -110,6 +116,7 @@ impl GmailMessage {
                     action: Action::EmailSend,
                     targets_complete: !recipients.is_empty(),
                     targets: recipients,
+                    target_names,
                     calendar_start: None,
                     origin: origin.clone(),
                     external_change: false,
@@ -174,6 +181,18 @@ impl GmailMessage {
     }
 
     fn addresses(&self, name: &str) -> Result<Vec<String>, GoogleWireError> {
+        Ok(self
+            .named_addresses(name)?
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect())
+    }
+
+    /// Normalized addresses with their display names, bounded and on one line.
+    fn named_addresses(
+        &self,
+        name: &str,
+    ) -> Result<Vec<(String, Option<String>)>, GoogleWireError> {
         let Some(value) = self.header(name) else {
             return Ok(Vec::new());
         };
@@ -193,7 +212,7 @@ impl GmailMessage {
         let mut addresses = Vec::new();
         for item in parsed.iter() {
             let address = item.address().ok_or(GoogleWireError::InvalidGmail)?;
-            addresses.push(normalize_address(address)?);
+            addresses.push((normalize_address(address)?, display_name(item.name())));
         }
         Ok(addresses)
     }
@@ -203,6 +222,18 @@ fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// A display name for matching a named request, never a source of addresses.
+pub(crate) fn display_name(value: Option<&str>) -> Option<String> {
+    let value = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!value.is_empty() && !value.contains('@')).then(|| {
+        value
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(80)
+            .collect()
+    })
 }
 
 fn normalize_address(value: &str) -> Result<String, GoogleWireError> {
@@ -337,6 +368,13 @@ mod tests {
             return Err("expected effect".into());
         };
         assert_eq!(effect.targets, vec!["person@example.test"]);
+        assert_eq!(
+            effect
+                .target_names
+                .get("person@example.test")
+                .map(String::as_str),
+            Some("Person")
+        );
         assert_eq!(
             effect
                 .email
