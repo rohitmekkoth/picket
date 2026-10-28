@@ -75,3 +75,29 @@ export async function registerAgent(name: string, mode: AgentMode, handle: strin
     region,
   });
 }
+
+const modelSchema = z.object({
+  status: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("absent") }),
+    z.object({
+      state: z.literal("downloading"),
+      received: z.number().nonnegative(),
+      total: z.number().nonnegative(),
+    }),
+    z.object({ state: z.literal("ready") }),
+    z.object({ state: z.literal("failed"), reason: z.string().min(1) }),
+  ]),
+  id: z.string().min(1),
+  bytes: z.number().positive(),
+});
+export type Model = z.infer<typeof modelSchema>;
+
+export async function getModel(): Promise<Model | null> {
+  if (!isTauri()) return null;
+  return modelSchema.parse(await invoke<unknown>("model_status"));
+}
+
+export async function downloadModel(): Promise<void> {
+  if (!isTauri()) throw new Error("Open the desktop app to download the model.");
+  await invoke("download_model");
+}

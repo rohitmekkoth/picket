@@ -4,9 +4,12 @@ import {
   type AgentMode,
   type Agents,
   connectGoogle,
+  downloadModel,
   getGoogleStatus,
+  getModel,
   getRuntimeInfo,
   listAgents,
+  type Model,
   registerAgent,
 } from "./lib/runtime";
 
@@ -19,6 +22,25 @@ const messagesStatus: Record<Agents["messages"], string> = {
   unsupported: "This Messages database format is not supported, so capture is off.",
   unavailable: "Messages could not be read. Picket will retry.",
 };
+
+function gigabytes(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+function modelStatus(model: Model): string {
+  switch (model.status.state) {
+    case "absent":
+      return "Not downloaded. Until it is, Picket records your agent conversations but cannot compare them.";
+    case "downloading":
+      return model.status.total > 0
+        ? `Downloading ${gigabytes(model.status.received)} of ${gigabytes(model.status.total)}.`
+        : "Starting download.";
+    case "ready":
+      return "Ready. It loads when there are messages to read and unloads when idle.";
+    case "failed":
+      return `Download failed: ${model.status.reason}. Try again.`;
+  }
+}
 
 export function App() {
   const [notificationAction, setNotificationAction] = useState(window.location.hash);
@@ -44,6 +66,17 @@ export function App() {
     refetchInterval: 5000,
   });
   const agents = useQuery({ queryKey: ["agents"], queryFn: listAgents, refetchInterval: 5000 });
+  const model = useQuery({ queryKey: ["model"], queryFn: getModel, refetchInterval: 2000 });
+  const [modelError, setModelError] = useState("");
+  async function onDownloadModel() {
+    setModelError("");
+    try {
+      await downloadModel();
+      await model.refetch();
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : String(error));
+    }
+  }
   async function onAddAgent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAgentError("");
@@ -257,6 +290,34 @@ export function App() {
             </form>
           ) : (
             <p className="connection-state">Open the desktop app to add agents.</p>
+          )}
+        </section>
+        <section className="google-panel" aria-labelledby="model-heading">
+          <div>
+            <p className="eyebrow">On-device understanding</p>
+            <h2 id="model-heading">Local model</h2>
+            <p>
+              To compare what you asked with what happened, Picket reads your agent conversations
+              with a small model that runs on this Mac. Messages never leave it. The model is
+              downloaded once from Hugging Face and checked against a pinned fingerprint.
+            </p>
+          </div>
+          {model.data ? (
+            <div className="connect-form">
+              <p role="status">{modelStatus(model.data)}</p>
+              {(model.data.status.state === "absent" || model.data.status.state === "failed") && (
+                <button type="button" onClick={() => void onDownloadModel()}>
+                  Download model ({gigabytes(model.data.bytes)})
+                </button>
+              )}
+              {modelError && (
+                <p className="form-error" role="alert">
+                  {modelError}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="connection-state">Open the desktop app to set up the model.</p>
           )}
         </section>
         <section className="runtime" aria-labelledby="runtime-heading">

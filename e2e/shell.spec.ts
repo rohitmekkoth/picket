@@ -21,6 +21,7 @@ test("Google observation preview stays local and supports keyboard interaction",
   await expect(page.getByText(/Open the desktop app to connect Google/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Registered agents" })).toBeVisible();
   await expect(page.getByText(/Open the desktop app to add agents/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Local model" })).toBeVisible();
   // Safari uses Option-Tab for links when full keyboard access is disabled.
   const nextControl = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
   await page.keyboard.press(nextControl);

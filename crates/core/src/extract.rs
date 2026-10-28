@@ -79,19 +79,27 @@ pub fn extract_pending(
     if agents.is_empty() {
         return Ok(Progress::CaughtUp);
     }
-    let Some(model) = model else {
-        report(
-            ledger,
-            account,
-            &agents,
-            CoverageState::Delayed,
-            Some(CoverageReason::ExtractionUnavailable),
-            now,
-        )?;
-        return Ok(Progress::CaughtUp);
-    };
     let pending = ledger.pending_extractions(account, MESSAGES_PER_PASS + 1)?;
+    // A model is needed only for pending messages; with none, capture is caught up.
+    let mut model = match model {
+        Some(model) => Some(model),
+        None if pending.is_empty() => None,
+        None => {
+            report(
+                ledger,
+                account,
+                &agents,
+                CoverageState::Delayed,
+                Some(CoverageReason::ExtractionUnavailable),
+                now,
+            )?;
+            return Ok(Progress::CaughtUp);
+        }
+    };
     for message in pending.iter().take(MESSAGES_PER_PASS) {
+        let Some(model) = model.as_deref_mut() else {
+            break;
+        };
         let EventPayload::Message(observed) = &message.payload else {
             continue;
         };
