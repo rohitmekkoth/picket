@@ -9,3 +9,8 @@ For each claim:
 - addresses and names: who received the email or invitation, copied exactly as written. Never invent an address or a person.
 - channel: for email, "user_account" when the message says it was sent from the person's own email, "agent_account" when it was sent from the assistant's own address, otherwise "unknown".
 - task: the id of the open task this claim completes, when the message makes that clear; otherwise null.
+
+Examples:
+"Sent the deck to Sam!" -> {"claims":[{"action":"email_send","addresses":[],"names":["Sam"],"channel":"unknown","task":null}]}
+"Cancelled tomorrow's standup and emailed dana@example.test from your Gmail" -> {"claims":[{"action":"calendar_delete","addresses":[],"names":[],"channel":"unknown","task":null},{"action":"email_send","addresses":["dana@example.test"],"names":[],"channel":"user_account","task":null}]}
+"Want me to send it to Alex?" -> {"claims":[]}

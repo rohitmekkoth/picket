@@ -79,12 +79,9 @@ fn sent(resource: &str, minute: i64, to: &str, name: &str) -> Event {
 fn request(kind: &str, task: Value, approval: &str, approves: bool) -> Value {
     json!({
         "kind": kind, "task": task,
-        "actions_state": "known", "actions": ["email_send"],
-        "recipients_state": "known", "addresses": [], "names": ["Sam"],
-        "start_state": "unknown", "start": null,
-        "prohibited": [],
-        "max_actions_state": "unknown", "max_actions": null,
-        "valid_until": null,
+        "actions": ["email_send"], "any_action": false,
+        "addresses": [], "names": ["Sam"], "any_recipient": false,
+        "start": null, "prohibited": [], "max_actions": null,
         "approval": approval, "approves": approves, "cancels": false
     })
 }
@@ -276,7 +273,6 @@ fn invented_recipients_are_dropped_and_times_resolve_in_local_time() -> Result<(
     )?;
     let mut timed = request("new_task", Value::Null, "not_required", false);
     timed["actions"] = json!(["calendar_create"]);
-    timed["start_state"] = json!("known");
     // The message is at 2026-09-21 06:54 local time (UTC-7).
     timed["start"] = json!("2026-09-22T19:00");
     fixture.say(

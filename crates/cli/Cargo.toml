@@ -14,6 +14,11 @@ picket-core.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4.45", features = ["serde"] }
+picket-model = { path = "../model", optional = true }
+
+[features]
+# Real-model extraction evaluation builds llama.cpp; CI and default builds do not.
+model = ["dep:picket-model"]
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }

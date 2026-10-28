@@ -359,15 +359,6 @@ enum RawKind {
     None,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum RawState {
-    Known,
-    Any,
-    Unknown,
-    Ambiguous,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RawApproval {
@@ -376,22 +367,21 @@ enum RawApproval {
     Unknown,
 }
 
+/// The model's proposal for a user message. Lists hold what the message states; an
+/// empty list means it does not say.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRequest {
     kind: RawKind,
     task: Option<String>,
-    actions_state: RawState,
     actions: Vec<String>,
-    recipients_state: RawState,
+    any_action: bool,
     addresses: Vec<String>,
     names: Vec<String>,
-    start_state: RawState,
+    any_recipient: bool,
     start: Option<String>,
     prohibited: Vec<String>,
-    max_actions_state: RawState,
     max_actions: Option<u32>,
-    valid_until: Option<String>,
     approval: RawApproval,
     approves: bool,
     cancels: bool,
@@ -434,29 +424,25 @@ fn action(value: &str) -> Option<Action> {
 }
 
 pub fn request_schema() -> Value {
-    let state = json!({"enum": ["known", "any", "unknown", "ambiguous"]});
     let strings = json!({"type": "array", "items": {"type": "string"}, "maxItems": 8});
-    let local = json!({"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$"});
+    let actions = json!({"type": "array", "items": {"enum": ACTIONS}, "maxItems": 6});
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "task", "actions_state", "actions", "recipients_state", "addresses",
-            "names", "start_state", "start", "prohibited", "max_actions_state", "max_actions",
-            "valid_until", "approval", "approves", "cancels"],
+        "required": ["kind", "task", "actions", "any_action", "addresses", "names",
+            "any_recipient", "start", "prohibited", "max_actions", "approval", "approves",
+            "cancels"],
         "properties": {
             "kind": {"enum": ["new_task", "revise_task", "not_a_task"]},
             "task": {"type": ["string", "null"]},
-            "actions_state": state,
-            "actions": {"type": "array", "items": {"enum": ACTIONS}, "maxItems": 6},
-            "recipients_state": state,
+            "actions": actions,
+            "any_action": {"type": "boolean"},
             "addresses": strings,
             "names": strings,
-            "start_state": state,
-            "start": local,
-            "prohibited": {"type": "array", "items": {"enum": ACTIONS}, "maxItems": 6},
-            "max_actions_state": state,
+            "any_recipient": {"type": "boolean"},
+            "start": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$"},
+            "prohibited": actions,
             "max_actions": {"type": ["integer", "null"], "minimum": 0, "maximum": 100},
-            "valid_until": local,
             "approval": {"enum": ["required", "not_required", "unknown"]},
             "approves": {"type": "boolean"},
             "cancels": {"type": "boolean"}
@@ -505,7 +491,10 @@ fn task_summary(id: &str, request: &Request) -> Value {
 
 fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     let base = match raw.kind {
-        RawKind::None => return None,
+        // Wording can only restrict: a standing "don't send" is kept even when the
+        // model sees no task.
+        RawKind::None if !forbids_sending(text) => return None,
+        RawKind::None => None,
         // An unknown task id is not trusted as a follow-up; the message stands alone.
         RawKind::Revise => raw
             .task
@@ -515,66 +504,67 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         RawKind::New => None,
     };
     let at = input.at;
-    let offset = input.offset;
-    let grounded_time = |value: &Option<String>| {
-        value
-            .as_deref()
-            .filter(|_| mentions_time(text))
-            .and_then(|value| local_time(value, offset))
-            .filter(|time| *time > at - Duration::days(1) && *time < at + Duration::days(400))
-    };
+    // Widening permission needs the model's proposal and the message's own words.
     let actions: Vec<_> = raw
         .actions
         .iter()
         .filter_map(|value| action(value))
         .collect();
-    let actions = match raw.actions_state {
-        // Only unobservable actions such as booking: which observable action is allowed
-        // is unknown, so no email or calendar change is either permitted or forbidden.
-        RawState::Known if actions.is_empty() && !raw.actions.is_empty() => Field::Unknown,
-        state => field(state, actions, true),
-    };
-    let addresses: Vec<_> = raw
-        .addresses
-        .iter()
-        .map(|address| address.trim().to_lowercase())
-        .collect();
-    let names: Vec<_> = raw
-        .names
-        .iter()
-        .map(|name| name.trim().to_owned())
-        .collect();
-    let recipients_grounded = addresses
-        .iter()
-        .all(|address| address.contains('@') && text.to_lowercase().contains(address.as_str()))
-        && names.iter().all(|name| names_in(text, name));
-    let targets = field(raw.recipients_state, addresses, recipients_grounded);
-    let target_names = if matches!(targets, Field::Known(_)) {
-        names
+    let actions = if raw.any_action && says(text, &ANY_ACTION_CUES) {
+        Field::ExplicitAny
+    } else if actions.is_empty() {
+        // Nothing observable stated, or only actions such as booking.
+        Field::Unknown
     } else {
-        Vec::new()
+        Field::Known(actions)
     };
-    let start = grounded_time(&raw.start);
-    let calendar_start = match raw.start_state {
-        RawState::Known => start.map_or(Field::Unknown, Field::Known),
-        state => field(state, at, false),
+    let (addresses, names) = recipients(&raw.addresses, &raw.names);
+    let grounded = addresses
+        .iter()
+        .all(|address| text.to_lowercase().contains(address.as_str()))
+        && names.iter().all(|name| names_in(text, name));
+    let (targets, target_names) = if raw.any_recipient && says(text, &ANY_RECIPIENT_CUES) {
+        (Field::ExplicitAny, Vec::new())
+    } else if grounded && !(addresses.is_empty() && names.is_empty()) {
+        (Field::Known(addresses), names)
+    } else {
+        (Field::Unknown, Vec::new())
     };
-    let max_grounded = raw.max_actions.is_some_and(|count| counted_in(text, count));
-    let max_actions = match (raw.max_actions_state, raw.max_actions) {
-        (RawState::Known, Some(count)) if max_grounded => Field::Known(count),
-        (RawState::Known, _) => Field::Unknown,
-        (state, _) => field(state, 0, false),
-    };
+    let calendar = matches!(&actions, Field::Known(actions) if actions.iter().any(|action| *action != Action::EmailSend));
+    let calendar_start = raw
+        .start
+        .as_deref()
+        .filter(|_| calendar && mentions_time(text))
+        .and_then(|value| local_time(value, input.offset))
+        .filter(|time| *time > at - Duration::days(1) && *time < at + Duration::days(400))
+        .map_or(Field::Unknown, Field::Known);
+    let max_actions = raw
+        .max_actions
+        .filter(|count| counted_in(text, *count))
+        .map_or(Field::Unknown, Field::Known);
     let requires_approval = match raw.approval {
         RawApproval::Required => Field::Known(true),
-        RawApproval::NotRequired => Field::Known(false),
-        RawApproval::Unknown => Field::Unknown,
+        RawApproval::NotRequired if says(text, &NO_APPROVAL_CUES) => Field::Known(false),
+        _ => Field::Unknown,
     };
-    let prohibited: Vec<_> = raw
+    let mut prohibited: Vec<_> = raw
         .prohibited
         .iter()
         .filter_map(|value| action(value))
         .collect();
+    // Wording can only ever restrict: "don't send" forbids sending even if the model
+    // missed it, unless it redirects ("don't send it to Alex").
+    if forbids_sending(text) && !prohibited.contains(&Action::EmailSend) {
+        prohibited.push(Action::EmailSend);
+    }
+    // A forbidden action is never also allowed.
+    let actions = match actions {
+        Field::Known(mut allowed) => {
+            allowed.retain(|action| !prohibited.contains(action));
+            Field::Known(allowed)
+        }
+        other => other,
+    };
     let task = base.as_ref().map_or_else(
         || input.id.chars().take(128).collect(),
         |request| request.task.clone(),
@@ -587,7 +577,7 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         calendar_start,
         prohibited_actions: prohibited,
         max_actions,
-        valid_until: grounded_time(&raw.valid_until),
+        valid_until: None,
         requires_approval,
         approved: false,
         target_names,
@@ -603,6 +593,107 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         request.valid_until = Some(at);
     }
     Some(request)
+}
+
+/// Explicit wording that lets the agent choose who receives it.
+const ANY_RECIPIENT_CUES: [&str; 5] = ["anyone", "anybody", "whoever", "whomever", "everyone"];
+/// Explicit wording that leaves the kind of action to the agent.
+const ANY_ACTION_CUES: [&str; 6] = [
+    "whatever",
+    "anything",
+    "up to you",
+    "your call",
+    "you decide",
+    "however you",
+];
+/// Wording that forbids sending.
+const NO_SEND_CUES: [&str; 8] = [
+    "don't send",
+    "do not send",
+    "dont send",
+    "not send",
+    "don't email",
+    "do not email",
+    "draft only",
+    "only draft",
+];
+/// Wording that places a claimed email in the user's own account.
+const USER_ACCOUNT_CUES: [&str; 6] = [
+    "from your",
+    "your gmail",
+    "your email",
+    "your account",
+    "your inbox",
+    "as you",
+];
+
+fn forbids_sending(text: &str) -> bool {
+    let normalized = format!(" {} ", words_of(text).join(" "));
+    NO_SEND_CUES.iter().any(|cue| {
+        let cue = format!(" {} ", words_of(cue).join(" "));
+        normalized.match_indices(&cue).any(|(index, _)| {
+            let rest = &normalized[index + cue.len()..];
+            !(rest.starts_with("it to ") || rest.starts_with("to ") || rest.starts_with("that to "))
+        })
+    })
+}
+/// Explicit wording that the agent may act without confirming first.
+const NO_APPROVAL_CUES: [&str; 10] = [
+    "no need to check",
+    "no need to ask",
+    "no need to confirm",
+    "without asking",
+    "without checking",
+    "don't ask",
+    "don't check",
+    "go ahead",
+    "just send",
+    "don't wait",
+];
+
+fn says(text: &str, cues: &[&str]) -> bool {
+    let text = format!(" {} ", words_of(text).join(" "));
+    cues.iter()
+        .any(|cue| text.contains(&format!(" {} ", words_of(cue).join(" "))))
+}
+
+fn words_of(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .replace('\u{2019}', "'")
+        .split(|character: char| !(character.is_alphanumeric() || character == '\''))
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Splits proposed recipients into normalized addresses and names. A proposed
+/// "address" without an @ is a name the model put in the wrong list.
+fn recipients(addresses: &[String], names: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut emails = Vec::new();
+    // "Dana's email" names Dana.
+    let person = |name: &str| {
+        let name = name.trim();
+        name.strip_suffix("'s")
+            .or_else(|| name.strip_suffix("\u{2019}s"))
+            .unwrap_or(name)
+            .trim()
+            .to_owned()
+    };
+    let mut people: Vec<String> = names.iter().map(|name| person(name)).collect();
+    for value in addresses {
+        let value = value.trim();
+        if value.contains('@') {
+            emails.push(value.to_lowercase());
+        } else if !value.is_empty()
+            && !people
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&person(value)))
+        {
+            people.push(person(value));
+        }
+    }
+    people.retain(|name| !name.is_empty());
+    (emails, people)
 }
 
 /// A follow-up field marked unknown leaves the task's earlier value in place.
@@ -647,25 +738,19 @@ fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
         .take(MAX_CLAIMS)
         .filter_map(|claim| {
             let action = action(&claim.action)?;
-            let targets: Vec<_> = claim
-                .addresses
-                .iter()
-                .map(|address| address.trim().to_lowercase())
-                .collect();
-            let names: Vec<_> = claim
-                .names
-                .iter()
-                .map(|name| name.trim().to_owned())
-                .collect();
+            let (targets, names) = recipients(&claim.addresses, &claim.names);
             // An ungrounded recipient would let a fabricated claim match an effect.
-            let grounded = targets.iter().all(|address| {
-                address.contains('@') && text.to_lowercase().contains(address.as_str())
-            }) && names.iter().all(|name| names_in(text, name));
+            let grounded = targets
+                .iter()
+                .all(|address| text.to_lowercase().contains(address.as_str()))
+                && names.iter().all(|name| names_in(text, name));
             if !grounded {
                 return None;
             }
+            // Placing the email in the user's account lets its absence count, so the
+            // message must say so.
             let channel = match claim.channel.as_str() {
-                "user_account" => ClaimChannel::UserAccount,
+                "user_account" if says(text, &USER_ACCOUNT_CUES) => ClaimChannel::UserAccount,
                 "agent_account" => ClaimChannel::AgentAccount,
                 _ => ClaimChannel::Unknown,
             };
@@ -682,19 +767,13 @@ fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
         .collect()
 }
 
-fn field<T>(state: RawState, value: T, grounded: bool) -> Field<T> {
-    match state {
-        RawState::Known if grounded => Field::Known(value),
-        RawState::Known | RawState::Unknown => Field::Unknown,
-        RawState::Any => Field::ExplicitAny,
-        RawState::Ambiguous => Field::Ambiguous,
-    }
-}
-
-/// Every word of `name` appears as a word of the text.
+/// Every word of `name` appears as a word of the text outside email addresses, so a
+/// name cannot be lifted from an address.
 fn names_in(text: &str, name: &str) -> bool {
     let words: Vec<_> = text
-        .split(|character: char| !character.is_alphanumeric())
+        .split_whitespace()
+        .filter(|token| !token.contains('@'))
+        .flat_map(|token| token.split(|character: char| !character.is_alphanumeric()))
         .map(str::to_lowercase)
         .collect();
     let name: Vec<_> = name
