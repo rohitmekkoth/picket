@@ -538,7 +538,8 @@
             "task": "t1"
           }
         ]
-      }
+      },
+      "context_task": "t1"
     },
     {
       "id": "claim-context-calendar",
@@ -565,7 +566,8 @@
             "task": "t2"
           }
         ]
-      }
+      },
+      "context_task": "t2"
     },
     {
       "id": "claim-context-not-claim",
@@ -582,6 +584,36 @@
       "context": "Email Sam the menu",
       "expect": {
         "claims": []
+      },
+      "context_task": "t1"
+    },
+    {
+      "id": "claim-context-disagrees",
+      "direction": "from_agent",
+      "text": "Sent it from your Gmail.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["other"],
+          "approval": "unknown"
+        },
+        {
+          "id": "t2",
+          "actions": ["email_send"],
+          "names": ["Sam"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "thanks, also I'm looking into internships",
+      "context_task": "t1",
+      "note": "The preceding message created an unrelated task; a link to t2 is not corroborated, so the claim keeps no task.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "channel": "user_account"
+          }
+        ]
       }
     }
   ]

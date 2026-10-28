@@ -111,18 +111,41 @@ pub fn extract_pending(
             _ => None,
         };
         let open = open_tasks(ledger, account, &agent.id, message.occurred_at)?;
-        let context = match observed.direction {
-            MessageDirection::FromAgent => ledger
-                .previous_user_message(account, &agent.id, message.occurred_at)?
-                .and_then(|previous| text(&previous.key.resource)),
+        let previous = match observed.direction {
+            MessageDirection::FromAgent => {
+                ledger.previous_user_message(account, &agent.id, message.occurred_at)?
+            }
             MessageDirection::FromUser => None,
+        };
+        let context_text = previous
+            .as_ref()
+            .and_then(|previous| text(&previous.key.resource));
+        // The task the user's preceding message created or revised, if any.
+        let context_task = match &previous {
+            Some(previous) => ledger
+                .extractions_since(account, &agent.id, previous.occurred_at)?
+                .into_iter()
+                .find_map(|event| match event.payload {
+                    EventPayload::Request(request)
+                        if event.key.resource == format!("{}#request", previous.key.resource)
+                            && event.key.revision == previous.key.revision =>
+                    {
+                        Some(request.task)
+                    }
+                    _ => None,
+                }),
+            None => None,
+        };
+        let context = Context {
+            text: context_text.as_deref(),
+            task: context_task.as_deref(),
         };
         let events = match extract_one(
             model,
             message,
             content.as_deref(),
             &open,
-            context.as_deref(),
+            context,
             zone,
             now,
         ) {
@@ -242,7 +265,7 @@ fn extract_one(
     message: &Event,
     text: Option<&str>,
     open: &BTreeMap<String, Request>,
-    context: Option<&str>,
+    context: Context,
     zone: &dyn Fn(DateTime<Utc>) -> FixedOffset,
     now: DateTime<Utc>,
 ) -> Result<Vec<Event>, ModelError> {
@@ -317,9 +340,17 @@ pub struct Input<'a> {
     /// The message identity: the task id of a new request and the data delimiter's seed.
     pub id: &'a str,
     pub open: &'a BTreeMap<String, Request>,
-    /// For an agent reply, the user's latest message before it. A reply such as "Sent!"
-    /// names its task only through what it answers; the context is never a claim.
-    pub context: Option<&'a str>,
+    /// For an agent reply, what it answers. Never a source of claims.
+    pub context: Context<'a>,
+}
+
+/// What an agent reply answers: the user's preceding message and the task it created
+/// or revised. A reply such as "Sent!" names its task only through this, and a model's
+/// task link is kept only when it agrees with `task`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Context<'a> {
+    pub text: Option<&'a str>,
+    pub task: Option<&'a str>,
 }
 
 /// The validated extraction of one message: at most one request from the user, or
@@ -343,11 +374,16 @@ pub fn propose(model: &mut dyn LocalModel, input: &Input) -> Result<Proposal, Mo
         &input
             .open
             .iter()
-            .map(|(id, request)| task_summary(id, request))
+            .map(|(id, request)| {
+                // Only claim extraction uses the link to the latest message.
+                let latest = (input.direction == MessageDirection::FromAgent)
+                    .then_some(input.context.task == Some(id.as_str()));
+                task_summary(id, request, latest)
+            })
             .collect::<Vec<_>>(),
     )
     .map_err(|_| ModelError::Invalid)?;
-    let context = match (&input.direction, input.context) {
+    let context = match (&input.direction, input.context.text) {
         (MessageDirection::FromAgent, Some(context)) => format!(
             "The person's latest message before this reply, only for choosing the task:\n<{tag}-context>\n{}\n</{tag}-context>\n",
             context.chars().take(MAX_TEXT).collect::<String>()
@@ -516,15 +552,19 @@ pub fn claim_schema() -> Value {
 }
 
 /// A compact view of an open task for the model, without message text.
-fn task_summary(id: &str, request: &Request) -> Value {
-    json!({
+fn task_summary(id: &str, request: &Request, from_latest_message: Option<bool>) -> Value {
+    let mut summary = json!({
         "id": id,
         "actions": request.actions,
         "addresses": request.targets,
         "names": request.target_names,
         "approval_required": request.requires_approval,
         "approved": request.approved,
-    })
+    });
+    if let Some(latest) = from_latest_message {
+        summary["from_latest_message"] = json!(latest);
+    }
+    summary
 }
 
 fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
@@ -627,6 +667,17 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         allowed.retain(|action| !request.prohibited_actions.contains(action));
     }
     Some(request)
+}
+
+/// Whether a task says anything about an action: allows it, leaves the choice open, or
+/// forbids it. A forbidden action still links, so the conflict can be found.
+fn concerns(request: &Request, action: &Action) -> bool {
+    request.prohibited_actions.contains(action)
+        || match &request.actions {
+            Field::Known(actions) => actions.contains(action),
+            Field::ExplicitAny => true,
+            Field::Unknown | Field::Ambiguous => false,
+        }
 }
 
 /// Explicit wording that lets the agent choose who receives it.
@@ -792,7 +843,16 @@ fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
             };
             Some(Claim {
                 agent: input.agent.to_owned(),
-                task: claim.task.filter(|task| input.open.contains_key(task)),
+                // Kept only when the model's link agrees with the conversation (the task
+                // the user's preceding message created or revised) and that task concerns
+                // this action, as allowed or as forbidden.
+                task: claim.task.filter(|task| {
+                    Some(task.as_str()) == input.context.task
+                        && input
+                            .open
+                            .get(task)
+                            .is_some_and(|request| concerns(request, &action))
+                }),
                 action,
                 targets,
                 provider_resource: None,

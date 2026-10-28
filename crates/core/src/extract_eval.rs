@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     event::{Action, Claim, ClaimChannel, Field, MessageDirection, Request},
-    extract::{Input, LocalModel, Proposal, propose},
+    extract::{Context, Input, LocalModel, Proposal, propose},
 };
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +32,8 @@ struct Case {
     open: Vec<OpenTask>,
     #[serde(default)]
     context: Option<String>,
+    #[serde(default)]
+    context_task: Option<String>,
     expect: Expect,
 }
 
@@ -150,7 +152,10 @@ pub fn evaluate(model: &mut dyn LocalModel, suite: &Suite) -> Result<Report, Str
             agent: "agent",
             id: &case.id,
             open: &open,
-            context: case.context.as_deref(),
+            context: Context {
+                text: case.context.as_deref(),
+                task: case.context_task.as_deref(),
+            },
         };
         match propose(model, &input) {
             Ok(proposal) => score(case, &proposal, offset, &mut report),
