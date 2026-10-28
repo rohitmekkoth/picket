@@ -68,26 +68,38 @@ pub fn list_agents(app: tauri::AppHandle) -> Result<AgentsView, String> {
     })
 }
 
-/// Registers or updates an iMessage agent. Every field is validated here; the
-/// renderer only proposes values.
+/// Registers or updates an agent. An iMessage agent needs its handle; an effects-only
+/// agent, such as Meta Muse, has no channel Picket can read. Every field is validated
+/// here; the renderer only proposes values.
 #[tauri::command]
 pub fn register_agent(
     app: tauri::AppHandle,
     name: String,
-    handle: String,
+    mode: String,
+    handle: Option<String>,
     region: Option<String>,
 ) -> Result<(), String> {
     let region = region
         .map(|value| value.trim().to_ascii_uppercase())
         .filter(|value| !value.is_empty());
+    let mode = match mode.as_str() {
+        "messages" => AgentMode::Messages,
+        "effects_only" => AgentMode::EffectsOnly,
+        _ => return Err("unsupported agent mode".into()),
+    };
+    let handles = match (&mode, handle.as_deref().map(str::trim)) {
+        (AgentMode::Messages, Some(handle)) => vec![
+            agent::normalize_handle(handle, region.as_deref())
+                .map_err(|error| error.to_string())?,
+        ],
+        (AgentMode::Messages, None) => return Err(agent::AgentError::Handles.to_string()),
+        _ => Vec::new(),
+    };
     let registration = AgentRegistration {
         id: agent::id_from_name(&name).map_err(|error| error.to_string())?,
         name: name.trim().to_owned(),
-        mode: AgentMode::Messages,
-        handles: vec![
-            agent::normalize_handle(&handle, region.as_deref())
-                .map_err(|error| error.to_string())?,
-        ],
+        mode,
+        handles,
         connected_since: None,
         enabled: true,
         region,

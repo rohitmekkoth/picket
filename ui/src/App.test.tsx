@@ -66,7 +66,7 @@ test("an iMessage agent can be added and missing access is explained", async () 
     messages: "permission_missing",
   });
   fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-  expect(register).toHaveBeenCalledWith("Synthetic agent", "+1 415 555 0132");
+  expect(register).toHaveBeenCalledWith("Synthetic agent", "messages", "+1 415 555 0132");
   expect(await screen.findByText("+14155550132")).toBeInTheDocument();
   expect(screen.getByText(/Grant Full Disk Access/)).toBeInTheDocument();
 });
