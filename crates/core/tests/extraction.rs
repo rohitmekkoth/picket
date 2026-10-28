@@ -400,3 +400,31 @@ fn capture_is_confirmed_again_only_when_a_new_effect_needs_it() -> Result<()> {
     let _ = Duration::zero();
     Ok(())
 }
+
+#[test]
+fn a_follow_up_prohibition_removes_the_action_from_the_merged_task() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.say(
+        "m1",
+        1,
+        MessageDirection::FromUser,
+        "Email Sam the menu, but ask me before sending",
+        request("new_task", Value::Null, "required", false),
+    )?;
+    let mut wait = request("revise_task", json!("m1"), "unknown", false);
+    wait["actions"] = json!([]);
+    wait["names"] = json!([]);
+    wait["prohibited"] = json!(["email_send"]);
+    fixture.say(
+        "m2",
+        2,
+        MessageDirection::FromUser,
+        "wait don't send that yet",
+        wait,
+    )?;
+    fixture.extract(3)?;
+    let latest = fixture.requests()?.pop().ok_or("request missing")?;
+    assert_eq!(latest.actions, picket_core::event::Field::Known(vec![]));
+    assert_eq!(latest.prohibited_actions, vec![Action::EmailSend]);
+    Ok(())
+}

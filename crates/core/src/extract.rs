@@ -557,14 +557,6 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     if forbids_sending(text) && !prohibited.contains(&Action::EmailSend) {
         prohibited.push(Action::EmailSend);
     }
-    // A forbidden action is never also allowed.
-    let actions = match actions {
-        Field::Known(mut allowed) => {
-            allowed.retain(|action| !prohibited.contains(action));
-            Field::Known(allowed)
-        }
-        other => other,
-    };
     let task = base.as_ref().map_or_else(
         || input.id.chars().take(128).collect(),
         |request| request.task.clone(),
@@ -591,6 +583,10 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     }
     if raw.cancels {
         request.valid_until = Some(at);
+    }
+    // A forbidden action is never also allowed, including after a follow-up merges in.
+    if let Field::Known(allowed) = &mut request.actions {
+        allowed.retain(|action| !request.prohibited_actions.contains(action));
     }
     Some(request)
 }
