@@ -38,6 +38,7 @@ struct MockModel;
 impl MockModel {
     fn request(&self, prompt: &str) -> Request {
         let mut value = Request {
+            target_names: Vec::new(),
             agent: "agent-1".into(),
             task: "task-1".into(),
             actions: Field::Known(vec![Action::EmailSend]),
@@ -71,6 +72,8 @@ impl MockModel {
     fn claim(&self, prompt: &str, agent: &str, resource: &str) -> Claim {
         match prompt {
             "I sent the email" => Claim {
+                target_names: Vec::new(),
+                channel: picket_core::event::ClaimChannel::UserAccount,
                 agent: agent.into(),
                 task: Some("task-1".into()),
                 action: Action::EmailSend,
@@ -97,6 +100,7 @@ fn sent(resource: &str, minute: i64) -> Event {
         resource,
         minute,
         EventPayload::Effect(Effect {
+            target_names: Default::default(),
             action: Action::EmailSend,
             targets: vec!["a@example.test".into()],
             targets_complete: true,

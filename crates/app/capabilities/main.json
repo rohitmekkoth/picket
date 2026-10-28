@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Expose the runtime diagnostic, Google connection, and agent registration commands.",
+  "description": "Expose the runtime diagnostic, Google connection, agent registration, and local model commands.",
   "windows": ["main"],
   "permissions": [
     "allow-get-runtime-info",
     "allow-google-connected",
     "allow-connect-google",
     "allow-list-agents",
-    "allow-register-agent"
+    "allow-register-agent",
+    "allow-model-status",
+    "allow-download-model"
   ]
 }

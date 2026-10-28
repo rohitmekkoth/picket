@@ -14,6 +14,8 @@ chrono = "0.4.45"
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 oauth2 = { version = "5.0.0", default-features = false, features = ["reqwest", "reqwest-blocking"] }
 picket-core.workspace = true
+picket-model = { path = "../model" }
+sha2 = "0.10.9"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 serde.workspace = true
 serde_json.workspace = true

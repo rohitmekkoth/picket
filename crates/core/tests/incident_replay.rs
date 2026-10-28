@@ -51,6 +51,7 @@ fn effect() -> Event {
         "message-1",
         10,
         EventPayload::Effect(Effect {
+            target_names: Default::default(),
             action: Action::EmailSend,
             targets: vec!["a@example.test".into()],
             targets_complete: true,

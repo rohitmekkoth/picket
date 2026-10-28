@@ -1,0 +1,17 @@
+[package]
+name = "picket-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+picket-core.workspace = true
+# OpenMP is unavailable with Apple clang; `common` provides JSON-schema grammars.
+llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
+sha2 = "0.10.9"
+serde_json.workspace = true
+thiserror = "2"
+
+[lints]
+workspace = true

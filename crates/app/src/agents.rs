@@ -1,11 +1,16 @@
 //! Agent registration commands and the Messages capture worker.
 
-use std::{sync::Mutex, thread, time::Duration};
+use std::{
+    sync::Mutex,
+    thread,
+    time::{Duration, Instant},
+};
 
-use chrono::Utc;
+use chrono::{Local, Offset, TimeZone, Utc};
 use picket_core::{
     agent,
     event::{AgentMode, AgentRegistration, Event, EventKey, EventPayload, Source},
+    extract::{LocalModel, extract_pending},
     ledger::{Ledger, Progress, Writer},
     messages::{self, ChatDb, MessagesError},
     store::Batch,
@@ -16,6 +21,16 @@ use tauri::Manager;
 use crate::GoogleState;
 
 const POLL: Duration = Duration::from_secs(5);
+/// The 2.7 GB model stays loaded only while it has recent work.
+const MODEL_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// The loaded extractor and when it last ran.
+#[derive(Default)]
+struct Extractor {
+    runner: Option<picket_model::Runner>,
+    used: Option<Instant>,
+    failed: bool,
+}
 
 /// What Messages capture is doing, for the UI.
 pub struct MessagesState(Mutex<&'static str>);
@@ -68,26 +83,38 @@ pub fn list_agents(app: tauri::AppHandle) -> Result<AgentsView, String> {
     })
 }
 
-/// Registers or updates an iMessage agent. Every field is validated here; the
-/// renderer only proposes values.
+/// Registers or updates an agent. An iMessage agent needs its handle; an effects-only
+/// agent, such as Meta Muse, has no channel Picket can read. Every field is validated
+/// here; the renderer only proposes values.
 #[tauri::command]
 pub fn register_agent(
     app: tauri::AppHandle,
     name: String,
-    handle: String,
+    mode: String,
+    handle: Option<String>,
     region: Option<String>,
 ) -> Result<(), String> {
     let region = region
         .map(|value| value.trim().to_ascii_uppercase())
         .filter(|value| !value.is_empty());
+    let mode = match mode.as_str() {
+        "messages" => AgentMode::Messages,
+        "effects_only" => AgentMode::EffectsOnly,
+        _ => return Err("unsupported agent mode".into()),
+    };
+    let handles = match (&mode, handle.as_deref().map(str::trim)) {
+        (AgentMode::Messages, Some(handle)) => vec![
+            agent::normalize_handle(handle, region.as_deref())
+                .map_err(|error| error.to_string())?,
+        ],
+        (AgentMode::Messages, None) => return Err(agent::AgentError::Handles.to_string()),
+        _ => Vec::new(),
+    };
     let registration = AgentRegistration {
         id: agent::id_from_name(&name).map_err(|error| error.to_string())?,
         name: name.trim().to_owned(),
-        mode: AgentMode::Messages,
-        handles: vec![
-            agent::normalize_handle(&handle, region.as_deref())
-                .map_err(|error| error.to_string())?,
-        ],
+        mode,
+        handles,
         connected_since: None,
         enabled: true,
         region,
@@ -139,8 +166,9 @@ fn run(app: &tauri::AppHandle) {
     };
     let mut ledger: Option<Writer> = None;
     let mut db: Option<ChatDb> = None;
+    let mut extractor = Extractor::default();
     loop {
-        let progress = poll(app, &path, &mut ledger, &mut db);
+        let progress = poll(app, &path, &mut ledger, &mut db, &mut extractor);
         if progress != Some(Progress::Behind) {
             thread::sleep(POLL);
         }
@@ -152,6 +180,7 @@ fn poll(
     path: &std::path::Path,
     ledger: &mut Option<Writer>,
     db: &mut Option<ChatDb>,
+    extractor: &mut Extractor,
 ) -> Option<Progress> {
     let account = app
         .state::<GoogleState>()
@@ -192,12 +221,64 @@ fn poll(
     match messages::poll_messages(chat, writer, &account, &agents, now) {
         Ok(progress) => {
             set(app, "capturing");
+            extract(app, chat, writer, &account, extractor);
             Some(progress)
         }
         Err(error) => {
             // Reopen next time; access or the schema may have changed.
             *db = None;
             unavailable(app, writer, &account, &agents, &error);
+            None
+        }
+    }
+}
+
+/// Extracts captured messages. Text is read from Messages for each call and dropped.
+fn extract(
+    app: &tauri::AppHandle,
+    chat: &ChatDb,
+    writer: &mut Writer,
+    account: &str,
+    extractor: &mut Extractor,
+) {
+    let pending = writer
+        .pending_extractions(account, 1)
+        .is_ok_and(|pending| !pending.is_empty());
+    if pending && extractor.runner.is_none() && !extractor.failed {
+        extractor.runner = load(app);
+        extractor.failed =
+            extractor.runner.is_none() && crate::model::path(app).is_some_and(|path| path.exists());
+    }
+    let zone = |at: chrono::DateTime<Utc>| Local.offset_from_utc_datetime(&at.naive_utc()).fix();
+    let mut text = |guid: &str| chat.text(guid);
+    let model = extractor
+        .runner
+        .as_mut()
+        .map(|runner| runner as &mut dyn LocalModel);
+    if extract_pending(writer, model, &mut text, &zone, account, Utc::now()).is_err() {
+        tracing::warn!("extraction pass failed");
+    }
+    if pending {
+        extractor.used = Some(Instant::now());
+    } else if extractor
+        .used
+        .is_some_and(|used| used.elapsed() > MODEL_IDLE)
+    {
+        extractor.runner = None;
+        extractor.used = None;
+    }
+}
+
+/// Loads and verifies the installed model, if the user downloaded one.
+fn load(app: &tauri::AppHandle) -> Option<picket_model::Runner> {
+    let path = crate::model::path(app)?;
+    if !path.exists() {
+        return None;
+    }
+    match picket_model::Runner::load(&path, crate::model::spec()?) {
+        Ok(runner) => Some(runner),
+        Err(error) => {
+            tracing::warn!(%error, "local model unavailable");
             None
         }
     }

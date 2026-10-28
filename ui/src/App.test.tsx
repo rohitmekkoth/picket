@@ -5,6 +5,7 @@ import { App } from "./App";
 import {
   connectGoogle,
   getGoogleStatus,
+  getModel,
   getRuntimeInfo,
   listAgents,
   registerAgent,
@@ -16,7 +17,10 @@ vi.mock("./lib/runtime", () => ({
   connectGoogle: vi.fn(),
   listAgents: vi.fn(),
   registerAgent: vi.fn(),
+  getModel: vi.fn(),
+  downloadModel: vi.fn(),
 }));
+const model = vi.mocked(getModel);
 const list = vi.mocked(listAgents);
 const register = vi.mocked(registerAgent);
 const getRuntime = vi.mocked(getRuntimeInfo);
@@ -40,6 +44,24 @@ beforeEach(() => {
   register.mockReset();
   getGoogle.mockResolvedValue(null);
   list.mockResolvedValue(null);
+  model.mockReset();
+  model.mockResolvedValue(null);
+});
+
+test("the local model download is offered with its size and progress is shown", async () => {
+  getRuntime.mockResolvedValue(null);
+  model.mockResolvedValue({ status: { state: "absent" }, id: "synthetic", bytes: 2_710_000_000 });
+  renderApp();
+  expect(
+    await screen.findByRole("button", { name: "Download model (2.7 GB)" }),
+  ).toBeInTheDocument();
+  model.mockResolvedValue({
+    status: { state: "downloading", received: 1_000_000_000, total: 2_710_000_000 },
+    id: "synthetic",
+    bytes: 2_710_000_000,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Download model (2.7 GB)" }));
+  expect(await screen.findByText("Downloading 1.0 GB of 2.7 GB.")).toBeInTheDocument();
 });
 
 test("an iMessage agent can be added and missing access is explained", async () => {
@@ -66,7 +88,7 @@ test("an iMessage agent can be added and missing access is explained", async () 
     messages: "permission_missing",
   });
   fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-  expect(register).toHaveBeenCalledWith("Synthetic agent", "+1 415 555 0132");
+  expect(register).toHaveBeenCalledWith("Synthetic agent", "messages", "+1 415 555 0132");
   expect(await screen.findByText("+14155550132")).toBeInTheDocument();
   expect(screen.getByText(/Grant Full Disk Access/)).toBeInTheDocument();
 });

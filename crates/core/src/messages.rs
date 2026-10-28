@@ -144,6 +144,21 @@ impl ChatDb {
             .replace("RETRACTED", self.retracted)
     }
 
+    /// The current text of one message, read for extraction and then dropped. An edited
+    /// message returns its latest text.
+    pub fn text(&self, guid: &str) -> Option<String> {
+        let (text, body): (Option<String>, Option<Vec<u8>>) = self
+            .connection
+            .query_row(
+                "SELECT text, attributedBody FROM message WHERE guid = ?1",
+                [guid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()?;
+        text.filter(|text| !text.trim().is_empty())
+            .or_else(|| body.as_deref().and_then(decode_body))
+    }
+
     fn handles(&self) -> Result<Vec<(i64, String)>, MessagesError> {
         let mut statement = self
             .connection
@@ -786,6 +801,20 @@ pub(crate) mod tests {
             Progress::CaughtUp
         );
         assert_eq!(messages(&store).len(), ROWS_PER_POLL + 20);
+        Ok(())
+    }
+
+    #[test]
+    fn text_is_read_by_message_identity_from_either_column()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = Fixture::new();
+        fixture.chat(1, &[(1, "+14155550132")]);
+        fixture.message(1, "plain", "Book a table", true, at(0), false);
+        fixture.message(1, "body", "Send it to Sam", true, at(1), true);
+        let db = ChatDb::open(&fixture.path)?;
+        assert_eq!(db.text("plain"), Some("Book a table".into()));
+        assert_eq!(db.text("body"), Some("Send it to Sam".into()));
+        assert_eq!(db.text("missing"), None);
         Ok(())
     }
 

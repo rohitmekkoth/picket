@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/app", "crates/cli"]
+members = ["crates/core", "crates/model", "crates/app", "crates/cli"]
 # Keep default Cargo commands portable on hosts without desktop SDKs.
 default-members = ["crates/core", "crates/cli"]
 resolver = "3"
