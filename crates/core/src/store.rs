@@ -17,7 +17,7 @@ use crate::{
     incidents::{self, ENGINE_VERSION, OutboxBatch, ReconcileSummary},
 };
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -221,6 +221,15 @@ impl Store {
                 "BEGIN IMMEDIATE;
                  ALTER TABLE engine_state ADD COLUMN clock TEXT;
                  PRAGMA user_version=5;
+                 COMMIT;",
+            )?;
+        }
+        if version < 6 {
+            // Extraction reads pending messages and an agent's requests by kind.
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE INDEX IF NOT EXISTS events_kind ON events(kind, seq);
+                 PRAGMA user_version=6;
                  COMMIT;",
             )?;
         }
@@ -431,6 +440,49 @@ impl Store {
             latest.insert(agent.id.clone(), agent);
         }
         Ok(latest.into_values().collect())
+    }
+
+    /// Message revisions without an extraction record, oldest first.
+    pub fn pending_extractions(&self, account: &str, limit: usize) -> Result<Vec<Event>> {
+        let mut statement = self.connection.prepare(
+            "SELECT m.canonical FROM events AS m
+             WHERE m.kind = 'message' AND m.account = ?1
+               AND NOT EXISTS (SELECT 1 FROM events AS x
+                 WHERE x.account = m.account AND x.source = m.source AND x.resource = m.resource
+                   AND x.revision = m.revision AND x.kind = 'extraction')
+             ORDER BY m.seq LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![account, limit as i64], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+        rows.map(|row| Ok(serde_json::from_slice(&row?)?)).collect()
+    }
+
+    /// An agent's extracted requests and failed extractions since `since`, oldest first.
+    pub fn extractions_since(
+        &self,
+        account: &str,
+        agent: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<Event>> {
+        let mut statement = self.connection.prepare(
+            "SELECT canonical FROM events WHERE kind IN ('request', 'extraction') AND account = ?1
+             ORDER BY seq",
+        )?;
+        let rows = statement.query_map([account], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let event: Event = serde_json::from_slice(&row?)?;
+            let belongs = match &event.payload {
+                EventPayload::Request(request) => request.agent == agent,
+                EventPayload::Extraction(record) => record.agent == agent,
+                _ => false,
+            };
+            if belongs && event.occurred_at >= since {
+                events.push(event);
+            }
+        }
+        Ok(events)
     }
 
     /// Every retained revision of one finding, oldest first.
@@ -760,9 +812,12 @@ fn coverage_transition(
         logged.state != coverage.state || logged.reason != coverage.reason
     });
     let confirm = coverage.state == CoverageState::Healthy
-        && assessor
-            .evidence()
-            .confirmation_due(&report.account, &report.source, now);
+        && assessor.evidence().confirmation_due(
+            &report.account,
+            &report.source,
+            &coverage.capability,
+            now,
+        );
     (changed || confirm).then(|| Event {
         schema_version: 1,
         key: EventKey {

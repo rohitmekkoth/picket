@@ -692,10 +692,16 @@ impl Evidence {
             _ => return RequestFit::NotAssessed,
         };
         let account = &event.key.account;
-        let task_hints: BTreeSet<_> = self
+        // A task link needs a reason: a runtime result for this resource, or a claim that
+        // independently matches this effect (by provider id, or uniquely in its window).
+        let mut linked: BTreeMap<i64, &Event> = self
             .by_resource(account, &event.key.resource)
             .into_iter()
-            .filter_map(|(_, candidate)| match (&actor, &candidate.payload) {
+            .collect();
+        linked.extend(self.claims_near(account, event.occurred_at));
+        let task_hints: BTreeSet<_> = linked
+            .values()
+            .filter_map(|candidate| match (&actor, &candidate.payload) {
                 (ActorEvidence::RuntimeLinked(_), EventPayload::ToolResult(tool))
                     if tool.agent == *agent && tool_matches(tool, event, effect) =>
                 {
@@ -703,9 +709,7 @@ impl Evidence {
                 }
                 (ActorEvidence::Reported(_), EventPayload::Claim(claim))
                     if claim.agent == *agent
-                        && claim.provider_resource.as_deref() == Some(&event.key.resource)
-                        && claim.action == effect.action
-                        && claim_targets_match(claim, effect) =>
+                        && self.claim_matches(candidate, claim, event, effect) =>
                 {
                     claim.task.as_ref()
                 }
@@ -1032,11 +1036,19 @@ impl Evidence {
         }
     }
 
-    /// True when an open claim needs healthy evidence recorded after its deadline.
-    pub fn confirmation_due(&self, account: &str, source: &Source, now: DateTime<Utc>) -> bool {
+    /// True when a pending decision needs a healthy confirmation recorded now: a claim
+    /// whose deadline passed (`effects`), or an effect that request capture must cover
+    /// (`requests_<agent>`). Otherwise an unchanged healthy state is not logged again.
+    pub fn confirmation_due(
+        &self,
+        account: &str,
+        source: &Source,
+        capability: &str,
+        now: DateTime<Utc>,
+    ) -> bool {
         let confirmed = self
             .coverage
-            .get(&(account.to_owned(), source.as_str(), "effects".to_owned()))
+            .get(&(account.to_owned(), source.as_str(), capability.to_owned()))
             .into_iter()
             .flatten()
             .rev()
@@ -1050,15 +1062,22 @@ impl Evidence {
         if now <= confirmed {
             return false;
         }
-        self.deadlines
-            .range((confirmed, i64::MAX)..=(now, i64::MAX))
-            .any(|(_, seq)| {
-                self.get(*seq).is_some_and(|report| {
-                    report.key.account == account
-                        && matches!(&report.payload, EventPayload::Claim(claim)
-                            if claim_source(claim) == *source)
+        if *source == Source::Messages && capability.starts_with(REQUEST_CAPTURE) {
+            return time_range(&self.effects, account, confirmed, now)
+                .next()
+                .is_some();
+        }
+        capability == "effects"
+            && self
+                .deadlines
+                .range((confirmed, i64::MAX)..=(now, i64::MAX))
+                .any(|(_, seq)| {
+                    self.get(*seq).is_some_and(|report| {
+                        report.key.account == account
+                            && matches!(&report.payload, EventPayload::Claim(claim)
+                                if claim_source(claim) == *source)
+                    })
                 })
-            })
     }
 }
 

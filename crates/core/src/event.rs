@@ -81,6 +81,8 @@ pub enum CoverageReason {
     UnsupportedFormat,
     /// Some records exist but their content could not be decoded.
     Undecodable,
+    /// No local model is installed or it could not run.
+    ExtractionUnavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -284,6 +286,26 @@ pub struct MessageObserved {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionOutcome {
+    Requests,
+    Claims,
+    NotATask,
+    /// The text was unavailable or the model output failed validation.
+    Failed,
+}
+
+/// The durable record that one message revision was extracted, by which model and
+/// prompt, and that its text was then discarded.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtractionRecord {
+    pub agent: String,
+    pub outcome: ExtractionOutcome,
+    pub model: String,
+    pub prompt_version: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContactObserved {
     pub address: String,
     pub origin: Origin,
@@ -331,6 +353,7 @@ pub enum EventPayload {
     Policy(AccountPolicy),
     Agent(AgentRegistration),
     Message(MessageObserved),
+    Extraction(ExtractionRecord),
     Snapshot(Snapshot),
     Checkpoint {
         through_sequence: i64,
@@ -352,6 +375,7 @@ impl EventPayload {
             Self::Policy(_) => "policy",
             Self::Agent(_) => "agent",
             Self::Message(_) => "message",
+            Self::Extraction(_) => "extraction",
             Self::Snapshot(_) => "snapshot",
             Self::Checkpoint { .. } => "checkpoint",
         }
