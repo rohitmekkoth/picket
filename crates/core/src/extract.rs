@@ -111,7 +111,15 @@ pub fn extract_pending(
             _ => None,
         };
         let open = open_tasks(ledger, account, &agent.id, message.occurred_at)?;
-        let events = match extract_one(model, message, observed, content.as_deref(), &open, zone) {
+        let events = match extract_one(
+            model,
+            message,
+            observed,
+            content.as_deref(),
+            &open,
+            zone,
+            now,
+        ) {
             Ok(events) => events,
             Err(ModelError::Unavailable) => {
                 report(
@@ -230,8 +238,8 @@ fn extract_one(
     text: Option<&str>,
     open: &BTreeMap<String, Request>,
     zone: &dyn Fn(DateTime<Utc>) -> FixedOffset,
+    now: DateTime<Utc>,
 ) -> Result<Vec<Event>, ModelError> {
-    let now = message.ingested_at;
     let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
         let outcome = match observed.text {
             MessageText::Undecodable => ExtractionOutcome::Failed,
@@ -258,6 +266,7 @@ fn extract_one(
                 format!("{}#request", message.key.resource),
                 EventPayload::Request(request),
                 &model_id,
+                now,
             )
         })
         .into_iter()
@@ -273,6 +282,7 @@ fn extract_one(
                     format!("{}#claim{index}", message.key.resource),
                     EventPayload::Claim(claim),
                     &model_id,
+                    now,
                 )
             }),
     );
@@ -855,7 +865,15 @@ fn local_time(value: &str, offset: FixedOffset) -> Option<DateTime<Utc>> {
         .map(|time| time.with_timezone(&Utc))
 }
 
-fn derived(message: &Event, resource: String, payload: EventPayload, model: &str) -> Event {
+/// An event derived from a message: it happened when the message did, and Picket knew
+/// it when it was extracted.
+fn derived(
+    message: &Event,
+    resource: String,
+    payload: EventPayload,
+    model: &str,
+    now: DateTime<Utc>,
+) -> Event {
     Event {
         schema_version: 1,
         key: EventKey {
@@ -865,7 +883,7 @@ fn derived(message: &Event, resource: String, payload: EventPayload, model: &str
             revision: message.key.revision.clone(),
         },
         occurred_at: message.occurred_at,
-        ingested_at: message.ingested_at,
+        ingested_at: now.max(message.ingested_at),
         source_time_quality: message
             .source_time_quality
             .clone()
@@ -886,7 +904,7 @@ fn record(
     model: &str,
     now: DateTime<Utc>,
 ) -> Event {
-    let mut event = derived(
+    derived(
         message,
         message.key.resource.clone(),
         EventPayload::Extraction(ExtractionRecord {
@@ -896,9 +914,8 @@ fn record(
             prompt_version: PROMPT_VERSION,
         }),
         model,
-    );
-    event.ingested_at = now.max(message.ingested_at);
-    event
+        now,
+    )
 }
 
 /// A scripted model for tests and the CI evaluation: it answers by message content.
