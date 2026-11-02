@@ -14,6 +14,8 @@ mod google_runtime;
 #[cfg(target_os = "macos")]
 mod model;
 #[cfg(target_os = "macos")]
+mod openclaw;
+#[cfg(target_os = "macos")]
 use std::{
     sync::{
         Mutex,
@@ -30,10 +32,18 @@ const PROBE_TITLE: &str = "Picket notification test";
 #[cfg(target_os = "macos")]
 struct GoogleState {
     session: Mutex<Option<google_auth::Session>>,
-    /// The monitored account's local id, once a worker holds its session.
-    account: Mutex<Option<String>>,
+    /// The monitored account, once a worker holds its session.
+    account: Mutex<Option<MonitoredAccount>>,
     worker_started: AtomicBool,
     status: Mutex<&'static str>,
+}
+
+/// Events use the account's local id; OpenClaw reports name accounts by email.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct MonitoredAccount {
+    id: String,
+    email: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -213,7 +223,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.manage(LedgerState::default());
                 app.manage(agents::MessagesState::default());
                 app.manage(model::ModelState::default());
+                app.manage(openclaw::OpenClawState::default());
                 agents::start(app.handle().clone());
+                openclaw::start(app.handle().clone());
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     loop {

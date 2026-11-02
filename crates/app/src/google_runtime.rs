@@ -55,7 +55,10 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         .take()
         .ok_or("Google connection missing")?;
     if let Ok(mut account) = state.account.lock() {
-        *account = Some(session.credentials.account_id.clone());
+        *account = Some(crate::MonitoredAccount {
+            id: session.credentials.account_id.clone(),
+            email: session.credentials.account_email.clone(),
+        });
     }
     let mut store = crate::ledger(app)?;
     let http = GoogleHttp::new(google_auth::http_client().map_err(|_| "network client failed")?);

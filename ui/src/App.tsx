@@ -23,6 +23,15 @@ const messagesStatus: Record<Agents["messages"], string> = {
   unavailable: "Messages could not be read. Picket will retry.",
 };
 
+const openclawStatus: Record<Agents["openclaw"], string> = {
+  inactive: "The OpenClaw report socket has not started.",
+  listening: "Waiting for the picket-openclaw plugin to connect.",
+  waiting:
+    "The plugin is connected. Connect Google first; reports are recorded with the monitored account.",
+  connected: "The picket-openclaw plugin is connected.",
+  unavailable: "The OpenClaw report socket could not be opened.",
+};
+
 function gigabytes(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
@@ -233,19 +242,28 @@ export function App() {
             <p>
               For an iMessage agent, Picket reads only your one-to-one conversation with it, read
               only, and stores direction, time and a short snippet, never the full message. This
-              needs Full Disk Access. For an agent you reach elsewhere, such as Meta Muse, Picket
-              sees only what changes in Gmail and Calendar.
+              needs Full Disk Access. For OpenClaw on this Mac, the picket-openclaw plugin reports
+              the Gmail and Calendar commands it runs through gog, as ids and addresses only. For an
+              agent you reach elsewhere, such as Meta Muse, Picket sees only what changes in Gmail
+              and Calendar.
             </p>
           </div>
           {agents.data ? (
             <form className="connect-form" onSubmit={(event) => void onAddAgent(event)}>
               <p role="status">{messagesStatus[agents.data.messages]}</p>
+              {agents.data.agents.some((agent) => agent.mode === "open_claw") && (
+                <p role="status">{openclawStatus[agents.data.openclaw]}</p>
+              )}
               {agents.data.agents.length > 0 && (
                 <ul className="agent-list" aria-label="Registered agents">
                   {agents.data.agents.map((agent) => (
                     <li key={agent.id}>
                       <span>{agent.name}</span>
-                      <span>{agent.handles.join(", ")}</span>
+                      <span>
+                        {agent.mode === "open_claw"
+                          ? `Plugin agent id: ${agent.id}`
+                          : agent.handles.join(", ")}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -265,6 +283,7 @@ export function App() {
                 onChange={(event) => setAgentMode(event.target.value as AgentMode)}
               >
                 <option value="messages">iMessage</option>
+                <option value="open_claw">OpenClaw on this Mac (plugin)</option>
                 <option value="effects_only">Elsewhere (Gmail and Calendar effects only)</option>
               </select>
               {agentMode === "messages" && (

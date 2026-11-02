@@ -54,6 +54,7 @@ const agentsSchema = z.object({
     "unsupported",
     "unavailable",
   ]),
+  openclaw: z.enum(["inactive", "listening", "waiting", "connected", "unavailable"]),
 });
 export type Agents = z.infer<typeof agentsSchema>;
 
@@ -63,7 +64,7 @@ export async function listAgents(): Promise<Agents | null> {
 }
 
 // The region only interprets numbers entered without a country code; Rust validates it.
-export type AgentMode = "messages" | "effects_only";
+export type AgentMode = "messages" | "open_claw" | "effects_only";
 
 export async function registerAgent(name: string, mode: AgentMode, handle: string): Promise<void> {
   if (!isTauri()) throw new Error("Open the desktop app to add agents.");

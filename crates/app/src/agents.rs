@@ -56,6 +56,7 @@ pub struct AgentView {
 pub struct AgentsView {
     agents: Vec<AgentView>,
     messages: &'static str,
+    openclaw: &'static str,
 }
 
 #[tauri::command]
@@ -80,11 +81,13 @@ pub fn list_agents(app: tauri::AppHandle) -> Result<AgentsView, String> {
             })
             .collect(),
         messages,
+        openclaw: app.state::<crate::openclaw::OpenClawState>().status(),
     })
 }
 
-/// Registers or updates an agent. An iMessage agent needs its handle; an effects-only
-/// agent, such as Meta Muse, has no channel Picket can read. Every field is validated
+/// Registers or updates an agent. An iMessage agent needs its handle; an OpenClaw agent
+/// reports through its plugin; an effects-only agent, such as Meta Muse, has no channel
+/// Picket can read. Every field is validated
 /// here; the renderer only proposes values.
 #[tauri::command]
 pub fn register_agent(
@@ -100,6 +103,7 @@ pub fn register_agent(
     let mode = match mode.as_str() {
         "messages" => AgentMode::Messages,
         "effects_only" => AgentMode::EffectsOnly,
+        "open_claw" => AgentMode::OpenClaw,
         _ => return Err("unsupported agent mode".into()),
     };
     let handles = match (&mode, handle.as_deref().map(str::trim)) {
@@ -187,7 +191,7 @@ fn poll(
         .account
         .lock()
         .ok()
-        .and_then(|account| account.clone());
+        .and_then(|account| account.as_ref().map(|value| value.id.clone()));
     let Some(account) = account else {
         set(app, "waiting");
         return None;

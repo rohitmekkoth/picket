@@ -66,7 +66,7 @@ test("the local model download is offered with its size and progress is shown", 
 
 test("an iMessage agent can be added and missing access is explained", async () => {
   getRuntime.mockResolvedValue(null);
-  list.mockResolvedValue({ agents: [], messages: "inactive" });
+  list.mockResolvedValue({ agents: [], messages: "inactive", openclaw: "listening" });
   register.mockResolvedValue();
   renderApp();
   fireEvent.change(await screen.findByLabelText("Agent name"), {
@@ -86,11 +86,42 @@ test("an iMessage agent can be added and missing access is explained", async () 
       },
     ],
     messages: "permission_missing",
+    openclaw: "listening",
   });
   fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
   expect(register).toHaveBeenCalledWith("Synthetic agent", "messages", "+1 415 555 0132");
   expect(await screen.findByText("+14155550132")).toBeInTheDocument();
   expect(screen.getByText(/Grant Full Disk Access/)).toBeInTheDocument();
+  expect(screen.queryByText(/picket-openclaw plugin to connect/)).not.toBeInTheDocument();
+});
+
+test("an OpenClaw agent shows its plugin id and connection state", async () => {
+  getRuntime.mockResolvedValue(null);
+  list.mockResolvedValue({ agents: [], messages: "inactive", openclaw: "listening" });
+  register.mockResolvedValue();
+  renderApp();
+  fireEvent.change(await screen.findByLabelText("Agent name"), {
+    target: { value: "Synthetic claw" },
+  });
+  fireEvent.change(screen.getByLabelText("How you reach it"), { target: { value: "open_claw" } });
+  expect(screen.queryByLabelText("Phone number or Apple ID email")).not.toBeInTheDocument();
+  list.mockResolvedValue({
+    agents: [
+      {
+        id: "synthetic-claw",
+        name: "Synthetic claw",
+        mode: "open_claw",
+        handles: [],
+        enabled: true,
+      },
+    ],
+    messages: "inactive",
+    openclaw: "listening",
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+  expect(register).toHaveBeenCalledWith("Synthetic claw", "open_claw", "");
+  expect(await screen.findByText("Plugin agent id: synthetic-claw")).toBeInTheDocument();
+  expect(screen.getByText(/picket-openclaw plugin to connect/)).toBeInTheDocument();
 });
 
 test("degraded connection can be reauthorized", async () => {
