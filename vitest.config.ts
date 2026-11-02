@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     // Keep unit tests scoped to product packages as the workspace grows.
-    include: ["ui/src/**/*.test.{ts,tsx}"],
+    include: ["ui/src/**/*.test.{ts,tsx}", "plugins/openclaw/src/**/*.test.ts"],
     environment: "jsdom",
     setupFiles: ["./ui/src/test/setup.ts"],
     clearMocks: true,

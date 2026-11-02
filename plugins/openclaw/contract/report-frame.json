@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "agent": "openclaw",
+  "instance": "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+  "seq": 1,
+  "dropped": 0,
+  "unrecognized": 0,
+  "adapter": "gog",
+  "adapter_version": 1,
+  "at": "2026-11-02T09:00:00.000Z",
+  "report": {
+    "action": "email_send",
+    "account": "owner@example.test",
+    "targets": ["sam@example.test"],
+    "resource": "18f0a1b2c3d4e5f6",
+    "outcome": "succeeded"
+  }
+}

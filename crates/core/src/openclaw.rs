@@ -451,7 +451,7 @@ mod tests {
     use super::*;
     use crate::store::Store;
 
-    const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const ACCOUNT: Monitored<'static> = Monitored {
         id: "account-1",
         email: "Owner@Example.test",
@@ -547,7 +547,7 @@ mod tests {
     fn frames_need_the_token_bounded_fields_and_a_known_adapter() {
         assert!(frame(&wire(1, Some(send()))).is_ok());
         let mut wrong = wire(0, None);
-        wrong["token"] = json!(TOKEN.replace('0', "1"));
+        wrong["token"] = json!(TOKEN.replace('a', "b"));
         assert_eq!(frame(&wrong), Err(FrameError::Token));
         assert_eq!(
             parse(wire(0, None).to_string().as_bytes(), ""),
@@ -581,6 +581,21 @@ mod tests {
             parse(&vec![b' '; MAX_FRAME + 1], TOKEN),
             Err(FrameError::TooLarge)
         );
+    }
+
+    #[test]
+    fn the_plugins_contract_example_parses_and_records() -> Result<(), Box<dyn std::error::Error>> {
+        let example = include_bytes!("../../../plugins/openclaw/contract/report-frame.json");
+        let line: serde_json::Value = serde_json::from_slice(example)?;
+        let parsed = parse(line.to_string().as_bytes(), TOKEN)?;
+        assert_eq!(
+            parsed.report.as_ref().map(|item| &item.action),
+            Some(&Action::EmailSend)
+        );
+        let mut store = Store::memory()?;
+        ingest(&mut store, ACCOUNT, &[agent()], parsed, at(1))?;
+        assert_eq!(tools(&store).len(), 1);
+        Ok(())
     }
 
     #[test]

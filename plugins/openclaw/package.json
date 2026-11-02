@@ -1,0 +1,28 @@
+{
+  "name": "picket-openclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reports Gmail and Calendar commands run through gog to Picket on this Mac.",
+  "license": "UNLICENSED",
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "peerDependencies": {
+    "openclaw": "2026.10.9"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.10.9",
+      "minGatewayVersion": "2026.10.9"
+    },
+    "build": {
+      "openclawVersion": "2026.10.9",
+      "pluginSdkVersion": "2026.10.9"
+    }
+  }
+}
