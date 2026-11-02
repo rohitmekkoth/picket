@@ -101,6 +101,7 @@ fn a_late_tool_result_updates_the_action_count_of_later_task_effects() -> Result
             resource,
             minute,
             EventPayload::Effect(Effect {
+                target_names: Default::default(),
                 action: Action::EmailSend,
                 targets: vec!["a@example.test".into()],
                 targets_complete: true,
@@ -133,6 +134,7 @@ fn a_late_tool_result_updates_the_action_count_of_later_task_effects() -> Result
         "request-1",
         0,
         EventPayload::Request(Request {
+            target_names: Vec::new(),
             agent: "agent-1".into(),
             task: "task-1".into(),
             actions: Field::Known(vec![Action::EmailSend]),
@@ -224,6 +226,8 @@ fn coverage_is_logged_on_transitions_and_when_an_open_claim_needs_confirmation()
         source_time_quality: None,
         adapter: None,
         payload: EventPayload::Claim(Claim {
+            target_names: Vec::new(),
+            channel: picket_core::event::ClaimChannel::UserAccount,
             agent: "agent-1".into(),
             task: None,
             action: Action::EmailSend,
@@ -267,6 +271,7 @@ fn one_new_input_assesses_a_bounded_set_regardless_of_history() -> Result<()> {
         source_time_quality: None,
         adapter: None,
         payload: EventPayload::Effect(Effect {
+            target_names: Default::default(),
             action: Action::EmailSend,
             targets: vec![format!("person-{}@example.test", index % 7)],
             targets_complete: true,
@@ -321,6 +326,7 @@ fn retention_prunes_findings_about_removed_events_and_old_revisions() -> Result<
         source_time_quality: None,
         adapter: None,
         payload: EventPayload::Effect(Effect {
+            target_names: Default::default(),
             action: Action::EmailSend,
             targets: vec!["a@example.test".into()],
             targets_complete: true,
@@ -401,6 +407,7 @@ fn later_request_capture_settles_no_observed_request_for_earlier_effects() -> Re
         "m1",
         10,
         EventPayload::Effect(Effect {
+            target_names: Default::default(),
             action: Action::EmailSend,
             targets: vec!["a@example.test".into()],
             targets_complete: true,

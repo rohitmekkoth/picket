@@ -81,6 +81,8 @@ pub enum CoverageReason {
     UnsupportedFormat,
     /// Some records exist but their content could not be decoded.
     Undecodable,
+    /// No local model is installed or it could not run.
+    ExtractionUnavailable,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -150,6 +152,9 @@ pub struct Effect {
     pub calendar_start: Option<DateTime<Utc>>,
     pub origin: Origin,
     pub external_change: bool,
+    /// Display names from the effect's own headers, by normalized address.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub target_names: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<EmailMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,6 +174,10 @@ pub struct Request {
     pub valid_until: Option<DateTime<Utc>>,
     pub requires_approval: Field<bool>,
     pub approved: bool,
+    /// People the user named without an address. They match an effect recipient only
+    /// through that recipient's display name in the effect's headers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -179,6 +188,21 @@ pub struct Claim {
     pub action: Action,
     pub targets: Vec<String>,
     pub provider_resource: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_names: Vec<String>,
+    /// Where a claimed email was sent from. Only the user's own account is observed.
+    #[serde(default)]
+    pub channel: ClaimChannel,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimChannel {
+    UserAccount,
+    /// For example Instinct's own mailbox, which Picket cannot see.
+    AgentAccount,
+    #[default]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -262,6 +286,26 @@ pub struct MessageObserved {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtractionOutcome {
+    Requests,
+    Claims,
+    NotATask,
+    /// The text was unavailable or the model output failed validation.
+    Failed,
+}
+
+/// The durable record that one message revision was extracted, by which model and
+/// prompt, and that its text was then discarded.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExtractionRecord {
+    pub agent: String,
+    pub outcome: ExtractionOutcome,
+    pub model: String,
+    pub prompt_version: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ContactObserved {
     pub address: String,
     pub origin: Origin,
@@ -309,6 +353,7 @@ pub enum EventPayload {
     Policy(AccountPolicy),
     Agent(AgentRegistration),
     Message(MessageObserved),
+    Extraction(ExtractionRecord),
     Snapshot(Snapshot),
     Checkpoint {
         through_sequence: i64,
@@ -330,6 +375,7 @@ impl EventPayload {
             Self::Policy(_) => "policy",
             Self::Agent(_) => "agent",
             Self::Message(_) => "message",
+            Self::Extraction(_) => "extraction",
             Self::Snapshot(_) => "snapshot",
             Self::Checkpoint { .. } => "checkpoint",
         }

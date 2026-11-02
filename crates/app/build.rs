@@ -7,6 +7,8 @@ fn main() {
             "connect_google",
             "list_agents",
             "register_agent",
+            "model_status",
+            "download_model",
         ]),
     ))
     .unwrap_or_else(|error| panic!("failed to build Picket app metadata: {error}"));

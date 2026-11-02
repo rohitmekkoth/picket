@@ -230,6 +230,7 @@ fn case(kind: Kind, index: usize) -> Case {
     let task = format!("task-{index}");
     let agent = format!("agent-{index}");
     let mut request = Request {
+        target_names: Vec::new(),
         agent: agent.clone(),
         task: task.clone(),
         actions: Field::Known(vec![Action::EmailSend]),
@@ -242,6 +243,7 @@ fn case(kind: Kind, index: usize) -> Case {
         approved: false,
     };
     let mut effect = Effect {
+        target_names: Default::default(),
         action: Action::EmailSend,
         targets: vec![target.clone()],
         targets_complete: true,
@@ -284,6 +286,8 @@ fn case(kind: Kind, index: usize) -> Case {
                 format!("claim-{index}"),
                 11,
                 EventPayload::Claim(Claim {
+                    target_names: Vec::new(),
+                    channel: crate::event::ClaimChannel::UserAccount,
                     agent: agent.clone(),
                     task: None,
                     action: Action::EmailSend,
@@ -306,6 +310,8 @@ fn case(kind: Kind, index: usize) -> Case {
                 format!("claim-{index}"),
                 11,
                 EventPayload::Claim(Claim {
+                    target_names: Vec::new(),
+                    channel: crate::event::ClaimChannel::UserAccount,
                     agent: agent.clone(),
                     task: None,
                     action: Action::EmailSend,

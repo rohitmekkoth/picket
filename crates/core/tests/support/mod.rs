@@ -68,6 +68,7 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
             (
                 source,
                 EventPayload::Effect(Effect {
+                    target_names: Default::default(),
                     action,
                     targets,
                     targets_complete: rng.below(5) != 0,
@@ -84,6 +85,13 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
         3 => (
             Source::Messages,
             EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: [
+                    picket_core::event::ClaimChannel::UserAccount,
+                    picket_core::event::ClaimChannel::AgentAccount,
+                    picket_core::event::ClaimChannel::Unknown,
+                ][rng.below(3) as usize]
+                    .clone(),
                 agent,
                 task: (rng.below(2) == 0).then_some(task),
                 action: action(rng),
@@ -111,6 +119,7 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
         5 => (
             Source::Messages,
             EventPayload::Request(Request {
+                target_names: Vec::new(),
                 agent,
                 task,
                 actions: if rng.below(2) == 0 {

@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     calendar::CalendarState,
-    event::{AgentRegistration, EventKey, Source},
+    event::{AgentRegistration, Event, EventKey, Source},
     store::{Batch, CollectorCursor, Committed, Result, Store, StoreError},
 };
 
@@ -38,6 +38,19 @@ pub trait Ledger {
     fn calendar_snapshot(&self, account: &str, resource: &str) -> Result<Option<CalendarState>>;
     fn commit(&mut self, batch: Batch, now: DateTime<Utc>) -> Result<Committed>;
     fn agents(&self) -> Result<Vec<AgentRegistration>>;
+    fn pending_extractions(&self, account: &str, limit: usize) -> Result<Vec<Event>>;
+    fn extractions_since(
+        &self,
+        account: &str,
+        agent: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<Event>>;
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>>;
 }
 
 impl Ledger for Store {
@@ -59,6 +72,28 @@ impl Ledger for Store {
 
     fn agents(&self) -> Result<Vec<AgentRegistration>> {
         Store::agents(self)
+    }
+
+    fn pending_extractions(&self, account: &str, limit: usize) -> Result<Vec<Event>> {
+        Store::pending_extractions(self, account, limit)
+    }
+
+    fn extractions_since(
+        &self,
+        account: &str,
+        agent: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<Event>> {
+        Store::extractions_since(self, account, agent, since)
+    }
+
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        Store::previous_user_message(self, account, agent, before)
     }
 }
 
@@ -132,6 +167,28 @@ impl Ledger for Writer {
 
     fn agents(&self) -> Result<Vec<AgentRegistration>> {
         self.reader.agents()
+    }
+
+    fn pending_extractions(&self, account: &str, limit: usize) -> Result<Vec<Event>> {
+        self.reader.pending_extractions(account, limit)
+    }
+
+    fn extractions_since(
+        &self,
+        account: &str,
+        agent: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<Event>> {
+        self.reader.extractions_since(account, agent, since)
+    }
+
+    fn previous_user_message(
+        &self,
+        account: &str,
+        agent: &str,
+        before: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        self.reader.previous_user_message(account, agent, before)
     }
 }
 

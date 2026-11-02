@@ -12,6 +12,8 @@ mod google_http;
 #[cfg(target_os = "macos")]
 mod google_runtime;
 #[cfg(target_os = "macos")]
+mod model;
+#[cfg(target_os = "macos")]
 use std::{
     sync::{
         Mutex,
@@ -196,7 +198,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         google_connected,
         connect_google,
         agents::list_agents,
-        agents::register_agent
+        agents::register_agent,
+        model::model_status,
+        model::download_model
     ]);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.invoke_handler(tauri::generate_handler![get_runtime_info]);
@@ -208,6 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.manage(GoogleState::default());
                 app.manage(LedgerState::default());
                 app.manage(agents::MessagesState::default());
+                app.manage(model::ModelState::default());
                 agents::start(app.handle().clone());
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {

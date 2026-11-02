@@ -34,6 +34,19 @@ enum Command {
         #[arg(long, default_value = "target/eval/mock-report.json")]
         report: PathBuf,
     },
+    /// Evaluate a local model on the labeled synthetic extraction suite.
+    #[cfg(feature = "model")]
+    ExtractionEval {
+        /// One of the pinned candidate ids, for example qwen3.5-4b-q4_k_m.
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        model_file: PathBuf,
+        #[arg(long, default_value = "eval/extraction/cases.json")]
+        suite: PathBuf,
+        #[arg(long, default_value = "target/eval/extraction-report.json")]
+        report: PathBuf,
+    },
 }
 
 fn main() {
@@ -81,6 +94,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 count(|a| matches!(a.actor, ActorEvidence::RuntimeLinked(_))),
                 count(|a| matches!(a.actor, ActorEvidence::Conflicting(_))),
                 count(|a| matches!(a.actor, ActorEvidence::UserConfirmed(_))),
+            );
+        }
+        #[cfg(feature = "model")]
+        Command::ExtractionEval {
+            model,
+            model_file,
+            suite,
+            report,
+        } => {
+            let spec = picket_model::spec(&model).ok_or("unknown model id")?;
+            let suite = picket_core::extract_eval::load(&std::fs::read_to_string(suite)?)?;
+            let mut runner = picket_model::Runner::load(&model_file, spec)?;
+            let started = std::time::Instant::now();
+            let result = picket_core::extract_eval::evaluate(&mut runner, &suite)?;
+            let elapsed = started.elapsed();
+            if let Some(parent) = report.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&report, serde_json::to_vec_pretty(&result)?)?;
+            for line in &result.safety_errors {
+                println!("safety  {line}");
+            }
+            for line in &result.utility_misses {
+                println!("miss    {line}");
+            }
+            println!(
+                "{}: {} cases, {} safety errors, {} utility misses, {} failed calls, {:.1}s per case",
+                result.model,
+                result.cases,
+                result.safety_errors.len(),
+                result.utility_misses.len(),
+                result.failed_calls,
+                elapsed.as_secs_f64() / result.cases.max(1) as f64
             );
         }
         Command::Eval { mock: _, report } => {

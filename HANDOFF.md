@@ -38,7 +38,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M4 - Mock evaluation harness:** 288 fixed synthetic cases across 18 families, separate mode and family counts, JSON report, and a versioned CI regression gate. Real-source accuracy remains unmeasured.
 - [x] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and bounded baseline import. Larger Gmail baselines are marked incomplete.
 - [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
-- [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging, and keyword fallback.
+- [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging; without the model, request capture is reported unavailable (no keyword fallback, see decisions).
 - [ ] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and digest, export, and wipe. Recheck banner presentation.
 - [ ] **M9 - Release:** Packaging, release attestations, Homebrew tap, documentation, and fresh-Mac install test.
 
@@ -69,7 +69,7 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 ## Next work
 
-Increment 3, `feature/m6-openclaw`, per the M6 plan: ingest socket and token, the TypeScript plugin with a pinned `gog` adapter, plugin tests including a stopped app, and E2 with a local model and the controlled test account. Fetch `main` and create a dedicated branch before implementation. Review the Messages and OpenClaw boundaries in `docs/design.md` and the attribution limits in `docs/alignment-engine-plan.md`. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
+M7 increments 1-3 merged from `feature/m7-extraction` (PR #16): extraction contract, labeled harness, llama.cpp runtime with verified download, Qwen3.5 4B. Remaining for M7: the scripted live Instinct run (increment 4), recorded in `docs/decisions.md`. Remaining for M6: the OpenClaw increment (`feature/m6-openclaw`, see [the M6 plan](docs/m6-plan.md)) and E2. Fetch `main` and create a dedicated branch before implementation. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
 
 M5 verification on `feature/m5-google-collectors`: `make check`, `make test`, `make eval` (288 cases), `make audit`, `make e2e` (6 cases), and `make smoke-macos` passed. All three PR #11 CI jobs passed. In a controlled Google test account, OAuth and Keychain restore worked; a sent message and primary Calendar create, update, and delete appeared as effects. Gmail and Calendar live coverage were healthy, Calendar recovered from an expired sync cursor, and the local event chain verified through 191 records. Replay showed four timeline effects with unknown actor and no false alerts. The metadata-only Gmail scope cannot date-filter message listings; M5 caps the first scan at 50 listed messages per label and records incomplete baseline coverage separately when more history exists. Real-source accuracy and agent attribution remain unmeasured.
 

@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 const MAX_RESPONSE: u64 = 1024 * 1024;
 const GMAIL_ROOT: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const CALENDAR_ROOT: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const CALENDAR_FIELDS: &str = "nextPageToken,nextSyncToken,items(id,etag,status,updated,summary,start,end,organizer(email,self),creator(email,self),attendees(email,responseStatus,self),recurringEventId)";
+const CALENDAR_FIELDS: &str = "nextPageToken,nextSyncToken,items(id,etag,status,updated,summary,start,end,organizer(email,self),creator(email,self),attendees(email,displayName,responseStatus,self),recurringEventId)";
 
 pub struct GoogleHttp {
     client: Client,
