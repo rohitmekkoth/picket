@@ -15,6 +15,7 @@ pub mod google_collector;
 pub mod incidents;
 pub mod ledger;
 pub mod messages;
+pub mod openclaw;
 pub mod store;
 
 /// Read-only process details shared by the CLI and desktop shell.

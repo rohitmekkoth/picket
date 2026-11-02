@@ -237,15 +237,7 @@ pub(crate) fn display_name(value: Option<&str>) -> Option<String> {
 }
 
 fn normalize_address(value: &str) -> Result<String, GoogleWireError> {
-    let value = value.trim().to_lowercase();
-    if value.is_empty()
-        || value.len() > 320
-        || !value.contains('@')
-        || value.contains(char::is_whitespace)
-    {
-        return Err(GoogleWireError::InvalidGmail);
-    }
-    Ok(value)
+    crate::event::normalize_email(value).ok_or(GoogleWireError::InvalidGmail)
 }
 
 fn notice_kind(subject: &str) -> Option<NoticeKind> {

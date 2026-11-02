@@ -950,6 +950,11 @@ fn validate_event(event: &Event) -> Result<()> {
         {
             return Err(StoreError::Invalid("invalid message observation"));
         }
+        EventPayload::ToolResult(tool)
+            if event.key.source != Source::OpenClaw || !crate::agent::valid_id(&tool.agent) =>
+        {
+            return Err(StoreError::Invalid("invalid tool result"));
+        }
         _ => {}
     }
     Ok(())
@@ -964,7 +969,7 @@ fn validate_cursor(cursor: &CollectorCursor) -> Result<()> {
         || cursor.value.chars().any(char::is_control)
         || !matches!(
             cursor.source,
-            Source::Gmail | Source::Calendar | Source::Messages
+            Source::Gmail | Source::Calendar | Source::Messages | Source::OpenClaw
         )
     {
         return Err(StoreError::Invalid("invalid collector cursor"));

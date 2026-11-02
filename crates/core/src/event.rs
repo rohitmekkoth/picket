@@ -83,6 +83,20 @@ pub enum CoverageReason {
     Undecodable,
     /// No local model is installed or it could not run.
     ExtractionUnavailable,
+    /// A runtime plugin numbered or dropped reports that never arrived.
+    ReportsLost,
+    /// A registered runtime plugin has not connected.
+    NotConnected,
+}
+
+/// Lower-cases an email address and rejects values that cannot be one.
+pub fn normalize_email(value: &str) -> Option<String> {
+    let value = value.trim().to_lowercase();
+    (!value.is_empty()
+        && value.len() <= 320
+        && value.contains('@')
+        && !value.contains(char::is_whitespace))
+    .then_some(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

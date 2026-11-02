@@ -278,15 +278,7 @@ fn person_email(person: Option<&CalendarPerson>) -> Result<Option<String>, Calen
 }
 
 fn normalize_address(address: &str) -> Result<String, CalendarError> {
-    let address = address.trim().to_lowercase();
-    if address.is_empty()
-        || address.len() > 320
-        || !address.contains('@')
-        || address.contains(char::is_whitespace)
-    {
-        return Err(CalendarError);
-    }
-    Ok(address)
+    crate::event::normalize_email(address).ok_or(CalendarError)
 }
 
 #[cfg(test)]
