@@ -36,6 +36,7 @@ Closing the window keeps Picket in the menu bar. Click the menu-bar icon to reop
 | `make build` | Build the release-mode `.app` |
 | `make smoke-macos` | Build and exercise the packaged macOS app |
 | `cargo run -p picket-cli -- doctor` | Print local runtime information as JSON |
+| `cargo run -p picket-cli -- review --database <db> --since <time>` | Print a text-free timeline of captured, extracted and observed inputs with their assessment |
 
 The app bundle is written to `target/release/bundle/macos/Picket.app`. It is ad hoc signed for local development, without a Developer ID signature or notarization. No installer, Homebrew cask, evaluation results, or release pipeline is claimed yet.
 
