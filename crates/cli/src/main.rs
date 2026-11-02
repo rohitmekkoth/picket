@@ -27,6 +27,18 @@ enum Command {
         #[arg(long)]
         at: chrono::DateTime<chrono::Utc>,
     },
+    /// Print a text-free timeline of captured, extracted, reported and observed inputs
+    /// since a time, with the engine's assessment, for live validation runs.
+    Review {
+        #[arg(long)]
+        database: PathBuf,
+        /// RFC 3339 timestamp; earlier inputs are left out of the timeline.
+        #[arg(long)]
+        since: chrono::DateTime<chrono::Utc>,
+        /// Assess as of this RFC 3339 timestamp instead of now.
+        #[arg(long)]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+    },
     /// Evaluate the deterministic engine on fixed synthetic cases.
     Eval {
         #[arg(long, required = true)]
@@ -95,6 +107,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 count(|a| matches!(a.actor, ActorEvidence::Conflicting(_))),
                 count(|a| matches!(a.actor, ActorEvidence::UserConfirmed(_))),
             );
+        }
+        Command::Review {
+            database,
+            since,
+            at,
+        } => {
+            let events: Vec<_> = picket_core::store::Store::open_read_only(&database)?
+                .events()?
+                .into_iter()
+                .map(|row| row.event)
+                .collect();
+            let at = at.unwrap_or_else(chrono::Utc::now);
+            for line in picket_core::review::timeline(&events, since, at) {
+                println!("{line}");
+            }
         }
         #[cfg(feature = "model")]
         Command::ExtractionEval {
