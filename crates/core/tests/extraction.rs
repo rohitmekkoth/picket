@@ -575,3 +575,65 @@ fn live_follow_ups_attach_to_the_current_task_and_reports_link_their_own_send() 
     }
     Ok(())
 }
+
+/// From replaying the live run: the user sent the next request before the agent reported
+/// the previous send, and the model read "check with me before sending" as "don't send".
+#[test]
+fn a_late_report_and_an_explicit_approval_keep_the_send_with_its_own_task() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    let mut thanks = request("new_task", "required", false);
+    thanks["names"] = json!([]);
+    thanks["addresses"] = json!(["b@example.test"]);
+    thanks["actions"] = json!([]);
+    thanks["prohibited"] = json!(["email_send"]);
+    fixture.say(
+        "u1",
+        1,
+        MessageDirection::FromUser,
+        "Write b@example.test a thank-you email and check with me before sending.",
+        thanks,
+    )?;
+    let mut approve = request("revise_task", "unknown", true);
+    approve["names"] = json!([]);
+    fixture.say("u2", 2, MessageDirection::FromUser, "Yes, send it", approve)?;
+    let mut next = request("new_task", "unknown", false);
+    next["names"] = json!([]);
+    next["addresses"] = json!(["c@example.test"]);
+    fixture.say(
+        "u3",
+        4,
+        MessageDirection::FromUser,
+        "Email c@example.test about the budget.",
+        next,
+    )?;
+    fixture.say(
+        "a1",
+        5,
+        MessageDirection::FromAgent,
+        "Sent the thank-you email.",
+        claim_for_task(&[], "u3"),
+    )?;
+    fixture
+        .store
+        .append_assessed(&sent("g1", 3, "b@example.test", ""), at(3))?;
+    for minute in 6..10 {
+        fixture.extract(minute)?;
+    }
+    let approved = fixture
+        .requests()?
+        .into_iter()
+        .find(|item| item.task == "u1" && item.approved)
+        .ok_or("approval missing")?;
+    assert!(
+        approved.prohibited_actions.is_empty(),
+        "\"yes, send it\" lifts the model's \"don't send\""
+    );
+    let (actor, fit) = fixture.effect_fit()?;
+    assert_eq!(actor, ActorEvidence::Reported("instinct".into()));
+    assert_eq!(
+        fit,
+        RequestFit::InsufficientEvidence,
+        "judged against the approved thank-you task, not the later budget request"
+    );
+    Ok(())
+}
