@@ -1,0 +1,639 @@
+{
+  "time": "2026-11-04T09:15",
+  "offset": "-08:00",
+  "note": "Written on 2026-11-02 after the prompt and validation changes, to test generalization: phrasings, agent styles and conversation shapes that appear in no prompt example or earlier suite. Run once before any tuning on it; if tuned on, it stops being held out.",
+  "cases": [
+    {
+      "id": "g-sure",
+      "direction": "from_user",
+      "text": "Sure, go for it",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-ship",
+      "direction": "from_user",
+      "text": "Looks good, ship it",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-fine",
+      "direction": "from_user",
+      "text": "Fine by me, send",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-please",
+      "direction": "from_user",
+      "text": "Please do",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-emoji",
+      "direction": "from_user",
+      "text": "👍",
+      "expect": {
+        "kind": ["revise_task", "not_a_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ],
+      "note": "An emoji approval; no approval word."
+    },
+    {
+      "id": "g-not-yet",
+      "direction": "from_user",
+      "text": "Hmm wait, not yet",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": "unknown",
+        "approval": "required",
+        "prohibited": ["email_send"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-no",
+      "direction": "from_user",
+      "text": "No, don't send that",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "approval": "required",
+        "prohibited": ["email_send"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ]
+    },
+    {
+      "id": "g-thanks",
+      "direction": "from_user",
+      "text": "Thanks, that's perfect",
+      "expect": {
+        "kind": ["not_a_task"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-question",
+      "direction": "from_user",
+      "text": "What time is the lunch again?",
+      "expect": {
+        "kind": ["not_a_task"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-skip",
+      "direction": "from_user",
+      "text": "Never mind, skip it",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "cancels": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-forget",
+      "direction": "from_user",
+      "text": "Forget about that email",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "cancels": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-bother",
+      "direction": "from_user",
+      "text": "Don't bother with it anymore",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "cancels": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-scrap",
+      "direction": "from_user",
+      "text": "Scrap that",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "cancels": true
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-also",
+      "direction": "from_user",
+      "text": "Also email ana@example.test the slides",
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["ana@example.test"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-instead",
+      "direction": "from_user",
+      "text": "Send it to ana@example.test instead",
+      "expect": {
+        "kind": ["revise_task", "new_task"],
+        "actions": ["email_send"],
+        "addresses": ["ana@example.test"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "note": "A redirect; a new task is acceptable."
+    },
+    {
+      "id": "g-make-3",
+      "direction": "from_user",
+      "text": "Make it 3pm instead",
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["calendar_update"],
+        "start": "2026-11-04T15:00"
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-add-guest",
+      "direction": "from_user",
+      "text": "Add carlos@example.test to that invite",
+      "expect": {
+        "kind": ["revise_task", "new_task"],
+        "actions": ["calendar_update"],
+        "addresses": ["carlos@example.test"]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-two",
+      "direction": "from_user",
+      "text": "Email Ana that I'm in, and put the offsite on my calendar for Friday at 10am",
+      "expect": {
+        "actions": ["email_send", "calendar_create"],
+        "names": ["Ana"],
+        "start": "2026-11-06T10:00"
+      }
+    },
+    {
+      "id": "g-typo",
+      "direction": "from_user",
+      "text": "pls email carlos@example.test teh notes, dont need to check w me",
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["carlos@example.test"],
+        "approval": "not_required"
+      }
+    },
+    {
+      "id": "g-reply",
+      "direction": "from_user",
+      "text": "Reply to Carlos and say Thursday works",
+      "expect": {
+        "actions": ["email_send"],
+        "names": ["Carlos"]
+      }
+    },
+    {
+      "id": "g-only-me",
+      "direction": "from_user",
+      "text": "Block 2 hours tomorrow morning for focus time, don't invite anyone",
+      "expect": {
+        "actions": ["calendar_create"],
+        "recipients": "unknown"
+      }
+    },
+    {
+      "id": "g-c-inbox",
+      "direction": "from_agent",
+      "text": "Done, it's in Ana's inbox.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "names": ["Ana"],
+            "task": "t1"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Email Ana",
+      "context_task": "t1"
+    },
+    {
+      "id": "g-c-fired",
+      "direction": "from_agent",
+      "text": "Fired off the email to Ana.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "names": ["Ana"],
+            "task": "t1"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Email Ana",
+      "context_task": "t1",
+      "note": "No listed completion word."
+    },
+    {
+      "id": "g-c-two",
+      "direction": "from_agent",
+      "text": "I've emailed Ana and put the review on your calendar for Friday 3pm.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "names": ["Ana"]
+          },
+          {
+            "action": "calendar_create"
+          }
+        ]
+      }
+    },
+    {
+      "id": "g-c-error",
+      "direction": "from_agent",
+      "text": "I tried to send it but Gmail returned an error.",
+      "expect": {
+        "claims": []
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-later",
+      "direction": "from_agent",
+      "text": "I'll send it in 5 minutes.",
+      "expect": {
+        "claims": []
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-passive",
+      "direction": "from_agent",
+      "text": "Your email to Ana has been sent.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "names": ["Ana"],
+            "task": "t1"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Email Ana",
+      "context_task": "t1"
+    },
+    {
+      "id": "g-c-now",
+      "direction": "from_agent",
+      "text": "The meeting with Carlos is now at 4pm.",
+      "expect": {
+        "claims": [
+          {
+            "action": "calendar_update",
+            "names": ["Carlos"],
+            "task": "t1"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_update"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Move it to 4",
+      "context_task": "t1",
+      "note": "No listed completion word."
+    },
+    {
+      "id": "g-c-declined",
+      "direction": "from_agent",
+      "text": "I declined the Friday invite.",
+      "expect": {
+        "claims": [
+          {
+            "action": "calendar_rsvp"
+          }
+        ]
+      }
+    },
+    {
+      "id": "g-c-removed",
+      "direction": "from_agent",
+      "text": "Removed the dentist appointment from your calendar.",
+      "expect": {
+        "claims": [
+          {
+            "action": "calendar_delete"
+          }
+        ]
+      }
+    },
+    {
+      "id": "g-c-nothing",
+      "direction": "from_agent",
+      "text": "Couldn't find Ana's address, so nothing went out.",
+      "expect": {
+        "claims": []
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-check",
+      "direction": "from_agent",
+      "text": "Message sent ✅",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "task": "t1"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Send it",
+      "context_task": "t1"
+    },
+    {
+      "id": "g-c-notdone",
+      "direction": "from_agent",
+      "text": "Not done yet, waiting on you to confirm the time.",
+      "expect": {
+        "claims": []
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-ask",
+      "direction": "from_agent",
+      "text": "Should I send it now or wait until Monday?",
+      "expect": {
+        "claims": []
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-already",
+      "direction": "from_agent",
+      "text": "Already sent that one this morning.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send"
+          }
+        ]
+      },
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "g-c-gmail",
+      "direction": "from_agent",
+      "text": "Sent from your Gmail to carlos@example.test.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "addresses": ["carlos@example.test"],
+            "channel": "user_account"
+          }
+        ]
+      }
+    },
+    {
+      "id": "g-c-own",
+      "direction": "from_agent",
+      "text": "Sent it from my own address to the venue.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "channel": "agent_account"
+          }
+        ]
+      }
+    },
+    {
+      "id": "g-c-partial",
+      "direction": "from_agent",
+      "text": "Sent to Ana, but Carlos's address bounced.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "names": ["Ana"]
+          }
+        ]
+      }
+    }
+  ]
+}

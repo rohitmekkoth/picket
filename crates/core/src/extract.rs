@@ -557,8 +557,25 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     // model calls it new.
     let approves = raw.approves && says(text, &APPROVAL_CUES);
     let cancels = raw.cancels && says(text, &CANCEL_CUES);
+    // A message naming its own recipient and its own action or prohibition is a request
+    // of its own, even when the model calls it a revision; merging it would carry the
+    // earlier task's limits and permissions into it.
+    let (addresses, names) = recipients(&raw.addresses, &raw.names);
+    let lower = text.to_lowercase();
+    let names_someone = addresses
+        .iter()
+        .any(|address| lower.contains(address.as_str()))
+        || names.iter().any(|name| names_in(text, name));
+    let states_action = raw
+        .actions
+        .iter()
+        .chain(&raw.prohibited)
+        .any(|value| action(value).is_some())
+        || forbids_sending(text);
+    let standalone = names_someone && states_action && !approves && !cancels;
     let base = match raw.kind {
-        RawKind::Revise => current.cloned(),
+        RawKind::Revise if !standalone => current.cloned(),
+        RawKind::Revise => None,
         _ if approves || cancels => current.cloned(),
         // Wording can only restrict: a standing "don't send" is kept even when the
         // model sees no task.
@@ -581,7 +598,6 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     } else {
         Field::Known(actions)
     };
-    let (addresses, names) = recipients(&raw.addresses, &raw.names);
     let grounded = addresses
         .iter()
         .all(|address| text.to_lowercase().contains(address.as_str()))
@@ -637,7 +653,13 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         approved: false,
         target_names,
     };
-    if let Some(base) = base {
+    if let Some(mut base) = base {
+        // An approval that names an action, such as "yes, send it", lifts an earlier
+        // prohibition of that action on this task; it needs the person's words.
+        if approves && let Field::Known(allowed) = &request.actions {
+            base.prohibited_actions
+                .retain(|action| !allowed.contains(action));
+        }
         // A follow-up changes only what it states; everything else carries forward.
         request = merge(base, request);
     }

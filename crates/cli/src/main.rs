@@ -39,6 +39,15 @@ enum Command {
         #[arg(long)]
         at: Option<chrono::DateTime<chrono::Utc>>,
     },
+    /// Count recorded undecodable agent messages that the current decoder can read.
+    /// Prints counts only; needs Full Disk Access to read Messages.
+    MessagesCheck {
+        #[arg(long)]
+        database: PathBuf,
+        /// Defaults to ~/Library/Messages/chat.db.
+        #[arg(long)]
+        chat_database: Option<PathBuf>,
+    },
     /// Evaluate the deterministic engine on fixed synthetic cases.
     Eval {
         #[arg(long, required = true)]
@@ -123,6 +132,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 count(|a| matches!(a.actor, ActorEvidence::RuntimeLinked(_))),
                 count(|a| matches!(a.actor, ActorEvidence::Conflicting(_))),
                 count(|a| matches!(a.actor, ActorEvidence::UserConfirmed(_))),
+            );
+        }
+        Command::MessagesCheck {
+            database,
+            chat_database,
+        } => {
+            use picket_core::event::{EventPayload, MessageText};
+            let chat_path = match chat_database {
+                Some(path) => path,
+                None => PathBuf::from(std::env::var("HOME")?).join("Library/Messages/chat.db"),
+            };
+            let chat = picket_core::messages::ChatDb::open(&chat_path)
+                .map_err(|error| format!("Messages unreadable: {error}"))?;
+            let undecodable: std::collections::BTreeSet<_> =
+                picket_core::store::Store::open_read_only(&database)?
+                    .events()?
+                    .into_iter()
+                    .filter(|row| {
+                        matches!(&row.event.payload, EventPayload::Message(message)
+                            if message.text == MessageText::Undecodable)
+                    })
+                    .map(|row| row.event.key.resource)
+                    .collect();
+            let readable = undecodable
+                .iter()
+                .filter(|guid| chat.text(guid).is_some())
+                .count();
+            println!(
+                "{} messages recorded as undecodable; {readable} decode with the current decoder",
+                undecodable.len()
             );
         }
         Command::Review {

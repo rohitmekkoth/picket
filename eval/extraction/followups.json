@@ -528,6 +528,76 @@
           }
         ]
       }
+    },
+    {
+      "id": "r-named-after-send",
+      "note": "Replay: a new named request was merged into the previous send.",
+      "direction": "from_user",
+      "text": "Send Rohit’s tester a short note that I’m running late.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "names": ["Rohit's tester"]
+      }
+    },
+    {
+      "id": "r-draft-after-send",
+      "note": "Replay: a new draft-only request was merged into the previous task.",
+      "direction": "from_user",
+      "text": "Draft an email to b@example.test about Friday, but don't send it.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "addresses": ["b@example.test"],
+        "prohibited": ["email_send"],
+        "actions": "unknown"
+      }
+    },
+    {
+      "id": "r-thanks-after-draft",
+      "note": "Replay: inherited the draft's prohibition and caused a false conflict.",
+      "direction": "from_user",
+      "text": "Write b@example.test a thank-you email and check with me before sending.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["b@example.test"],
+        "approval": "required"
+      }
+    },
+    {
+      "id": "r-budget-after-thanks",
+      "direction": "from_user",
+      "text": "Email b@example.test about the budget.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "approval": "required"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["b@example.test"]
+      }
     }
   ]
 }

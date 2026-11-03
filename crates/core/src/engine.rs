@@ -751,7 +751,25 @@ impl Evidence {
         if task_hints.len() > 1 {
             return RequestFit::AmbiguousTask;
         }
-        let task_hint = task_hints.into_iter().next();
+        // A report can come after the user has moved on to another request; a hint whose
+        // task did not yet exist when the effect happened names the wrong task. The task
+        // under discussion then was the one the latest earlier request created or revised.
+        let requests_before = || {
+            self.list(self.requests.get(&(account.clone(), agent.clone())))
+                .filter(|candidate| candidate.occurred_at <= event.occurred_at)
+                .filter_map(|candidate| match &candidate.payload {
+                    EventPayload::Request(request) => Some((candidate.occurred_at, &request.task)),
+                    _ => None,
+                })
+        };
+        let task_hint = match task_hints.into_iter().next() {
+            Some(task) if !requests_before().any(|(_, earlier)| earlier == task) => {
+                requests_before()
+                    .max_by_key(|(at, _)| *at)
+                    .map(|(_, task)| task)
+            }
+            hint => hint,
+        };
         let candidates: Vec<_> = self
             .list(self.requests.get(&(account.clone(), agent.clone())))
             .filter_map(|candidate| {

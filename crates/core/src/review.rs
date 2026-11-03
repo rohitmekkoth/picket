@@ -40,7 +40,7 @@ pub fn timeline(
                     record.agent, record.outcome, record.prompt_version
                 ),
                 EventPayload::Request(request) => format!(
-                    "request    task {} actions {} prohibited {:?} targets {} named {} start {} max {} approval {} approved {}",
+                    "request    task {} actions {} prohibited {:?} targets {} named {} start {} max {} approval {} approved {} cancelled {}",
                     short(&request.task),
                     field(&request.actions, |value| format!("{value:?}")),
                     request.prohibited_actions,
@@ -51,7 +51,8 @@ pub fn timeline(
                     field(&request.requires_approval, |value| {
                         if *value { "required" } else { "not required" }.into()
                     }),
-                    request.approved
+                    request.approved,
+                    request.valid_until.is_some()
                 ),
                 EventPayload::Claim(claim) => format!(
                     "claim      {:?} channel {:?} task {} targets {} named {} resource {} -> {}",
