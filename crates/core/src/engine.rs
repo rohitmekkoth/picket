@@ -15,6 +15,8 @@ use crate::event::{
 
 const MAX_CANDIDATES: usize = 128;
 const CLAIM_WINDOW: Duration = Duration::minutes(10);
+/// How long after a claim its effect may be stamped, for clock differences.
+const CLAIM_SKEW: Duration = Duration::minutes(2);
 const GRACE: Duration = Duration::minutes(5);
 /// Coverage is indexed per account, source and capability, ordered by observation time.
 type CoverageKey = (String, &'static str, String);
@@ -638,18 +640,19 @@ impl Evidence {
         if let Some(resource) = &claim.provider_resource {
             return resource == &event.key.resource;
         }
-        if (report.occurred_at - event.occurred_at).num_seconds().abs() > CLAIM_WINDOW.num_seconds()
-        {
+        // An agent reports after acting, and each report covers what it did since its
+        // previous report of the same action. Without a provider ID, a claim identifies
+        // only the single such effect in that span.
+        let (from, until) = self.claim_span(report, claim);
+        let within =
+            |candidate: &Event| candidate.occurred_at > from && candidate.occurred_at <= until;
+        if !within(event) {
             return false;
         }
-        // A report without a provider ID cannot identify one of two similar effects.
         self.effects_near(&event.key.account, report.occurred_at)
             .into_iter()
             .filter(|(_, candidate)| {
-                (report.occurred_at - candidate.occurred_at)
-                    .num_seconds()
-                    .abs()
-                    <= CLAIM_WINDOW.num_seconds()
+                within(candidate)
                     && matches!(&candidate.payload, EventPayload::Effect(other)
                         if other.action == claim.action
                             && other.targets_complete && claim_targets_match(claim, other))
@@ -657,6 +660,35 @@ impl Evidence {
             .take(2)
             .count()
             == 1
+    }
+
+    /// The span a claim without a provider ID can describe: after the same agent's
+    /// previous claim of the same action, at most `CLAIM_WINDOW` back, until shortly
+    /// after the claim to allow for clock differences.
+    fn claim_span(
+        &self,
+        report: &Event,
+        claim: &crate::event::Claim,
+    ) -> (DateTime<Utc>, DateTime<Utc>) {
+        let previous = self
+            .claims_near(&report.key.account, report.occurred_at)
+            .into_iter()
+            .filter_map(|(_, other)| match &other.payload {
+                EventPayload::Claim(earlier)
+                    if earlier.agent == claim.agent
+                        && earlier.action == claim.action
+                        && other.occurred_at < report.occurred_at =>
+                {
+                    Some(other.occurred_at)
+                }
+                _ => None,
+            })
+            .max();
+        let floor = report.occurred_at - CLAIM_WINDOW;
+        (
+            previous.map_or(floor, |at| at.max(floor)),
+            report.occurred_at + CLAIM_SKEW,
+        )
     }
 
     fn policy_violations(&self, event: &Event, effect: &Effect) -> Vec<(String, bool)> {

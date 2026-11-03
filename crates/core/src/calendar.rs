@@ -237,7 +237,28 @@ impl CalendarEvent {
                     })
                     .collect(),
                 action,
-                targets: state.metadata.attendees.clone(),
+                // The user's own entry is not a recipient. Google marks it as self, and
+                // when the user organized the event, the organizer is the user as well.
+                targets: {
+                    let own: Vec<String> = self
+                        .attendees
+                        .iter()
+                        .filter(|attendee| attendee.is_self)
+                        .filter_map(|attendee| normalize_address(&attendee.email).ok())
+                        .chain(
+                            (!state.external_change)
+                                .then(|| state.metadata.organizer.clone())
+                                .flatten(),
+                        )
+                        .collect();
+                    state
+                        .metadata
+                        .attendees
+                        .iter()
+                        .filter(|address| !own.contains(address))
+                        .cloned()
+                        .collect()
+                },
                 targets_complete: !self.attendees.is_empty() || (deleted && previous.is_some()),
                 calendar_start: state.start,
                 origin,
@@ -313,7 +334,10 @@ mod tests {
             Some(SourceTimeQuality::Provider)
         );
         assert!(effect.external_change);
-        assert_eq!(effect.targets, vec!["me@example.test"]);
+        assert!(
+            effect.targets.is_empty(),
+            "the user's own entry is not a recipient"
+        );
         assert_eq!(
             effect.calendar_start.map(|date| date.to_rfc3339()),
             Some("2026-10-23T16:00:00+00:00".into())
@@ -354,6 +378,32 @@ mod tests {
                 ..
             })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn an_event_the_user_organized_targets_only_its_guests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let own = event(
+            r#"{"id":"lunch","etag":"rev1","start":{"dateTime":"2026-11-03T13:00:00-08:00"},"organizer":{"email":"me@example.test","self":true},"attendees":[{"email":"me@example.test","self":true,"organizer":true},{"email":"guest@example.test"}]}"#,
+        )?;
+        let (created, state) = own.observation("account-1", Origin::Live, Utc::now(), None)?;
+        let created = created.ok_or("missing creation")?;
+        let EventPayload::Effect(effect) = &created.payload else {
+            return Err("expected effect".into());
+        };
+        assert_eq!(effect.targets, vec!["guest@example.test"]);
+        let cancelled = event(r#"{"id":"lunch","etag":"rev2","status":"cancelled"}"#)?;
+        let (deleted, _) =
+            cancelled.observation("account-1", Origin::Live, Utc::now(), Some(&state))?;
+        let EventPayload::Effect(effect) = &deleted.ok_or("missing deletion")?.payload else {
+            return Err("expected effect".into());
+        };
+        assert_eq!(
+            effect.targets,
+            vec!["guest@example.test"],
+            "known from the organizer"
+        );
         Ok(())
     }
 

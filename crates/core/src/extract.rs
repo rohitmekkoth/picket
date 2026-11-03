@@ -23,7 +23,7 @@ use crate::{
     store::{Batch, CoverageReport},
 };
 
-pub const PROMPT_VERSION: u16 = 1;
+pub const PROMPT_VERSION: u16 = 2;
 const REQUEST_PROMPT: &str = include_str!("../prompts/request.txt");
 const CLAIM_PROMPT: &str = include_str!("../prompts/claim.txt");
 /// Model calls per pass; a backlog continues on the next pass.
@@ -31,10 +31,9 @@ const MESSAGES_PER_PASS: usize = 4;
 const MAX_TEXT: usize = 4_000;
 const MAX_TOKENS: u32 = 400;
 const MAX_CLAIMS: usize = 4;
-const MAX_OPEN_TASKS: usize = 8;
 /// A message that could not be extracted may hold a request for this long.
 const FAILURE_HORIZON: Duration = Duration::days(7);
-/// Open tasks offered to the model for follow-ups.
+/// How long after its latest request a task stays under discussion for follow-ups.
 const TASK_HORIZON: Duration = Duration::days(14);
 
 #[derive(Debug, Error)]
@@ -110,7 +109,10 @@ pub fn extract_pending(
             MessageText::Decoded => text(&message.key.resource),
             _ => None,
         };
-        let open = open_tasks(ledger, account, &agent.id, message.occurred_at)?;
+        // Follow-ups in a conversation refer to the task under discussion: the one the
+        // user's most recent request created or revised. Older tasks are not offered,
+        // so a short reply cannot be attached to one of them.
+        let open = current_task(ledger, account, &agent.id, message.occurred_at)?;
         let previous = match observed.direction {
             MessageDirection::FromAgent => {
                 ledger.previous_user_message(account, &agent.id, message.occurred_at)?
@@ -120,22 +122,7 @@ pub fn extract_pending(
         let context_text = previous
             .as_ref()
             .and_then(|previous| text(&previous.key.resource));
-        // The task the user's preceding message created or revised, if any.
-        let context_task = match &previous {
-            Some(previous) => ledger
-                .extractions_since(account, &agent.id, previous.occurred_at)?
-                .into_iter()
-                .find_map(|event| match event.payload {
-                    EventPayload::Request(request)
-                        if event.key.resource == format!("{}#request", previous.key.resource)
-                            && event.key.revision == previous.key.revision =>
-                    {
-                        Some(request.task)
-                    }
-                    _ => None,
-                }),
-            None => None,
-        };
+        let context_task = open.keys().next().cloned();
         let context = Context {
             text: context_text.as_deref(),
             task: context_task.as_deref(),
@@ -238,26 +225,31 @@ fn report(
     Ok(())
 }
 
-/// The latest revision of each task this agent was asked to do recently.
-fn open_tasks(
+/// The task under discussion at `at`: the latest revision of the task that the user's
+/// most recent request created or revised, unless it was cancelled.
+fn current_task(
     ledger: &impl Ledger,
     account: &str,
     agent: &str,
     at: DateTime<Utc>,
 ) -> Result<BTreeMap<String, Request>, crate::store::StoreError> {
-    let mut tasks = BTreeMap::new();
+    let mut latest: Option<(DateTime<Utc>, Request)> = None;
     for event in ledger.extractions_since(account, agent, at - TASK_HORIZON)? {
         if let EventPayload::Request(request) = event.payload
-            && event.occurred_at <= at
+            && event.occurred_at < at
+            && latest
+                .as_ref()
+                .is_none_or(|(time, _)| event.occurred_at >= *time)
         {
-            tasks.insert(request.task.clone(), request);
+            latest = Some((event.occurred_at, request));
         }
     }
-    tasks.retain(|_, request| request.valid_until.is_none_or(|until| until > at));
-    while tasks.len() > MAX_OPEN_TASKS {
-        tasks.pop_first();
-    }
-    Ok(tasks)
+    Ok(latest
+        .map(|(_, request)| request)
+        .filter(|request| request.valid_until.is_none_or(|until| until > at))
+        .map(|request| (request.task.clone(), request))
+        .into_iter()
+        .collect())
 }
 
 fn extract_one(
@@ -374,12 +366,7 @@ pub fn propose(model: &mut dyn LocalModel, input: &Input) -> Result<Proposal, Mo
         &input
             .open
             .iter()
-            .map(|(id, request)| {
-                // Only claim extraction uses the link to the latest message.
-                let latest = (input.direction == MessageDirection::FromAgent)
-                    .then_some(input.context.task == Some(id.as_str()));
-                task_summary(id, request, latest)
-            })
+            .map(|(id, request)| task_summary(id, request))
             .collect::<Vec<_>>(),
     )
     .map_err(|_| ModelError::Invalid)?;
@@ -391,7 +378,7 @@ pub fn propose(model: &mut dyn LocalModel, input: &Input) -> Result<Proposal, Mo
         _ => String::new(),
     };
     let user = format!(
-        "Message time: {} ({}), UTC offset {}\nOpen tasks: {}\n{context}<{tag}>\n{}\n</{tag}>",
+        "Message time: {} ({}), UTC offset {}\nTask under discussion: {}\n{context}<{tag}>\n{}\n</{tag}>",
         local.format("%Y-%m-%d %H:%M"),
         local.format("%A"),
         input.offset,
@@ -447,7 +434,6 @@ enum RawApproval {
 #[serde(deny_unknown_fields)]
 struct RawRequest {
     kind: RawKind,
-    task: Option<String>,
     actions: Vec<String>,
     any_action: bool,
     addresses: Vec<String>,
@@ -503,12 +489,11 @@ pub fn request_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "task", "actions", "any_action", "addresses", "names",
+        "required": ["kind", "actions", "any_action", "addresses", "names",
             "any_recipient", "start", "prohibited", "max_actions", "approval", "approves",
             "cancels"],
         "properties": {
             "kind": {"enum": ["new_task", "revise_task", "not_a_task"]},
-            "task": {"type": ["string", "null"]},
             "actions": actions,
             "any_action": {"type": "boolean"},
             "addresses": strings,
@@ -551,36 +536,36 @@ pub fn claim_schema() -> Value {
     })
 }
 
-/// A compact view of an open task for the model, without message text.
-fn task_summary(id: &str, request: &Request, from_latest_message: Option<bool>) -> Value {
-    let mut summary = json!({
+/// A compact view of the task under discussion for the model, without message text.
+fn task_summary(id: &str, request: &Request) -> Value {
+    json!({
         "id": id,
         "actions": request.actions,
+        "prohibited": request.prohibited_actions,
         "addresses": request.targets,
         "names": request.target_names,
         "approval_required": request.requires_approval,
         "approved": request.approved,
-    });
-    if let Some(latest) = from_latest_message {
-        summary["from_latest_message"] = json!(latest);
-    }
-    summary
+    })
 }
 
 fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
+    // Only the task under discussion is offered, so a revision can only be of it.
+    let current = input.open.values().next();
+    // Approving grants permission, so it needs the model's proposal and the person's own
+    // words. A short go-ahead or cancellation refers to the current task even when the
+    // model calls it new.
+    let approves = raw.approves && says(text, &APPROVAL_CUES);
+    let cancels = raw.cancels && says(text, &CANCEL_CUES);
     let base = match raw.kind {
+        RawKind::Revise => current.cloned(),
+        _ if approves || cancels => current.cloned(),
         // Wording can only restrict: a standing "don't send" is kept even when the
         // model sees no task.
         RawKind::None if !forbids_sending(text) => return None,
-        RawKind::None => None,
-        // An unknown task id is not trusted as a follow-up; the message stands alone.
-        RawKind::Revise => raw
-            .task
-            .as_ref()
-            .and_then(|task| input.open.get(task))
-            .cloned(),
-        RawKind::New => None,
+        RawKind::None | RawKind::New => None,
     };
+    let cancels = cancels || (raw.cancels && matches!(raw.kind, RawKind::Revise));
     let at = input.at;
     // Widening permission needs the model's proposal and the message's own words.
     let actions: Vec<_> = raw
@@ -656,10 +641,10 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         // A follow-up changes only what it states; everything else carries forward.
         request = merge(base, request);
     }
-    if raw.approves {
+    if approves {
         request.approved = true;
     }
-    if raw.cancels {
+    if cancels {
         request.valid_until = Some(at);
     }
     // A forbidden action is never also allowed, including after a follow-up merges in.
@@ -716,6 +701,77 @@ const USER_ACCOUNT_CUES: [&str; 6] = [
     "as you",
 ];
 
+/// Wording that places a claimed email in the agent's own mailbox.
+const AGENT_ACCOUNT_CUES: [&str; 3] = ["from my", "my own address", "my own email"];
+/// Words that report each action as done.
+fn completion_cues(action: &Action) -> &'static [&'static str] {
+    match action {
+        Action::EmailSend => &[
+            "sent",
+            "emailed",
+            "replied",
+            "forwarded",
+            "delivered",
+            "reached out",
+            "wrote to",
+        ],
+        Action::CalendarCreate => &[
+            "added",
+            "created",
+            "scheduled",
+            "booked",
+            "put",
+            "invited",
+            "blocked",
+            "set up",
+            "on your calendar",
+        ],
+        Action::CalendarUpdate => &[
+            "moved",
+            "updated",
+            "changed",
+            "rescheduled",
+            "shifted",
+            "pushed",
+            "renamed",
+        ],
+        Action::CalendarDelete => &["deleted", "removed", "cancelled", "canceled", "cleared"],
+        Action::CalendarRsvp => &["accepted", "declined", "rsvped", "rsvp'd", "responded"],
+    }
+}
+/// Words that report any action as done; the model's proposal names which.
+const DONE_CUES: [&str; 6] = [
+    "done",
+    "all set",
+    "taken care",
+    "finished",
+    "completed",
+    "handled",
+];
+/// Words that turn a following report into a denial: "not sent", "haven't sent".
+const NEGATIONS: [&str; 13] = [
+    "not", "never", "no", "haven't", "hasn't", "hadn't", "didn't", "wasn't", "weren't", "won't",
+    "isn't", "aren't", "can't",
+];
+
+/// Whether the text reports `action` as done, with a completion word or phrase that no
+/// nearby negation precedes.
+fn reports_done(text: &str, action: &Action) -> bool {
+    let words = words_of(text);
+    completion_cues(action)
+        .iter()
+        .chain(DONE_CUES.iter())
+        .any(|cue| {
+            let cue = words_of(cue);
+            words.windows(cue.len()).enumerate().any(|(index, window)| {
+                window == cue.as_slice()
+                    && !words[index.saturating_sub(3)..index]
+                        .iter()
+                        .any(|before| NEGATIONS.contains(&before.as_str()))
+            })
+        })
+}
+
 fn forbids_sending(text: &str) -> bool {
     let normalized = format!(" {} ", words_of(text).join(" "));
     NO_SEND_CUES.iter().any(|cue| {
@@ -726,6 +782,36 @@ fn forbids_sending(text: &str) -> bool {
         })
     })
 }
+/// Wording that gives the go-ahead for the task under discussion.
+const APPROVAL_CUES: [&str; 17] = [
+    "yes",
+    "yep",
+    "yeah",
+    "ok",
+    "okay",
+    "sure",
+    "go ahead",
+    "go for it",
+    "send it",
+    "do it",
+    "approve",
+    "approved",
+    "confirm",
+    "confirmed",
+    "sounds good",
+    "looks good",
+    "please do",
+];
+/// Wording that calls off the task under discussion.
+const CANCEL_CUES: [&str; 7] = [
+    "cancel",
+    "never mind",
+    "nevermind",
+    "scratch that",
+    "forget it",
+    "call it off",
+    "don't",
+];
 /// Explicit wording that the agent may act without confirming first.
 const NO_APPROVAL_CUES: [&str; 10] = [
     "no need to check",
@@ -834,11 +920,16 @@ fn claims_from(raw: RawClaims, input: &Input, text: &str) -> Vec<Claim> {
             let lower = text.to_lowercase();
             targets.retain(|address| lower.contains(address.as_str()));
             names.retain(|name| names_in(text, name));
-            // Placing the email in the user's account lets its absence count, so the
+            // A claim needs the agent's own words to report the action as done, so a
+            // question, plan, refusal or "not sent" claims nothing. This only removes.
+            if !reports_done(text, &action) {
+                return None;
+            }
+            // Placing the email in either account changes what its absence means, so the
             // message must say so.
             let channel = match claim.channel.as_str() {
                 "user_account" if says(text, &USER_ACCOUNT_CUES) => ClaimChannel::UserAccount,
-                "agent_account" => ClaimChannel::AgentAccount,
+                "agent_account" if says(text, &AGENT_ACCOUNT_CUES) => ClaimChannel::AgentAccount,
                 _ => ClaimChannel::Unknown,
             };
             Some(Claim {

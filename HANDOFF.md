@@ -37,7 +37,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M3 - Engine on mocks:** Deterministic rules, attribution and request states, task-linked action limits, claim/coverage checks, durable findings/outbox, scripted model and 24 labeled scenarios. This is synthetic validation only.
 - [x] **M4 - Mock evaluation harness:** 288 fixed synthetic cases across 18 families, separate mode and family counts, JSON report, and a versioned CI regression gate. Real-source accuracy remains unmeasured.
 - [x] **M5 - Google collectors:** Scoped OAuth, Keychain, allowlisted HTTP, Gmail and Calendar cursors, catch-up, and bounded baseline import. Larger Gmail baselines are marked incomplete.
-- [ ] **M6 - Messages and OpenClaw:** Read-only agent-message capture and validated local plugin ingest.
+- [x] **M6 - Messages:** Read-only agent-message capture (PR #15). OpenClaw is out of v1 scope; its adapter is kept on `feature/m6-openclaw`.
 - [ ] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging; without the model, request capture is reported unavailable (no keyword fallback, see decisions).
 - [ ] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and digest, export, and wipe. Recheck banner presentation.
 - [ ] **M9 - Release:** Packaging, release attestations, Homebrew tap, documentation, and fresh-Mac install test.
@@ -69,7 +69,7 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 ## Next work
 
-M7 increments 1-3 merged from `feature/m7-extraction` (PR #16): extraction contract, labeled harness, llama.cpp runtime with verified download, Qwen3.5 4B. Remaining for M7: the scripted live Instinct run (increment 4), recorded in `docs/decisions.md`. Remaining for M6: the OpenClaw increment (`feature/m6-openclaw`, see [the M6 plan](docs/m6-plan.md)) and E2. Fetch `main` and create a dedicated branch before implementation. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
+v1 targets one agent, Instinct over iMessage, end to end and deployed (owner decision 2026-11-02). M7: the scripted live run on 2026-11-02 found follow-up, claim and linkage defects, fixed on `fix/m7-live-followups`; a second scripted run per [the M7 plan](docs/m7-plan.md#increment-4-scripted-live-run) closes M7. Then M8 (product UI and alerts) and M9 (release) for Instinct. Fetch `main` and create a dedicated branch before implementation. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
 
 M5 verification on `feature/m5-google-collectors`: `make check`, `make test`, `make eval` (288 cases), `make audit`, `make e2e` (6 cases), and `make smoke-macos` passed. All three PR #11 CI jobs passed. In a controlled Google test account, OAuth and Keychain restore worked; a sent message and primary Calendar create, update, and delete appeared as effects. Gmail and Calendar live coverage were healthy, Calendar recovered from an expired sync cursor, and the local event chain verified through 191 records. Replay showed four timeline effects with unknown actor and no false alerts. The metadata-only Gmail scope cannot date-filter message listings; M5 caps the first scan at 50 listed messages per label and records incomplete baseline coverage separately when more history exists. Real-source accuracy and agent attribution remain unmeasured.
 

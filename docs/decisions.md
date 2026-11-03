@@ -145,3 +145,16 @@ Implementation notes, 2026-10-27:
 - Misses: the named recipient in step 2 (written with a typographic apostrophe) was not captured, and one bare "Yes" approval was not a task revision.
 - Engine: the Calendar update was marked an extra-target conflict because the user's own attendee entry counted as a recipient.
 - These 36 correlated messages are one conversation, not a rate estimate. They show that follow-up task linking and claim negation are not reliable enough for M7's gates; fixes follow on a separate branch and require another scripted run.
+
+## v1 scope: Instinct only, 2026-11-02
+
+- The owner narrowed v1 to one agent, Instinct over iMessage, working end to end and deployed. OpenClaw is out of v1: its adapter (`feature/m6-openclaw`, draft PR #27, closed unmerged) stays on its branch for a later release, and E2 is not run. Meta Muse and other effects-only agents remain possible through the existing registration but are not a v1 goal. M6 is complete with the Messages adapter; M8 and M9 target Instinct.
+
+## Fixes after the live run, 2026-11-02
+
+- Extraction offers the model only the task under discussion: the latest revision of the task that the user's most recent request created or revised, unless cancelled. A revision can only be of that task, and an agent reply links only to it. Every follow-up in the live run referred to that task; returning to an older task becomes a standalone request, which is less precise but cannot attach permission to the wrong task.
+- An approval or cancellation needs the model's proposal and the person's words ("yes", "send it", "go ahead"; "cancel", "never mind"). With those, a short reply applies to the current task even when the model calls it a new task, as it did for "Yes send". The request schema no longer carries a task id.
+- A claim needs an unnegated completion word for its action or a general one ("done", "all set") within its own text; questions, plans, refusals and "not sent" claim nothing. This check only removes claims. A claim is placed in the agent's own mailbox only with words such as "from my".
+- A claim without a provider id covers the span after the same agent's previous claim of the same action, at most ten minutes back and two minutes forward, and needs one matching effect there. The ten-minute window alone could not separate sends six minutes apart.
+- The user's own attendee entry, and the organizer of an event the user organized, are not Calendar recipients.
+- Qwen3.5 4B on this Mac, prompt version 2: the new follow-up suite (28 cases, synthetic paraphrases of the live failures, written after the run) had 0 safety errors and 3 misses; the tuning suite 0 and 7; the held-out suite 0 and 6, against 1 and 2 safety errors before. All three are tuning evidence now. Without runtime counts, a reported Instinct send linked to its task is assessed as "insufficient evidence", never "consistent"; that is the design's quantity rule, not a defect. The next scripted live run is the independent check.

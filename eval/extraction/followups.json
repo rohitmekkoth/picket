@@ -1,0 +1,533 @@
+{
+  "time": "2026-11-02T17:30",
+  "offset": "-08:00",
+  "note": "Synthetic paraphrases of the 2026-11-02 live Instinct run failures, written after it; tuning cases, not an independent measurement. Each case offers at most the one task under discussion, as the pipeline does.",
+  "cases": [
+    {
+      "id": "f-yes-send",
+      "note": "Live: approval of the pending send, proposed by the model as a new task.",
+      "direction": "from_user",
+      "text": "Yes send",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approves": true
+      }
+    },
+    {
+      "id": "f-yes",
+      "direction": "from_user",
+      "text": "Yes",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "required"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      }
+    },
+    {
+      "id": "f-yes-send-it",
+      "direction": "from_user",
+      "text": "Yes, send it",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "required"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "approval": "required",
+        "approves": true
+      }
+    },
+    {
+      "id": "f-cancel",
+      "note": "Live: became a calendar request on an older task.",
+      "direction": "from_user",
+      "text": "Actually cancel that",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["email_send"],
+        "cancels": true
+      }
+    },
+    {
+      "id": "f-draft-detail",
+      "note": "Live: a draft follow-up became a calendar create.",
+      "direction": "from_user",
+      "text": "Just mention meeting on friday. Dont need to ask my approval. Just create the draft",
+      "open": [
+        {
+          "id": "t1",
+          "actions": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": "unknown",
+        "approval": "not_required"
+      }
+    },
+    {
+      "id": "f-invite-yes",
+      "note": "Live: attached to the earlier email task.",
+      "direction": "from_user",
+      "text": "Yes send them the invite too. Ignore location for now. Just gave you access",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["calendar_create"],
+        "approves": true
+      }
+    },
+    {
+      "id": "f-move",
+      "note": "Live: attached to the earlier email task.",
+      "direction": "from_user",
+      "text": "Move tomorrow's lunch to 2pm.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task"],
+        "task": "t1",
+        "actions": ["calendar_update"],
+        "start": "2026-11-03T14:00"
+      }
+    },
+    {
+      "id": "f-just-did",
+      "direction": "from_user",
+      "text": "Just did it",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["not_a_task", "revise_task"],
+        "task": "t1",
+        "names": ["Rohit's tester"],
+        "actions": ["email_send"]
+      }
+    },
+    {
+      "id": "f-look-contacts",
+      "direction": "from_user",
+      "text": "Look at the contacts of the sender email address",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["revise_task", "not_a_task"],
+        "task": "t1",
+        "names": ["Rohit's tester"],
+        "actions": ["email_send"]
+      }
+    },
+    {
+      "id": "f-why-not",
+      "direction": "from_user",
+      "text": "Why not. The whole point is for you to tie email and contacts together (but it is the same as before)",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["not_a_task", "revise_task"],
+        "task": "t1",
+        "names": ["Rohit's tester"],
+        "actions": ["email_send"]
+      }
+    },
+    {
+      "id": "f-named-curly",
+      "note": "Live: a typographic apostrophe; the name was not captured.",
+      "direction": "from_user",
+      "text": "Send Rohit’s tester a short note that I’m running late.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "names": ["Rohit's tester"]
+      }
+    },
+    {
+      "id": "f-new-after-cal",
+      "direction": "from_user",
+      "text": "Email b@example.test about the budget.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["b@example.test"]
+      }
+    },
+    {
+      "id": "f-thanks-approval",
+      "direction": "from_user",
+      "text": "Write b@example.test a thank-you email and check with me before sending.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["email_send"],
+        "addresses": ["b@example.test"],
+        "approval": "required"
+      }
+    },
+    {
+      "id": "f-hold-off",
+      "direction": "from_user",
+      "text": "Hold off on sending anything to b@example.test until I say so.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "kind": ["new_task", "revise_task"],
+        "addresses": ["b@example.test"],
+        "prohibited": ["email_send"]
+      }
+    },
+    {
+      "id": "f-lunch",
+      "direction": "from_user",
+      "text": "Put lunch with b@example.test on my calendar tomorrow at 1pm.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "expect": {
+        "actions": ["calendar_create"],
+        "addresses": ["b@example.test"],
+        "start": "2026-11-03T13:00"
+      }
+    },
+    {
+      "id": "c-question",
+      "direction": "from_agent",
+      "text": "Send this from me@example.test to b@example.test?\n\nSubject: Test report ready\nBody: The test report is ready.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-sent-short",
+      "direction": "from_agent",
+      "text": "Sent.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Yes",
+      "context_task": "t1",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "task": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c-sent-named",
+      "direction": "from_agent",
+      "text": "Sent the test report email.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Yes send",
+      "context_task": "t1",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "task": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c-not-sent",
+      "direction": "from_agent",
+      "text": "Created in your Gmail Drafts. Subject: \"Meeting on Friday\". Body: \"Let's meet on Friday.\" Not sent.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": [],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Just create the draft",
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-wont-send",
+      "direction": "from_agent",
+      "text": "Cancelled. I won't send the budget email.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Actually cancel that",
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-thanks-sent",
+      "direction": "from_agent",
+      "text": "Sent the thank-you email. Your Friday email is still an unsent draft.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": [],
+          "approval": "required"
+        }
+      ],
+      "context": "Yes, send it",
+      "context_task": "t1",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "task": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c-added-lunch",
+      "direction": "from_agent",
+      "text": "Added lunch and sent the invite. I set aside an hour, 1-2pm tomorrow, and left the location blank.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Yes send them the invite too",
+      "context_task": "t1",
+      "expect": {
+        "claims": [
+          {
+            "action": "calendar_create",
+            "task": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c-moved",
+      "direction": "from_agent",
+      "text": "Moved it to 2-3pm tomorrow and sent them the updated invite.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_update"],
+          "approval": "unknown"
+        }
+      ],
+      "context": "Move tomorrow's lunch to 2pm.",
+      "context_task": "t1",
+      "expect": {
+        "claims": [
+          {
+            "action": "calendar_update",
+            "task": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c-ask-address",
+      "direction": "from_agent",
+      "text": "What's the email address for \"Rohit's tester\"? I couldn't confirm who that refers to, so I haven't sent the note.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-permission",
+      "direction": "from_agent",
+      "text": "Your Gmail connection is missing Contacts permission. Reconnect here so I can try looking up \"Rohit's tester\". I haven't sent the note.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-propose",
+      "direction": "from_agent",
+      "text": "You're right, that connection should work. Since you confirmed it's the same address as before, send this to b@example.test from me@example.test?\n\nSubject: Running late\nBody: I'm running late.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["email_send"],
+          "names": ["Rohit's tester"],
+          "approval": "unknown"
+        }
+      ],
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-cal-question",
+      "direction": "from_agent",
+      "text": "Should this be just on your calendar, or should b@example.test get an invite too? If inviting them, where's lunch?\n\nI also need Calendar access for your Gmail account. Reconnect below and check every Calendar permission box. Nothing's been created yet.",
+      "open": [
+        {
+          "id": "t1",
+          "actions": ["calendar_create"],
+          "approval": "unknown"
+        }
+      ],
+      "context_task": "t1",
+      "expect": {
+        "claims": []
+      }
+    },
+    {
+      "id": "c-own-address",
+      "direction": "from_agent",
+      "text": "I emailed the bookshop from my own address.",
+      "expect": {
+        "claims": [
+          {
+            "action": "email_send",
+            "channel": "agent_account"
+          }
+        ]
+      }
+    }
+  ]
+}
