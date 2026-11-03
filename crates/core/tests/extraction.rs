@@ -98,6 +98,34 @@ fn claim(names: &[&str], channel: &str) -> Value {
         "channel": channel, "task": null}]})
 }
 
+/// A scripted model that quotes the whole message as its evidence, where a proposal
+/// needs a quote and has none.
+fn quote_whole_message(reply: &mut Value, text: &str) {
+    if let Some(claims) = reply.get_mut("claims").and_then(Value::as_array_mut) {
+        for claim in claims {
+            if claim.get("quote").is_none() {
+                claim["quote"] = json!(text);
+            }
+            if claim["channel"] != "unknown" && claim.get("channel_quote").is_none() {
+                claim["channel_quote"] = json!(text);
+            }
+        }
+    } else if reply.is_object() {
+        for (field, quote) in [
+            ("approves", "approves_quote"),
+            ("any_action", "any_action_quote"),
+            ("any_recipient", "any_recipient_quote"),
+        ] {
+            if reply[field] == true && reply.get(quote).is_none() {
+                reply[quote] = json!(text);
+            }
+        }
+        if reply["approval"] == "not_required" && reply.get("no_check_quote").is_none() {
+            reply["no_check_quote"] = json!(text);
+        }
+    }
+}
+
 struct Fixture {
     store: Store,
     texts: BTreeMap<String, String>,
@@ -125,10 +153,7 @@ impl Fixture {
         Ok(Self {
             store,
             texts: BTreeMap::new(),
-            model: ScriptedModel {
-                responses: Vec::new(),
-                calls: 0,
-            },
+            model: ScriptedModel::default(),
         })
     }
 
@@ -138,8 +163,9 @@ impl Fixture {
         minute: i64,
         direction: MessageDirection,
         text: &str,
-        reply: Value,
+        mut reply: Value,
     ) -> Result<()> {
+        quote_whole_message(&mut reply, text);
         self.texts.insert(guid.into(), text.into());
         self.model.responses.push((text.into(), reply));
         self.store
@@ -635,5 +661,71 @@ fn a_late_report_and_an_explicit_approval_keep_the_send_with_its_own_task() -> R
         RequestFit::InsufficientEvidence,
         "judged against the approved thank-you task, not the later budget request"
     );
+    Ok(())
+}
+
+#[test]
+fn a_follow_up_cannot_turn_a_calendar_task_into_an_email() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    let mut lunch = request("new_task", "unknown", false);
+    lunch["actions"] = json!(["calendar_create"]);
+    lunch["names"] = json!([]);
+    lunch["addresses"] = json!(["b@example.test"]);
+    fixture.say(
+        "u1",
+        1,
+        MessageDirection::FromUser,
+        "Put lunch with b@example.test on my calendar tomorrow",
+        lunch,
+    )?;
+    // The model read "send them the invite" as approving an email.
+    let mut invite = request("revise_task", "unknown", true);
+    invite["names"] = json!([]);
+    fixture.say(
+        "u2",
+        2,
+        MessageDirection::FromUser,
+        "Yes send them the invite too",
+        invite,
+    )?;
+    fixture.extract(3)?;
+    let latest = fixture.requests()?.pop().ok_or("request missing")?;
+    assert_eq!(latest.task, "u1");
+    assert_eq!(
+        latest.actions,
+        picket_core::event::Field::Known(vec![Action::CalendarCreate])
+    );
+    Ok(())
+}
+
+#[test]
+fn a_different_kind_of_request_read_as_a_follow_up_becomes_a_new_task() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.say(
+        "u1",
+        1,
+        MessageDirection::FromUser,
+        "Email Sam the menu, but ask me before sending",
+        request("new_task", "required", false),
+    )?;
+    // The model read a new calendar request as a revision of the email task.
+    let mut dentist = request("revise_task", "unknown", false);
+    dentist["actions"] = json!(["calendar_create"]);
+    dentist["names"] = json!([]);
+    fixture.say(
+        "u2",
+        2,
+        MessageDirection::FromUser,
+        "Also put the dentist on my calendar for Thursday at 9am",
+        dentist,
+    )?;
+    fixture.extract(3)?;
+    let latest = fixture.requests()?.pop().ok_or("request missing")?;
+    assert_eq!(latest.task, "u2", "a new task, inheriting nothing");
+    assert_eq!(
+        latest.actions,
+        picket_core::event::Field::Known(vec![Action::CalendarCreate])
+    );
+    assert!(latest.target_names.is_empty());
     Ok(())
 }

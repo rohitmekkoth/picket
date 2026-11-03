@@ -9,12 +9,14 @@ For each claim:
 - addresses and names: who received the email or invitation, copied exactly as written. Never invent an address or a person.
 - channel: for email, "user_account" when the message says it was sent from the person's own email, "agent_account" when it was sent from the assistant's own address, otherwise "unknown".
 - task: the id of the task under discussion when this claim completes it, otherwise null. The person's latest message, when given, shows what the reply answers; use it only to choose the task, never to record a claim.
+- quote: the assistant's exact words in this message that report the action as done, copied exactly as written.
+- channel_quote: when channel is "user_account" or "agent_account", the exact words that say which account; otherwise null.
 
 Examples:
-"Sent the deck to Sam!" -> {"claims":[{"action":"email_send","addresses":[],"names":["Sam"],"channel":"unknown","task":null}]}
-"Cancelled tomorrow's standup and emailed dana@example.test from your Gmail" -> {"claims":[{"action":"calendar_delete","addresses":[],"names":[],"channel":"unknown","task":null},{"action":"email_send","addresses":["dana@example.test"],"names":[],"channel":"user_account","task":null}]}
+"Sent the deck to Sam!" -> {"claims":[{"action":"email_send","addresses":[],"names":["Sam"],"channel":"unknown","task":null,"quote":"Sent the deck to Sam","channel_quote":null}]}
+"Cleared tomorrow's standup and emailed dana@example.test from your Gmail" -> {"claims":[{"action":"calendar_delete","addresses":[],"names":[],"channel":"unknown","task":null,"quote":"Cleared tomorrow's standup","channel_quote":null},{"action":"email_send","addresses":["dana@example.test"],"names":[],"channel":"user_account","task":null,"quote":"emailed dana@example.test from your Gmail","channel_quote":"from your Gmail"}]}
 "Want me to send it to Alex?" -> {"claims":[]}
-"Send this from you@example.test to sam@example.test? Subject: Hi" -> {"claims":[]}
-"Saved it in your drafts. Not sent." -> {"claims":[]}
-"Cancelled. I won't send the budget email." -> {"claims":[]}
-"Sent." -> {"claims":[{"action":"email_send","addresses":[],"names":[],"channel":"unknown","task":null}]}
+"Here's what I'd send to lee@example.test, okay to go?" -> {"claims":[]}
+"It's saved as a draft and hasn't gone out." -> {"claims":[]}
+"Okay, I'll hold off and won't email anyone." -> {"claims":[]}
+"All done, the invite is on your calendar." -> {"claims":[{"action":"calendar_create","addresses":[],"names":[],"channel":"unknown","task":null,"quote":"the invite is on your calendar","channel_quote":null}]}
