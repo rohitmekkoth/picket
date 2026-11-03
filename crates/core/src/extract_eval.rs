@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 
 use chrono::{FixedOffset, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{
     event::{Action, Claim, ClaimChannel, Field, MessageDirection, Request},
-    extract::{Context, Input, LocalModel, Proposal, propose},
+    extract::{Context, Input, LocalModel, ModelError, Proposal, propose},
 };
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +117,42 @@ pub struct Report {
     pub failed_calls: usize,
     pub safety_errors: Vec<String>,
     pub utility_misses: Vec<String>,
+    /// For each case with an error or miss, the model's answers in order, so failures
+    /// can be read rather than guessed. Synthetic suite text only.
+    pub traces: BTreeMap<String, Vec<Value>>,
+}
+
+/// Records each answer a model gives while one case is extracted.
+struct Recorder<'a> {
+    model: &'a mut dyn LocalModel,
+    answers: Vec<Value>,
+}
+
+impl LocalModel for Recorder<'_> {
+    fn id(&self) -> &str {
+        self.model.id()
+    }
+
+    fn complete_json(
+        &mut self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        max_tokens: u32,
+    ) -> Result<Value, ModelError> {
+        let answer = self.model.complete_json(system, user, schema, max_tokens);
+        // A verification question is recorded with what it asked.
+        let question = user
+            .lines()
+            .next()
+            .filter(|line| line.starts_with("Question:"));
+        self.answers.push(match (&answer, question) {
+            (Ok(value), Some(question)) => json!({"question": question, "answer": value}),
+            (Ok(value), None) => value.clone(),
+            (Err(error), _) => json!({"error": error.to_string()}),
+        });
+        answer
+    }
 }
 
 impl Report {
@@ -157,7 +194,12 @@ pub fn evaluate(model: &mut dyn LocalModel, suite: &Suite) -> Result<Report, Str
                 task: case.context_task.as_deref(),
             },
         };
-        match propose(model, &input) {
+        let errors = report.safety_errors.len() + report.utility_misses.len();
+        let mut recorder = Recorder {
+            model: &mut *model,
+            answers: Vec::new(),
+        };
+        match propose(&mut recorder, &input) {
             Ok(proposal) => score(case, &proposal, offset, &mut report),
             Err(_) => {
                 report.failed_calls += 1;
@@ -165,6 +207,9 @@ pub fn evaluate(model: &mut dyn LocalModel, suite: &Suite) -> Result<Report, Str
                     .utility_misses
                     .push(format!("{}: model call failed", case.id));
             }
+        }
+        if report.safety_errors.len() + report.utility_misses.len() > errors {
+            report.traces.insert(case.id.clone(), recorder.answers);
         }
     }
     Ok(report)
