@@ -1,6 +1,6 @@
 # M6 Messages and OpenClaw plan
 
-Status: increments 1 (shared write path, PR #14) and 2 (Messages, PR #15, E4 passed) are merged. Increment 3 (OpenClaw) is deferred by the owner in favor of Instinct and M7; see [m7-plan.md](m7-plan.md). This plan implements the M6 scope in [design.md](design.md) and the E2/E4 experiments in [alignment-engine-plan.md](alignment-engine-plan.md). It adds no network hosts, Google scopes or telemetry.
+Status: increments 1 (shared write path, PR #14) and 2 (Messages, PR #15, E4 passed) are merged. Increment 3 (OpenClaw) is out of v1 scope (see [decisions](decisions.md#v1-scope-instinct-only-2026-11-02)); its implementation is kept on `feature/m6-openclaw`. This plan implements the M6 scope in [design.md](design.md) and the E2/E4 experiments in [alignment-engine-plan.md](alignment-engine-plan.md). It adds no network hosts, Google scopes or telemetry.
 
 ## Outcome and boundaries
 
