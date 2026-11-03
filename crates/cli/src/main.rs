@@ -154,9 +154,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Some(path) => path,
                 None => PathBuf::from(std::env::var("HOME")?).join("Library/Messages/chat.db"),
             };
-            let chat = picket_core::messages::ChatDb::open(&chat_path).map_err(|error| {
-                format!("Messages unreadable ({error}); grant Full Disk Access")
-            })?;
+            let chat = picket_core::messages::ChatDb::open(&chat_path)
+                .map_err(|error| format!("Messages unreadable: {error}"))?;
             let events: Vec<_> = Store::open_read_only(&database)?
                 .events()?
                 .into_iter()
