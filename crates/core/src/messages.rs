@@ -231,14 +231,14 @@ pub fn decode_body(blob: &[u8]) -> Option<String> {
     if blob.len() > MAX_BODY {
         return None;
     }
-    let class = [&b"NSString"[..], &b"NSMutableString"[..]]
-        .iter()
-        .filter_map(|name| {
-            blob.windows(name.len())
-                .position(|window| window == *name)
-                .map(|at| at + name.len())
-        })
-        .min()?;
+    // A mutable string, used for messages with links, is archived as `NSMutableString`
+    // followed by its superclass `NSString`; the string bytes follow the last class name.
+    let after = |name: &[u8]| {
+        blob.windows(name.len())
+            .position(|window| window == name)
+            .map(|at| at + name.len())
+    };
+    let class = after(b"NSString").or_else(|| after(b"NSMutableString"))?;
     let rest = blob.get(class..)?;
     let tag = rest.iter().take(16).position(|byte| *byte == b'+')?;
     let rest = rest.get(tag + 1..)?;
@@ -556,6 +556,20 @@ pub(crate) mod tests {
         bytes
     }
 
+    /// A body as Messages archives one with a link: a mutable string whose class chain
+    /// names `NSMutableString` before `NSString`.
+    pub(crate) fn mutable_body(text: &str) -> Vec<u8> {
+        let plain = body(text);
+        let at = plain
+            .windows(8)
+            .position(|window| window == b"NSString")
+            .unwrap_or_else(|| panic!("fixture"));
+        let mut bytes = plain[..at - 1].to_vec();
+        bytes.extend(b"\x0fNSMutableString\x01\x84\x84\x08NSString\x01\x95\x84\x01+");
+        bytes.extend(&plain[at + 8 + 5..]);
+        bytes
+    }
+
     /// Builds a synthetic Messages database with the tables and columns Picket reads.
     pub(crate) struct Fixture {
         pub path: std::path::PathBuf,
@@ -676,6 +690,14 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn decoder_reads_mutable_strings_from_messages_with_links() {
+        let text = "Here is the link https://example.test/menu for tonight";
+        assert_eq!(decode_body(&mutable_body(text)), Some(text.into()));
+        let long = format!("{} https://example.test", "x".repeat(300));
+        assert_eq!(decode_body(&mutable_body(&long)), Some(long));
     }
 
     #[test]
