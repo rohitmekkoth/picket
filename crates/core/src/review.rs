@@ -109,6 +109,25 @@ pub fn timeline(
     rows.into_iter().map(|(_, line)| line).collect()
 }
 
+/// The retained inputs with what extraction derived from messages since `since` left
+/// out, so the current extractor can be replayed on the same conversation in a scratch
+/// store. Checkpoints describe the original chain and are dropped too.
+pub fn without_extractions_since(
+    events: Vec<crate::event::Event>,
+    since: DateTime<Utc>,
+) -> Vec<crate::event::Event> {
+    events
+        .into_iter()
+        .filter(|event| match &event.payload {
+            EventPayload::Request(_) | EventPayload::Claim(_) | EventPayload::Extraction(_) => {
+                event.key.source != Source::Messages || event.occurred_at < since
+            }
+            EventPayload::Checkpoint { .. } => false,
+            _ => true,
+        })
+        .collect()
+}
+
 fn identity(key: &EventKey) -> (String, &'static str, String, String) {
     (
         key.account.clone(),

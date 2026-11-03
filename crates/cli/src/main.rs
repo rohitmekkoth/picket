@@ -46,6 +46,23 @@ enum Command {
         #[arg(long, default_value = "target/eval/mock-report.json")]
         report: PathBuf,
     },
+    /// Re-extract an agent conversation since a time with the current extractor, in a
+    /// scratch copy of the log, and print its review timeline. Reads message text from
+    /// Messages, so it needs Full Disk Access; the database itself is never written.
+    #[cfg(feature = "model")]
+    ReplayExtraction {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        since: chrono::DateTime<chrono::Utc>,
+        #[arg(long)]
+        model_file: PathBuf,
+        #[arg(long, default_value = "qwen3.5-4b-q4_k_m")]
+        model: String,
+        /// Defaults to ~/Library/Messages/chat.db.
+        #[arg(long)]
+        chat_database: Option<PathBuf>,
+    },
     /// Evaluate a local model on the labeled synthetic extraction suite.
     #[cfg(feature = "model")]
     ExtractionEval {
@@ -120,6 +137,63 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .collect();
             let at = at.unwrap_or_else(chrono::Utc::now);
             for line in picket_core::review::timeline(&events, since, at) {
+                println!("{line}");
+            }
+        }
+        #[cfg(feature = "model")]
+        Command::ReplayExtraction {
+            database,
+            since,
+            model_file,
+            model,
+            chat_database,
+        } => {
+            use chrono::{Local, Offset, TimeZone};
+            use picket_core::{event::EventPayload, ledger::Progress, store::Store};
+            let chat_path = match chat_database {
+                Some(path) => path,
+                None => PathBuf::from(std::env::var("HOME")?).join("Library/Messages/chat.db"),
+            };
+            let chat = picket_core::messages::ChatDb::open(&chat_path).map_err(|error| {
+                format!("Messages unreadable ({error}); grant Full Disk Access")
+            })?;
+            let events: Vec<_> = Store::open_read_only(&database)?
+                .events()?
+                .into_iter()
+                .map(|row| row.event)
+                .collect();
+            let account = events
+                .iter()
+                .find_map(|event| match event.payload {
+                    EventPayload::Message(_) => Some(event.key.account.clone()),
+                    _ => None,
+                })
+                .ok_or("no captured messages")?;
+            let mut scratch = Store::memory()?;
+            for event in picket_core::review::without_extractions_since(events, since) {
+                scratch.append(&event)?;
+            }
+            let spec = picket_model::spec(&model).ok_or("unknown model id")?;
+            let mut runner = picket_model::Runner::load(&model_file, spec)?;
+            let zone = |at: chrono::DateTime<chrono::Utc>| {
+                Local.offset_from_utc_datetime(&at.naive_utc()).fix()
+            };
+            let mut text = |guid: &str| chat.text(guid);
+            loop {
+                let progress = picket_core::extract::extract_pending(
+                    &mut scratch,
+                    Some(&mut runner),
+                    &mut text,
+                    &zone,
+                    &account,
+                    chrono::Utc::now(),
+                )?;
+                if progress == Progress::CaughtUp {
+                    break;
+                }
+            }
+            let replayed: Vec<_> = scratch.events()?.into_iter().map(|row| row.event).collect();
+            for line in picket_core::review::timeline(&replayed, since, chrono::Utc::now()) {
                 println!("{line}");
             }
         }
