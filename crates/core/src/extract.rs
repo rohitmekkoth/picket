@@ -653,7 +653,13 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         approved: false,
         target_names,
     };
-    if let Some(base) = base {
+    if let Some(mut base) = base {
+        // An approval that names an action, such as "yes, send it", lifts an earlier
+        // prohibition of that action on this task; it needs the person's words.
+        if approves && let Field::Known(allowed) = &request.actions {
+            base.prohibited_actions
+                .retain(|action| !allowed.contains(action));
+        }
         // A follow-up changes only what it states; everything else carries forward.
         request = merge(base, request);
     }
