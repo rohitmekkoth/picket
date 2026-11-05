@@ -16,6 +16,8 @@ mod incidents;
 #[cfg(target_os = "macos")]
 mod model;
 #[cfg(target_os = "macos")]
+mod rules;
+#[cfg(target_os = "macos")]
 use std::{
     sync::{
         Mutex,
@@ -205,6 +207,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         incidents::get_incident,
         incidents::resolve_incident,
         incidents::set_agent_revoked,
+        rules::get_rules,
+        rules::set_rule_level,
+        rules::preview_boundary,
+        rules::save_boundary,
+        rules::delete_boundary,
         model::model_status,
         model::download_model
     ]);
