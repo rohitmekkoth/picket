@@ -23,6 +23,8 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GMAIL_SCOPE: &str = "https://www.googleapis.com/auth/gmail.metadata";
 const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events.readonly";
 const KEYCHAIN_SERVICE: &str = "Picket.Google";
+/// How long the loopback listener waits for Google to redirect back.
+const SIGN_IN_WAIT: Duration = Duration::from_secs(15 * 60);
 const KEYCHAIN_USER: &str = "primary";
 
 type GoogleClient =
@@ -34,6 +36,8 @@ pub enum AuthError {
     InvalidClient,
     #[error("Google authorization was cancelled, expired, or invalid")]
     Authorization,
+    #[error("Sign-in wasn't finished within 15 minutes. Try again.")]
+    TimedOut,
     #[error("Google did not grant both required read-only scopes")]
     MissingScope,
     #[error("Google account identity changed")]
@@ -284,7 +288,9 @@ fn receive_code(
     listener
         .set_nonblocking(true)
         .map_err(|_| AuthError::Network)?;
-    let deadline = Instant::now() + Duration::from_secs(180);
+    // Google's unverified-app warning and two-step verification can take minutes; a
+    // closed listener would leave the browser on "refused to connect".
+    let deadline = Instant::now() + SIGN_IN_WAIT;
     while Instant::now() < deadline {
         match listener.accept() {
             Ok((mut socket, peer)) => {
@@ -326,7 +332,7 @@ fn receive_code(
             Err(_) => return Err(AuthError::Network),
         }
     }
-    Err(AuthError::Authorization)
+    Err(AuthError::TimedOut)
 }
 
 fn parse_callback(request: &str, port: u16, expected_state: &str) -> Result<String, AuthError> {
