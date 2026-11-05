@@ -7,6 +7,8 @@ fn main() {
             "connect_google",
             "list_agents",
             "register_agent",
+            "get_overview",
+            "list_activity",
             "list_incidents",
             "get_incident",
             "resolve_incident",
