@@ -9,8 +9,7 @@ export type Route =
   | { page: "activity" }
   | { page: "rules" }
   | { page: "boundary"; id: string | null }
-  | { page: "settings" }
-  | { page: "notification-test"; action: "review" | "expected" };
+  | { page: "settings" };
 
 export function parse(hash: string): Route {
   const path = hash.replace(/^#\/?/, "");
@@ -28,8 +27,6 @@ export function parse(hash: string): Route {
       return { page: "rules" };
     case "settings":
       return { page: "settings" };
-    case "notification-test":
-      return { page: "notification-test", action: rest[0] === "expected" ? "expected" : "review" };
     default:
       return { page: "overview" };
   }
@@ -51,8 +48,6 @@ export function href(route: Route): string {
       return route.id ? `#/rules/boundary/${route.id}` : "#/rules/new";
     case "settings":
       return "#/settings";
-    case "notification-test":
-      return `#/notification-test/${route.action}`;
   }
 }
 

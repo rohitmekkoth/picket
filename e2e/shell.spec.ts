@@ -37,14 +37,3 @@ test("the browser preview stays local, says it needs the app, and supports the k
   expect(remoteRequests).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("preview.png"), fullPage: true });
 });
-
-test("notification actions select a visible test result", async ({ page }) => {
-  await page.goto("/#/notification-test/review");
-  await expect(page.getByRole("heading", { name: "Review action received" })).toBeVisible();
-  await page.evaluate(() => {
-    window.location.hash = "#/notification-test/expected";
-  });
-  await expect(
-    page.getByRole("heading", { name: "This was expected action received" }),
-  ).toBeVisible();
-});

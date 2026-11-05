@@ -7,7 +7,6 @@ import { listAgents } from "./lib/runtime";
 import { Activity } from "./views/Activity";
 import { BoundaryEditor } from "./views/BoundaryEditor";
 import { Incident } from "./views/Incident";
-import { NotificationTest } from "./views/NotificationTest";
 import { Overview } from "./views/Overview";
 import { Review } from "./views/Review";
 import { Rules } from "./views/Rules";
@@ -25,7 +24,6 @@ const sections: { page: Route["page"]; label: string; icon: IconName }[] = [
 function section(route: Route): Route["page"] {
   if (route.page === "incident") return "review";
   if (route.page === "boundary") return "rules";
-  if (route.page === "notification-test") return "settings";
   return route.page;
 }
 
@@ -109,8 +107,6 @@ function Page({ route }: { route: Route }): ReactNode {
       return <BoundaryEditor id={route.id} />;
     case "settings":
       return <Settings />;
-    case "notification-test":
-      return <NotificationTest action={route.action} />;
   }
 }
 

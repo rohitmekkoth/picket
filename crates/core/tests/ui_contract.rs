@@ -19,6 +19,29 @@ fn names<T: Serialize>(values: &[T]) -> Value {
     )
 }
 
+fn incident_reasons() -> [Reason; 18] {
+    [
+        Reason::AfterRevocation,
+        Reason::Boundary,
+        Reason::ProhibitedAction,
+        Reason::ApprovalMissing,
+        Reason::ExtraTarget,
+        Reason::DifferentCalendarTime,
+        Reason::TooManyActions,
+        Reason::DifferentAction,
+        Reason::OutsideWindow,
+        Reason::ReportNotObserved,
+        Reason::ReportContradicted,
+        Reason::Forwarding,
+        Reason::AppAccess,
+        Reason::Otp,
+        Reason::Purchase,
+        Reason::SignInNeeded,
+        Reason::SourceGap,
+        Reason::SourceDelayed,
+    ]
+}
+
 fn contract() -> Value {
     let actions = [
         Action::EmailSend,
@@ -112,26 +135,7 @@ fn contract() -> Value {
             | NoticeKind::Otp => {}
         }
     }
-    let incident_reasons = [
-        Reason::AfterRevocation,
-        Reason::Boundary,
-        Reason::ProhibitedAction,
-        Reason::ApprovalMissing,
-        Reason::ExtraTarget,
-        Reason::DifferentCalendarTime,
-        Reason::TooManyActions,
-        Reason::DifferentAction,
-        Reason::OutsideWindow,
-        Reason::ReportNotObserved,
-        Reason::ReportContradicted,
-        Reason::Forwarding,
-        Reason::AppAccess,
-        Reason::Otp,
-        Reason::Purchase,
-        Reason::SignInNeeded,
-        Reason::SourceGap,
-        Reason::SourceDelayed,
-    ];
+    let incident_reasons = incident_reasons();
     for reason in &incident_reasons {
         match reason {
             Reason::AfterRevocation
@@ -177,6 +181,58 @@ fn the_ui_contract_lists_every_serialized_variant() -> Result<(), Box<dyn std::e
     assert_eq!(
         current, expected,
         "ui/src/lib/contract.json is out of date; rerun with PICKET_UPDATE_CONTRACT=1"
+    );
+    Ok(())
+}
+
+/// Notification titles are worded in Rust, because alerts post with the window closed.
+/// This records the title of every reason for an email and a calendar incident, with and
+/// without a known agent, so a UI test can check `incidentTitle` gives the same words.
+fn alert_titles() -> Value {
+    use picket_core::{
+        alerts::incident_title,
+        views::{IncidentSummary, Kind, Severity, Status},
+    };
+    let mut cases = Vec::new();
+    for reason in incident_reasons() {
+        for kind in [Kind::Email, Kind::Calendar] {
+            for agent in [Some("Instinct"), None] {
+                let summary = IncidentSummary {
+                    id: "incident/synthetic".into(),
+                    severity: Severity::Review,
+                    status: Status::Open,
+                    kind,
+                    reasons: vec![reason],
+                    agent: agent.map(Into::into),
+                    occurred_at: chrono::DateTime::UNIX_EPOCH,
+                    flagged_at: chrono::DateTime::UNIX_EPOCH,
+                    subject: None,
+                    people: vec![],
+                };
+                cases.push(json!({
+                    "kind": kind,
+                    "reason": reason,
+                    "agent": agent,
+                    "title": incident_title(&summary),
+                }));
+            }
+        }
+    }
+    Value::Array(cases)
+}
+
+#[test]
+fn the_ui_and_notifications_word_incidents_alike() -> Result<(), Box<dyn std::error::Error>> {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/lib/alert-copy.json");
+    let expected = format!("{}\n", serde_json::to_string_pretty(&alert_titles())?);
+    if std::env::var_os("PICKET_UPDATE_CONTRACT").is_some() {
+        std::fs::write(&path, &expected)?;
+    }
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(
+        current, expected,
+        "ui/src/lib/alert-copy.json is out of date; rerun with PICKET_UPDATE_CONTRACT=1"
     );
     Ok(())
 }

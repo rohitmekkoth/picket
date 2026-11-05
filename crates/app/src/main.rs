@@ -1,12 +1,13 @@
 use tauri::{
     Manager,
-    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 #[cfg(target_os = "macos")]
 mod activity;
 #[cfg(target_os = "macos")]
 mod agents;
+#[cfg(target_os = "macos")]
+mod alerts;
 #[cfg(target_os = "macos")]
 mod google_auth;
 #[cfg(target_os = "macos")]
@@ -21,6 +22,7 @@ mod links;
 mod model;
 #[cfg(target_os = "macos")]
 mod rules;
+mod tray;
 #[cfg(target_os = "macos")]
 use std::{
     sync::{
@@ -30,10 +32,9 @@ use std::{
     thread,
     time::Duration,
 };
-use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tracing_subscriber::EnvFilter;
 
-const PROBE_TITLE: &str = "Picket notification test";
+const BACKGROUND_ARG: &str = "--background";
 
 #[cfg(target_os = "macos")]
 struct GoogleState {
@@ -115,28 +116,6 @@ async fn connect_google(
     Ok(())
 }
 
-fn send_notification_probe(app: &tauri::AppHandle) -> tauri_plugin_notification::Result<()> {
-    app.notification()
-        .builder()
-        .title(PROBE_TITLE)
-        .body("Open this test alert or choose an action.")
-        .action_type_id("picket-probe")
-        .show()
-}
-
-fn handle_notification_probe(app: &tauri::AppHandle, action: &str) -> tauri::Result<()> {
-    let route = match action {
-        "tap" | "review" => "#/notification-test/review",
-        "expected" => "#/notification-test/expected",
-        _ => return Ok(()),
-    };
-    show_window(app)?;
-    if let Some(window) = app.get_webview_window("main") {
-        window.eval(format!("window.location.hash = '{route}'"))?;
-    }
-    Ok(())
-}
-
 /// Exposes the portable, read-only diagnostic through the Tauri boundary.
 #[tauri::command]
 fn get_runtime_info(app: tauri::AppHandle) -> picket_core::RuntimeInfo {
@@ -169,17 +148,24 @@ fn show_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Builds a monochrome template icon without loading a runtime asset.
-fn tray_image() -> tauri::image::Image<'static> {
-    let mut rgba = vec![0; 18 * 18 * 4];
-    for y in 3..15 {
-        for x in 3..15 {
-            if (4..7).contains(&x) || (11..14).contains(&x) || (8..11).contains(&y) {
-                rgba[(y * 18 + x) * 4 + 3] = 255;
+fn on_menu(app: &tauri::AppHandle, id: &str) {
+    match id {
+        "open" => {
+            if let Err(error) = show_window(app) {
+                tracing::error!(%error, "failed to open window");
             }
         }
+        #[cfg(target_os = "macos")]
+        "pause" | "resume" => app.state::<alerts::AlertState>().set_paused(id == "pause"),
+        "quit" => app.exit(0),
+        #[cfg(target_os = "macos")]
+        incident if incident.starts_with("incident/") => {
+            if let Err(reason) = alerts::open_incident(app, incident) {
+                tracing::warn!(reason, "failed to open incident from menu");
+            }
+        }
+        _ => {}
     }
-    tauri::image::Image::new_owned(rgba, 18, 18)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -233,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.manage(LedgerState::default());
                 app.manage(agents::MessagesState::default());
                 app.manage(model::ModelState::default());
+                app.manage(alerts::AlertState::default());
                 agents::start(app.handle().clone());
                 let restore_handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -268,43 +255,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
-            app.notification().register_action_types(vec![
-                ActionType::builder("picket-probe")
-                    .actions(vec![
-                        Action::builder("review", "Review").build(),
-                        Action::builder("expected", "This was expected").build(),
-                    ])
-                    .build(),
-            ])?;
-            let app_handle = app.handle().clone();
-            app.notification().on_action(move |event| {
-                if event.notification().and_then(|item| item.title()) != Some(PROBE_TITLE) {
-                    return;
-                }
-                tracing::info!(
-                    action = event.action_id(),
-                    "notification test action received"
-                );
-                if let Err(error) = handle_notification_probe(&app_handle, event.action_id()) {
-                    tracing::error!(%error, "failed to handle notification test action");
-                }
-            })?;
-            // Left click restores the window; the context menu also supports quit.
-            let open = MenuItem::with_id(app, "open", "Open Picket", true, None::<&str>)?;
-            let test_notification = MenuItem::with_id(
-                app,
-                "test-notification",
-                "Send test notification",
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Picket", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &test_notification, &quit])?;
-            TrayIconBuilder::with_id("picket")
-                .icon(tray_image())
+            // Left click restores the window; the menu carries status and actions.
+            let initial = tray::initial();
+            TrayIconBuilder::with_id(tray::TRAY_ID)
+                .icon(tray::icon(initial.state))
                 .icon_as_template(true)
-                .tooltip("Picket - development foundation")
-                .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -317,28 +272,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::error!(%error, "failed to open window from tray");
                     }
                 })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Err(error) = show_window(app) {
-                            tracing::error!(%error, "failed to open window");
-                        }
-                    }
-                    "test-notification" => {
-                        if let Err(error) = send_notification_probe(app) {
-                            tracing::error!(%error, "failed to send notification test");
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
+                .on_menu_event(|app, event| on_menu(app, event.id.as_ref()))
                 .build(app)?;
-            if std::env::var_os("PICKET_NOTIFICATION_PROBE").is_some() {
-                if let Some(window) = app.get_webview_window("main") {
-                    window.hide()?;
-                }
+            tray::apply(app.handle(), &initial)?;
+            #[cfg(target_os = "macos")]
+            alerts::start(app.handle())?;
+            // A background launch, such as at login, stays in the menu bar; macOS shows
+            // banners only for apps that are not frontmost.
+            if std::env::args().any(|arg| arg == BACKGROUND_ARG) {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                send_notification_probe(app.handle())?;
+            } else {
+                show_window(app.handle())?;
             }
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Picket started");
             Ok(())

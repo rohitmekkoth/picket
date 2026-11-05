@@ -373,7 +373,7 @@ fn an_engine_upgrade_reassesses_history_without_a_burst_of_alerts() -> Result<()
         .first()
         .map(|item| item.id.clone())
         .ok_or("alert missing")?;
-    store.mark_notification_delivered(&id)?;
+    store.mark_notification_delivered(&id, chrono::Utc::now(), false)?;
     drop(store);
     // An older engine assessed this database; its findings are revised on open.
     let connection = rusqlite::Connection::open(&path)?;
