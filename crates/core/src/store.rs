@@ -15,6 +15,7 @@ use crate::event::{
 use crate::{
     engine::{Assessor, Finding},
     incidents::{self, ENGINE_VERSION, OutboxBatch, ReconcileSummary},
+    views::{self, FindingRecord, IncidentDetail, IncidentSummary},
 };
 
 const SCHEMA_VERSION: i64 = 6;
@@ -547,6 +548,90 @@ impl Store {
         .collect()
     }
 
+    /// Every incident: a finding group with a revision that was ever routed to review.
+    pub fn incidents(&mut self) -> Result<Vec<IncidentSummary>> {
+        let groups = review_groups(&self.connection, None)?;
+        let agents = self.agents()?;
+        let evidence = self.evidence()?;
+        Ok(views::incidents(evidence, &groups, &agents))
+    }
+
+    pub fn incident(&mut self, id: &str) -> Result<Option<IncidentDetail>> {
+        let groups = review_groups(&self.connection, Some(id))?;
+        let Some(group) = groups.get(id) else {
+            return Ok(None);
+        };
+        let agents = self.agents()?;
+        if self.assessor.is_none() {
+            self.assessor = Some(load_assessor(&self.connection)?);
+        }
+        let Some(assessor) = &self.assessor else {
+            return Err(StoreError::Unavailable);
+        };
+        Ok(views::incident(
+            assessor.evidence(),
+            group,
+            &agents,
+            &MessageLookup(&self.connection),
+        ))
+    }
+
+    /// Records the user's decision on every finding of an incident: expected, not
+    /// expected, or withdrawn (`None`). It never edits findings; the engine reassesses.
+    /// Returns false when no such incident exists.
+    pub fn decide(&mut self, id: &str, expected: Option<bool>, now: DateTime<Utc>) -> Result<bool> {
+        let groups = review_groups(&self.connection, Some(id))?;
+        let Some(group) = groups.get(id) else {
+            return Ok(false);
+        };
+        let stamp = now
+            .timestamp_nanos_opt()
+            .ok_or(StoreError::Invalid("decision time out of range"))?;
+        let events = group
+            .iter()
+            .filter_map(|record| record.revisions.last().map(|(_, finding)| finding))
+            .filter_map(|finding| {
+                let account = views::finding_account(finding)?;
+                Some(Event {
+                    schema_version: 1,
+                    key: EventKey {
+                        account: account.to_owned(),
+                        source: Source::Picket,
+                        resource: format!("feedback/{}", finding.id),
+                        revision: stamp.to_string(),
+                    },
+                    occurred_at: now,
+                    ingested_at: now,
+                    source_time_quality: None,
+                    adapter: None,
+                    payload: EventPayload::Feedback(crate::event::Feedback {
+                        finding: finding.id.clone(),
+                        expected,
+                        actor: None,
+                    }),
+                })
+            })
+            .collect();
+        self.commit(
+            Batch {
+                events,
+                ..Batch::default()
+            },
+            now,
+        )?;
+        Ok(true)
+    }
+
+    fn evidence(&mut self) -> Result<&crate::engine::Evidence> {
+        if self.assessor.is_none() {
+            self.assessor = Some(load_assessor(&self.connection)?);
+        }
+        self.assessor
+            .as_ref()
+            .map(Assessor::evidence)
+            .ok_or(StoreError::Unavailable)
+    }
+
     pub fn pending_notifications(&self) -> Result<OutboxBatch> {
         incidents::pending(&self.connection)
     }
@@ -800,6 +885,77 @@ fn read_events(connection: &Connection) -> Result<Vec<StoredEvent>> {
         })
     })
     .collect()
+}
+
+/// Revisions of every finding in groups ever routed to review, by group. Payloads are
+/// stored as JSON text in BLOB columns, so they are cast before JSON functions read them.
+fn review_groups(
+    connection: &Connection,
+    only: Option<&str>,
+) -> Result<BTreeMap<String, Vec<FindingRecord>>> {
+    let mut statement = connection.prepare(
+        "WITH flagged AS (
+           SELECT DISTINCT json_extract(CAST(payload AS TEXT), '$.group') AS grp
+           FROM assessment_revisions
+           WHERE json_extract(CAST(payload AS TEXT), '$.route') <> 'Timeline'
+             AND (?1 IS NULL OR json_extract(CAST(payload AS TEXT), '$.group') = ?1)
+         )
+         SELECT finding, assessed_at, payload FROM assessment_revisions
+         WHERE json_extract(CAST(payload AS TEXT), '$.group') IN (SELECT grp FROM flagged)
+         ORDER BY finding, revision",
+    )?;
+    let rows = statement.query_map([only], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    let mut findings: BTreeMap<String, FindingRecord> = BTreeMap::new();
+    for row in rows {
+        let (finding, assessed_at, payload) = row?;
+        let at = DateTime::parse_from_rfc3339(&assessed_at)
+            .map_err(|_| StoreError::Invalid("invalid assessment time"))?
+            .with_timezone(&Utc);
+        findings
+            .entry(finding)
+            .or_insert_with(|| FindingRecord {
+                revisions: Vec::new(),
+            })
+            .revisions
+            .push((at, serde_json::from_slice(&payload)?));
+    }
+    let mut groups: BTreeMap<String, Vec<FindingRecord>> = BTreeMap::new();
+    for record in findings.into_values() {
+        if let Some((_, finding)) = record.revisions.last() {
+            groups
+                .entry(finding.group.clone())
+                .or_default()
+                .push(record);
+        }
+    }
+    Ok(groups)
+}
+
+struct MessageLookup<'a>(&'a Connection);
+
+impl views::Messages for MessageLookup<'_> {
+    fn message(&self, key: &EventKey) -> Option<crate::event::MessageObserved> {
+        let canonical: Vec<u8> = self
+            .0
+            .query_row(
+                "SELECT canonical FROM events WHERE account=?1 AND source=?2 AND resource=?3
+                 AND revision=?4 AND kind='message'",
+                params![key.account, key.source.as_str(), key.resource, key.revision],
+                |row| row.get(0),
+            )
+            .ok()?;
+        let event: Event = serde_json::from_slice(&canonical).ok()?;
+        match event.payload {
+            EventPayload::Message(message) => Some(message),
+            _ => None,
+        }
+    }
 }
 
 fn load_assessor(connection: &Connection) -> Result<Assessor> {
@@ -1411,6 +1567,7 @@ mod tests {
             connected_since: None,
             enabled: true,
             region: None,
+            revoked_at: None,
         });
         let mut forged = registration.clone();
         forged.key.source = Source::Messages;

@@ -17,6 +17,7 @@ pub mod ledger;
 pub mod messages;
 pub mod review;
 pub mod store;
+pub mod views;
 
 /// Read-only process details shared by the CLI and desktop shell.
 #[derive(Debug, Serialize)]

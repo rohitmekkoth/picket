@@ -253,6 +253,10 @@ pub struct AgentRegistration {
     /// The user's ISO 3166 region, for reading national-format numbers in Messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// When the user marked the agent revoked. Picket records it; it does not revoke or
+    /// verify the agent's provider access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
