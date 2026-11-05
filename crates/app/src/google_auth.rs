@@ -150,6 +150,21 @@ fn existing_account_id(email: &str) -> Result<Option<String>, AuthError> {
     }
 }
 
+/// The OAuth client of the saved connection, for signing in again with one click.
+pub fn stored_client() -> Result<Option<(String, String)>, AuthError> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|_| AuthError::Keychain)?;
+    match entry.get_password() {
+        Ok(value) => {
+            let stored: Credentials =
+                serde_json::from_str(&value).map_err(|_| AuthError::Keychain)?;
+            Ok(Some((stored.client_id, stored.client_secret)))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(AuthError::Keychain),
+    }
+}
+
 pub fn restore() -> Result<Option<Session>, AuthError> {
     let entry =
         keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|_| AuthError::Keychain)?;

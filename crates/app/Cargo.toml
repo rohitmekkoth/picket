@@ -27,6 +27,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid = { version = "1.28.0", features = ["v4"] }
 iana-time-zone = "0.1.65"
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
 
 [lints]
 workspace = true

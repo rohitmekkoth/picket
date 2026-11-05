@@ -21,6 +21,13 @@ fn main() {
             "delete_boundary",
             "model_status",
             "download_model",
+            "reconnect_google",
+            "get_settings",
+            "update_settings",
+            "set_start_at_login",
+            "verify_log",
+            "export_incident",
+            "export_all",
         ]),
     ))
     .unwrap_or_else(|error| panic!("failed to build Picket app metadata: {error}"));

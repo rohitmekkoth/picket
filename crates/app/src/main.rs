@@ -22,6 +22,8 @@ mod links;
 mod model;
 #[cfg(target_os = "macos")]
 mod rules;
+#[cfg(target_os = "macos")]
+mod settings;
 mod tray;
 #[cfg(target_os = "macos")]
 use std::{
@@ -116,6 +118,22 @@ async fn connect_google(
     Ok(())
 }
 
+/// Signs in again with the saved client after Google rejected the grant.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn reconnect_google(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GoogleState>,
+) -> Result<(), String> {
+    let (client_id, client_secret) =
+        tauri::async_runtime::spawn_blocking(google_auth::stored_client)
+            .await
+            .map_err(|_| "Google connection task failed".to_string())?
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "No saved Google connection".to_string())?;
+    connect_google(app, state, client_id, client_secret).await
+}
+
 /// Exposes the portable, read-only diagnostic through the Tauri boundary.
 #[tauri::command]
 fn get_runtime_info(app: tauri::AppHandle) -> picket_core::RuntimeInfo {
@@ -156,7 +174,20 @@ fn on_menu(app: &tauri::AppHandle, id: &str) {
             }
         }
         #[cfg(target_os = "macos")]
-        "pause" | "resume" => app.state::<alerts::AlertState>().set_paused(id == "pause"),
+        "pause" | "resume" => {
+            if let Err(reason) = app
+                .state::<alerts::AlertState>()
+                .set_paused(app, id == "pause")
+            {
+                tracing::warn!(reason, "failed to pause alerts");
+            }
+        }
+        #[cfg(target_os = "macos")]
+        "summary" => {
+            if let Err(reason) = alerts::open(app, "#/overview") {
+                tracing::warn!(reason, "failed to open the summary");
+            }
+        }
         "quit" => app.exit(0),
         #[cfg(target_os = "macos")]
         incident if incident.starts_with("incident/") => {
@@ -185,12 +216,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::error!(%error, "failed to show existing window");
             }
         }))
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        // Rust-only: the webview is granted no dialog or autostart permission.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![BACKGROUND_ARG]),
+        ));
     #[cfg(target_os = "macos")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         get_runtime_info,
         google_connected,
         connect_google,
+        reconnect_google,
         agents::list_agents,
         agents::register_agent,
         activity::get_overview,
@@ -206,7 +244,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rules::save_boundary,
         rules::delete_boundary,
         model::model_status,
-        model::download_model
+        model::download_model,
+        settings::get_settings,
+        settings::update_settings,
+        settings::set_start_at_login,
+        settings::verify_log,
+        settings::export_incident,
+        settings::export_all
     ]);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.invoke_handler(tauri::generate_handler![get_runtime_info]);
@@ -244,6 +288,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                             Ok(None) => break,
+                            Err(google_auth::AuthError::Authorization) => {
+                                tracing::warn!("Google rejected the saved sign-in");
+                                if let Ok(mut status) = state.status.lock() {
+                                    *status = "reconnect_required";
+                                }
+                                break;
+                            }
                             Err(error) => {
                                 tracing::warn!(%error, "Google connection unavailable");
                                 if let Ok(mut status) = state.status.lock() {
