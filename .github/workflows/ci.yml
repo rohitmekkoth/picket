@@ -19,7 +19,7 @@ jobs:
   # Verify the renderer in both supported browser engines and window sizes.
   frontend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -30,7 +30,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm audit --prod
-      - run: pnpm exec playwright install --with-deps chromium webkit
+      # A stalled browser download once used up the whole job; retry it on its own clock.
+      - name: Install Playwright browsers
+        run: |
+          for attempt in 1 2 3; do
+            timeout 300 pnpm exec playwright install --with-deps chromium webkit && exit 0
+            echo "Browser install attempt $attempt did not finish"
+          done
+          exit 1
       - run: pnpm test:e2e
 
   # Prove the domain and CLI remain independent of macOS frameworks.
