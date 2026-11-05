@@ -1,5 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use picket_core::{
+    alerts::{self, Target},
     engine::{ActorEvidence, FindingDetail, Route},
     event::{
         AccountPolicy, Action, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
@@ -7,6 +8,7 @@ use picket_core::{
     },
     incidents::OutboxKind,
     store::Store,
+    views::Status,
 };
 
 fn at(minute: i64) -> DateTime<Utc> {
@@ -83,8 +85,8 @@ fn restart_and_retry_keep_one_alert_and_the_users_decision_sends_nothing_more()
     let mut reopened = Store::open(&path)?;
     assert_eq!(reopened.reconcile(at(10))?.revised, 0);
     assert_eq!(reopened.pending_notifications()?.len(), 1);
-    assert!(reopened.mark_notification_delivered(&first_id)?);
-    assert!(!reopened.mark_notification_delivered(&first_id)?);
+    assert!(reopened.mark_notification_delivered(&first_id, chrono::Utc::now(), false)?);
+    assert!(!reopened.mark_notification_delivered(&first_id, chrono::Utc::now(), false)?);
     let finding = reopened
         .current_findings()?
         .into_iter()
@@ -230,7 +232,7 @@ fn collector_gap_is_a_separate_finding_and_recovery_corrects_it()
     let alert = store.pending_notifications()?;
     assert_eq!(alert.len(), 1);
     assert_eq!(alert[0].kind, OutboxKind::Alert);
-    assert!(store.mark_notification_delivered(&alert[0].id)?);
+    assert!(store.mark_notification_delivered(&alert[0].id, chrono::Utc::now(), false)?);
     let healthy = event(
         Source::Gmail,
         "coverage-2",
@@ -299,9 +301,38 @@ fn outbox_batch_discloses_more_work_instead_of_silently_truncating()
     let batch = store.pending_notifications()?;
     assert_eq!(batch.len(), 128);
     assert!(batch.has_more);
-    assert!(store.mark_notification_delivered(&batch[0].id)?);
+    assert!(store.mark_notification_delivered(&batch[0].id, chrono::Utc::now(), false)?);
     let next = store.pending_notifications()?;
     assert_eq!(next.len(), 128);
     assert!(!next.has_more);
+    Ok(())
+}
+
+#[test]
+fn delivery_posts_the_incident_once_and_pacing_survives_a_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("synthetic.db");
+    let mut store = Store::open(&path)?;
+    store.append_assessed(&policy(), at(0))?;
+    store.append_assessed(&effect(), at(10))?;
+    let pending = store.pending_alerts()?;
+    assert!(pending.unshowable.is_empty());
+    assert_eq!(pending.alerts.len(), 1);
+    let alert = &pending.alerts[0];
+    assert!(alert.urgent && !alert.correction);
+    assert_eq!(alert.incident.status, Status::Open);
+
+    let posts = alerts::plan(&pending.alerts, store.last_paced_delivery()?, at(10), &Utc);
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].target, Target::Incident(alert.incident.id.clone()));
+    for id in &posts[0].outbox {
+        assert!(store.mark_notification_delivered(id, at(10), true)?);
+    }
+    drop(store);
+
+    let mut reopened = Store::open(&path)?;
+    assert!(reopened.pending_alerts()?.alerts.is_empty());
+    assert_eq!(reopened.last_paced_delivery()?, Some(at(10)));
     Ok(())
 }

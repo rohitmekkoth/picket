@@ -5,6 +5,7 @@ use serde::Serialize;
 
 pub mod activity;
 pub mod agent;
+pub mod alerts;
 pub mod calendar;
 pub mod engine;
 pub mod eval;

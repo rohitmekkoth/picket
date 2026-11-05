@@ -13,12 +13,13 @@ use crate::event::{
     EventPayload, Level, RuleSet, Snapshot, SnapshotValue, Source, canonical_json,
 };
 use crate::{
-    engine::{Assessor, Finding},
-    incidents::{self, ENGINE_VERSION, OutboxBatch, ReconcileSummary},
+    alerts::PendingAlert,
+    engine::{Assessor, Finding, Route},
+    incidents::{self, ENGINE_VERSION, OutboxBatch, OutboxKind, ReconcileSummary},
     views::{self, FindingRecord, IncidentDetail, IncidentSummary, PreviewView, RulesView},
 };
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -78,6 +79,15 @@ pub struct CoverageReport {
     pub account: String,
     pub source: Source,
     pub coverage: Coverage,
+}
+
+/// The notification queue as the delivery worker sees it.
+#[derive(Clone, Debug)]
+pub struct PendingAlerts {
+    pub alerts: Vec<PendingAlert>,
+    pub unshowable: Vec<String>,
+    /// More items are pending than one read returns.
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,6 +241,16 @@ impl Store {
                 "BEGIN IMMEDIATE;
                  CREATE INDEX IF NOT EXISTS events_kind ON events(kind, seq);
                  PRAGMA user_version=6;
+                 COMMIT;",
+            )?;
+        }
+        if version < 7 {
+            // Delivery time and pacing let the review interval survive a restart.
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE notification_outbox ADD COLUMN delivered_at TEXT;
+                 ALTER TABLE notification_outbox ADD COLUMN paced INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version=7;
                  COMMIT;",
             )?;
         }
@@ -774,12 +794,97 @@ impl Store {
     }
 
     /// A delivery worker acknowledges only after handing a notification to the OS.
-    pub fn mark_notification_delivered(&mut self, id: &str) -> Result<bool> {
+    /// `paced` marks a post that counts against the review interval.
+    pub fn mark_notification_delivered(
+        &mut self,
+        id: &str,
+        at: DateTime<Utc>,
+        paced: bool,
+    ) -> Result<bool> {
         Ok(self.connection.execute(
-            "UPDATE notification_outbox SET state='delivered',attempts=attempts+1
+            "UPDATE notification_outbox SET state='delivered',attempts=attempts+1,
+               delivered_at=?2,paced=?3
              WHERE id=?1 AND state='pending'",
+            params![id, at.to_rfc3339(), paced],
+        )? == 1)
+    }
+
+    /// When the last notification counted against the review interval was posted.
+    pub fn last_paced_delivery(&self) -> Result<Option<DateTime<Utc>>> {
+        let at: Option<String> = self.connection.query_row(
+            "SELECT MAX(delivered_at) FROM notification_outbox WHERE paced=1",
+            [],
+            |row| row.get(0),
+        )?;
+        at.map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|time| time.with_timezone(&Utc))
+                .map_err(|_| StoreError::Invalid("invalid delivery time"))
+        })
+        .transpose()
+    }
+
+    /// Pending notifications with the incident each belongs to, for the delivery worker.
+    /// An item whose incident cannot be shown is listed in `unshowable` to be cancelled.
+    pub fn pending_alerts(&mut self) -> Result<PendingAlerts> {
+        let batch = self.pending_notifications()?;
+        let mut queued = Vec::with_capacity(batch.len());
+        let mut groups = BTreeMap::new();
+        for item in batch.iter() {
+            let payload: Vec<u8> = self.connection.query_row(
+                "SELECT payload FROM assessment_revisions WHERE finding=?1 AND revision=?2",
+                params![item.finding, item.revision],
+                |row| row.get(0),
+            )?;
+            let finding: Finding = serde_json::from_slice(&payload)?;
+            if !groups.contains_key(&finding.group) {
+                groups.extend(review_groups(&self.connection, Some(&finding.group))?);
+            }
+            queued.push((item.clone(), finding));
+        }
+        let agents = self.agents()?;
+        let evidence = self.evidence()?;
+        let summaries: BTreeMap<String, IncidentSummary> =
+            views::incidents(evidence, &groups, &agents)
+                .into_iter()
+                .map(|summary| (summary.id.clone(), summary))
+                .collect();
+        let mut result = PendingAlerts {
+            alerts: Vec::new(),
+            unshowable: Vec::new(),
+            has_more: batch.has_more,
+        };
+        for (item, finding) in queued {
+            match summaries.get(&finding.group) {
+                Some(incident) => result.alerts.push(PendingAlert {
+                    outbox: item.id,
+                    incident: incident.clone(),
+                    urgent: finding.route == Route::HighReview,
+                    correction: item.kind == OutboxKind::Correction,
+                }),
+                None => result.unshowable.push(item.id),
+            }
+        }
+        Ok(result)
+    }
+
+    /// Withdraws a pending notification that can no longer be shown.
+    pub fn cancel_notification(&mut self, id: &str) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE notification_outbox SET state='cancelled' WHERE id=?1 AND state='pending'",
             [id],
         )? == 1)
+    }
+
+    /// Changes whenever findings are revised or events arrive, so a status display can
+    /// skip recomputing while nothing happened.
+    pub fn change_marker(&self) -> Result<(i64, i64)> {
+        Ok(self.connection.query_row(
+            "SELECT (SELECT COALESCE(MAX(rowid),0) FROM assessment_revisions),
+                    (SELECT COALESCE(MAX(seq),0) FROM events)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
     }
 
     pub fn verify(&self) -> Result<Verification> {

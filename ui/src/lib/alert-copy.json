@@ -1,0 +1,434 @@
+[
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "after_revocation",
+    "title": "Instinct acted after you marked it revoked"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "after_revocation",
+    "title": "Someone acted after you marked it revoked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "after_revocation",
+    "title": "Instinct acted after you marked it revoked"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "after_revocation",
+    "title": "Someone acted after you marked it revoked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "boundary",
+    "title": "An email crossed one of your boundaries"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "boundary",
+    "title": "An email crossed one of your boundaries"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "boundary",
+    "title": "A calendar change crossed one of your boundaries"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "boundary",
+    "title": "A calendar change crossed one of your boundaries"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "prohibited_action",
+    "title": "Instinct did something you told it not to"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "prohibited_action",
+    "title": "Someone did something you told it not to"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "prohibited_action",
+    "title": "Instinct did something you told it not to"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "prohibited_action",
+    "title": "Someone did something you told it not to"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "approval_missing",
+    "title": "Instinct went ahead without your OK"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "approval_missing",
+    "title": "Someone went ahead without your OK"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "approval_missing",
+    "title": "Instinct went ahead without your OK"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "approval_missing",
+    "title": "Someone went ahead without your OK"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "extra_target",
+    "title": "Instinct emailed someone you didn’t mention"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "extra_target",
+    "title": "Someone emailed someone you didn’t mention"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "extra_target",
+    "title": "Instinct invited someone you didn’t mention"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "extra_target",
+    "title": "Someone invited someone you didn’t mention"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "different_calendar_time",
+    "title": "Instinct booked a different time than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "different_calendar_time",
+    "title": "Someone booked a different time than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "different_calendar_time",
+    "title": "Instinct booked a different time than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "different_calendar_time",
+    "title": "Someone booked a different time than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "too_many_actions",
+    "title": "Instinct did it more times than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "too_many_actions",
+    "title": "Someone did it more times than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "too_many_actions",
+    "title": "Instinct did it more times than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "too_many_actions",
+    "title": "Someone did it more times than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "different_action",
+    "title": "Instinct did a different kind of thing than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "different_action",
+    "title": "Someone did a different kind of thing than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "different_action",
+    "title": "Instinct did a different kind of thing than you asked"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "different_action",
+    "title": "Someone did a different kind of thing than you asked"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "outside_window",
+    "title": "Instinct acted outside the time you gave"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "outside_window",
+    "title": "Someone acted outside the time you gave"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "outside_window",
+    "title": "Instinct acted outside the time you gave"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "outside_window",
+    "title": "Someone acted outside the time you gave"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "report_not_observed",
+    "title": "Instinct said it did something Picket didn’t see"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "report_not_observed",
+    "title": "Someone said it did something Picket didn’t see"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "report_not_observed",
+    "title": "Instinct said it did something Picket didn’t see"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "report_not_observed",
+    "title": "Someone said it did something Picket didn’t see"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "report_contradicted",
+    "title": "Instinct described it differently than it happened"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "report_contradicted",
+    "title": "Someone described it differently than it happened"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "report_contradicted",
+    "title": "Instinct described it differently than it happened"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "report_contradicted",
+    "title": "Someone described it differently than it happened"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "forwarding",
+    "title": "Mail forwarding may have been turned on"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "forwarding",
+    "title": "Mail forwarding may have been turned on"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "forwarding",
+    "title": "Mail forwarding may have been turned on"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "forwarding",
+    "title": "Mail forwarding may have been turned on"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "app_access",
+    "title": "A new app may have access to your Google account"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "app_access",
+    "title": "A new app may have access to your Google account"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "app_access",
+    "title": "A new app may have access to your Google account"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "app_access",
+    "title": "A new app may have access to your Google account"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "otp",
+    "title": "A sign-in or verification code arrived"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "otp",
+    "title": "A sign-in or verification code arrived"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "otp",
+    "title": "A sign-in or verification code arrived"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "otp",
+    "title": "A sign-in or verification code arrived"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "purchase",
+    "title": "A purchase or order confirmation arrived"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "purchase",
+    "title": "A purchase or order confirmation arrived"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "purchase",
+    "title": "A purchase or order confirmation arrived"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "purchase",
+    "title": "A purchase or order confirmation arrived"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "sign_in_needed",
+    "title": "Picket needs you to sign in to Google again"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "sign_in_needed",
+    "title": "Picket needs you to sign in to Google again"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "sign_in_needed",
+    "title": "Picket needs you to sign in to Google again"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "sign_in_needed",
+    "title": "Picket needs you to sign in to Google again"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "source_gap",
+    "title": "Picket couldn’t see everything for a while"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "source_gap",
+    "title": "Picket couldn’t see everything for a while"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "source_gap",
+    "title": "Picket couldn’t see everything for a while"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "source_gap",
+    "title": "Picket couldn’t see everything for a while"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "email",
+    "reason": "source_delayed",
+    "title": "Picket is catching up"
+  },
+  {
+    "agent": null,
+    "kind": "email",
+    "reason": "source_delayed",
+    "title": "Picket is catching up"
+  },
+  {
+    "agent": "Instinct",
+    "kind": "calendar",
+    "reason": "source_delayed",
+    "title": "Picket is catching up"
+  },
+  {
+    "agent": null,
+    "kind": "calendar",
+    "reason": "source_delayed",
+    "title": "Picket is catching up"
+  }
+]
