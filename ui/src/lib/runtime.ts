@@ -23,6 +23,7 @@ const googleStatusSchema = z.enum([
   "monitoring",
   "degraded",
   "unavailable",
+  "reconnect_required",
 ]);
 export type GoogleStatus = z.infer<typeof googleStatusSchema>;
 
@@ -34,6 +35,12 @@ export async function getGoogleStatus(): Promise<GoogleStatus | null> {
 export async function connectGoogle(clientId: string, clientSecret: string): Promise<void> {
   if (!isTauri()) throw new Error("Open the desktop app to connect Google.");
   await invoke("connect_google", { clientId, clientSecret });
+}
+
+/** Signs in again with the saved client, after Google rejected Picket's sign-in. */
+export async function reconnectGoogle(): Promise<void> {
+  if (!isTauri()) throw new Error("Open the desktop app to connect Google.");
+  await invoke("reconnect_google");
 }
 
 const agentsSchema = z.object({

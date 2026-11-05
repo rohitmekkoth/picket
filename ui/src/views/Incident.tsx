@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge, DesktopOnly, Empty, Failure, Icon } from "../components/ui";
 import {
+  exportIncident,
   getIncident,
   type IncidentDetail,
   openLink,
@@ -289,6 +290,27 @@ const historyText: Record<IncidentDetail["history"][number]["kind"], (agent: str
   marked_not_ok: () => "You said it wasn’t OK",
 };
 
+/** Saves the incident as a Markdown report, whatever its status. */
+function ExportReport({ id }: { id: string }) {
+  const save = useMutation({ mutationFn: () => exportIncident(id) });
+  return (
+    <div className="page-footer">
+      <span className="muted" role="status">
+        {save.data ? "Report saved." : "Keep or share a copy of what happened."}
+      </span>
+      <button
+        type="button"
+        className="button small"
+        disabled={save.isPending}
+        onClick={() => save.mutate()}
+      >
+        {save.isPending ? "Saving…" : "Export report…"}
+      </button>
+      {save.isError && <Failure error={save.error} />}
+    </div>
+  );
+}
+
 function NextSteps({
   incident,
   agentId,
@@ -493,6 +515,7 @@ export function Incident({ id }: { id: string }) {
           ))}
         </ol>
       </section>
+      <ExportReport id={data.id} />
     </div>
   );
 }

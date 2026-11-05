@@ -88,6 +88,13 @@ fn menu(app: &tauri::AppHandle, view: &View) -> tauri::Result<Menu<tauri::Wry>> 
         true,
         None::<&str>,
     )?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "summary",
+        "Today’s summary",
+        true,
+        None::<&str>,
+    )?)?;
     let (pause_id, pause_label) = if view.paused {
         ("resume", "Resume alerts")
     } else {

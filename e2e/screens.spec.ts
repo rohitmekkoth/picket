@@ -58,6 +58,8 @@ test("an incident tells the story and records the decision", async ({ page }, te
   await page.getByRole("button", { name: "This wasn’t OK" }).click();
   await expect(page.getByRole("heading", { name: "What you can do now" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Mark revoked" })).toBeVisible();
+  await page.getByRole("button", { name: "Export report…" }).click();
+  await expect(page.getByText("Report saved.")).toBeVisible();
   await settle(page, "incident-not-ok", testInfo);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "This was fine" })).toBeVisible();
@@ -114,6 +116,31 @@ test("settings keep the connection, agents and model together", async ({ page },
   await page.getByRole("button", { name: "Add another agent" }).click();
   await expect(page.getByLabel("Agent name")).toBeVisible();
   await expect(page.getByText("iMessage agent · +15550104477")).toBeVisible();
+  await expect(page.getByLabel("Daily summary")).toHaveValue("1260");
+  await page.getByLabel("Keep history for").selectOption("90");
+  await page.getByRole("button", { name: "Check now" }).click();
+  await expect(
+    page.getByText("The log checks out: 1,657 entries, none changed or missing."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Export…" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  const saved = (await calls(page)).filter((call) => call.cmd === "update_settings");
+  expect(saved.map((call) => call.args.patch)).toEqual([{ retentionDays: 90 }]);
   await settle(page, "settings", testInfo);
+  expect(problems).toEqual([]);
+});
+
+test("a rejected Google sign-in is the first thing the overview says", async ({
+  page,
+}, testInfo) => {
+  const problems = guard(page);
+  await mockDesktop(page, { google_connected: "reconnect_required" });
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Picket isn’t watching Gmail or Calendar" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Sign in again" }).click();
+  expect((await calls(page)).some((call) => call.cmd === "reconnect_google")).toBe(true);
+  await settle(page, "overview-reconnect", testInfo);
   expect(problems).toEqual([]);
 });

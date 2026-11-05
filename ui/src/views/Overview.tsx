@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useAgentName } from "../App";
 import { Badge, DesktopOnly, Empty, Failure, Icon, Segmented } from "../components/ui";
@@ -11,7 +11,7 @@ import {
 import { activityLine, incidentTitle, people, quoted, verdictLabel } from "../lib/copy";
 import { longDate, period, type Range, rangeWords, when } from "../lib/format";
 import { href } from "../lib/router";
-import { getModel, listAgents } from "../lib/runtime";
+import { getGoogleStatus, getModel, listAgents, reconnectGoogle } from "../lib/runtime";
 
 const ranges: { value: Range; label: string }[] = [
   { value: "today", label: "Today" },
@@ -152,6 +152,42 @@ function Sources({ data, agent }: { data: Data; agent: string | null }) {
   );
 }
 
+/** Google rejected the saved sign-in: say so first, with the one action that fixes it. */
+function Reconnect() {
+  const client = useQueryClient();
+  const google = useQuery({
+    queryKey: ["google-status"],
+    queryFn: getGoogleStatus,
+    refetchInterval: 5000,
+  });
+  const reconnect = useMutation({
+    mutationFn: () => reconnectGoogle(),
+    onSuccess: () => client.invalidateQueries(),
+  });
+  if (google.data !== "reconnect_required") return null;
+  return (
+    <section className="banner" aria-labelledby="reconnect-heading">
+      <span className="setting-text">
+        <h2 id="reconnect-heading" className="banner-title">
+          Picket isn’t watching Gmail or Calendar
+        </h2>
+        <span className="caption">
+          Google stopped accepting Picket’s sign-in. Sign in again to pick up where it left off.
+        </span>
+      </span>
+      <button
+        type="button"
+        className="button small primary"
+        disabled={reconnect.isPending}
+        onClick={() => reconnect.mutate()}
+      >
+        {reconnect.isPending ? "Waiting for Google…" : "Sign in again"}
+      </button>
+      {reconnect.isError && <Failure error={reconnect.error} />}
+    </section>
+  );
+}
+
 export function Overview() {
   const [range, setRange] = useState<Range>("today");
   const agent = useAgentName();
@@ -180,6 +216,7 @@ export function Overview() {
         <Segmented label="Period" value={range} options={ranges} onChange={setRange} />
       </header>
 
+      <Reconnect />
       {overview.isError && <Failure error={overview.error} />}
       {open.length > 0 && (
         <section aria-labelledby="review-heading">

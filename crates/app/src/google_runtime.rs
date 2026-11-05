@@ -89,6 +89,24 @@ fn run(app: &tauri::AppHandle) -> Result<(), &'static str> {
         }
         if let Err(error) = google_auth::refresh(&mut session) {
             tracing::warn!(%error, "Google authorization unavailable");
+            // A rejected grant needs the person to sign in again; retrying cannot fix it
+            // (plan decision 10). The gap is recorded once and the worker stops.
+            if matches!(error, google_auth::AuthError::Authorization) {
+                let now = Utc::now();
+                for source in [Source::Gmail, Source::Calendar] {
+                    let _ = google_collector::record_failure(
+                        &mut store,
+                        &session.credentials.account_id,
+                        source,
+                        CoverageReason::AuthUnavailable,
+                        now,
+                    );
+                }
+                if let Ok(mut status) = state.status.lock() {
+                    *status = "reconnect_required";
+                }
+                return Ok(());
+            }
             let reason = if matches!(error, google_auth::AuthError::Network) {
                 CoverageReason::RequestFailed
             } else {

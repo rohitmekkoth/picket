@@ -1,6 +1,6 @@
 # M8 product UI and alerts plan
 
-Status: increments 1-3 merged (PRs #39-#41); increment 4 (alerts) in PR #42. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
+Status: increments 1-4 merged (PRs #39-#42); increment 5 (settings) in PR #43. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
 
 ## Outcome
 

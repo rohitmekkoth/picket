@@ -1,7 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { DesktopOnly, Failure } from "../components/ui";
-import { openLink, setAgentRevoked } from "../lib/api";
+import {
+  exportAll,
+  getSettings,
+  openLink,
+  type Settings as SettingsData,
+  type SettingsPatch,
+  setAgentRevoked,
+  setStartAtLogin,
+  updateSettings,
+  type Verification,
+  verifyLog,
+} from "../lib/api";
+import { minutesToTime } from "../lib/format";
 import {
   type AgentMode,
   type Agents,
@@ -12,6 +24,7 @@ import {
   getRuntimeInfo,
   listAgents,
   type Model,
+  reconnectGoogle,
   registerAgent,
 } from "../lib/runtime";
 
@@ -29,7 +42,8 @@ const googleStatus: Record<string, string> = {
   monitoring: "Connected",
   starting: "Connecting",
   degraded: "Having trouble reaching Google",
-  unavailable: "Sign in again",
+  unavailable: "Can’t reach Google",
+  reconnect_required: "Sign in again",
   disconnected: "Not connected",
 };
 
@@ -68,12 +82,17 @@ function GoogleSection() {
       return client.invalidateQueries();
     },
   });
+  const reconnect = useMutation({
+    mutationFn: () => reconnectGoogle(),
+    onSuccess: () => client.invalidateQueries(),
+  });
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     connect.mutate();
   }
   const status = google.data ?? "disconnected";
-  const connected = status === "monitoring" || status === "starting";
+  const connected = status === "monitoring" || status === "starting" || status === "degraded";
+  const rejected = status === "reconnect_required";
   return (
     <section className="settings-group" aria-labelledby="google-heading">
       <h2 id="google-heading">Google account</h2>
@@ -90,7 +109,26 @@ function GoogleSection() {
             {googleStatus[status] ?? status}
           </span>
         </div>
-        {!connected && (
+        {rejected && (
+          <div className="setting">
+            <span className="setting-text">
+              <span className="strong">Google stopped accepting Picket’s sign-in</span>
+              <span className="caption">
+                Until you sign in again, Picket isn’t watching Gmail or Calendar.
+              </span>
+            </span>
+            <button
+              type="button"
+              className="button small primary"
+              disabled={reconnect.isPending}
+              onClick={() => reconnect.mutate()}
+            >
+              {reconnect.isPending ? "Waiting for Google…" : "Sign in again"}
+            </button>
+            {reconnect.isError && <Failure error={reconnect.error} />}
+          </div>
+        )}
+        {!connected && !rejected && (
           <form className="setting setting-form" onSubmit={onSubmit}>
             <label htmlFor="client-id">Google Desktop OAuth client ID</label>
             <input
@@ -114,7 +152,7 @@ function GoogleSection() {
                   ? "Waiting for Google…"
                   : status === "disconnected"
                     ? "Connect Google"
-                    : "Sign in again"}
+                    : "Try again"}
               </button>
             </div>
             {connect.isError && <Failure error={connect.error} />}
@@ -283,6 +321,193 @@ function ModelSection() {
   );
 }
 
+const summaryTimes = Array.from({ length: 36 }, (_, index) => 6 * 60 + index * 30);
+const retentionChoices = [30, 90, 180, 365];
+
+function AlertsSection({ settings }: { settings: SettingsData }) {
+  const client = useQueryClient();
+  const save = useMutation({
+    mutationFn: (patch: SettingsPatch) => updateSettings(patch),
+    onSuccess: (next) => client.setQueryData(["settings"], next),
+  });
+  const login = useMutation({
+    mutationFn: (enabled: boolean) => setStartAtLogin(enabled),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["settings"] }),
+  });
+  const paused = settings.alertsPausedUntil && new Date(settings.alertsPausedUntil) > new Date();
+  return (
+    <section className="settings-group" aria-labelledby="alerts-heading">
+      <h2 id="alerts-heading">Alerts</h2>
+      <div className="card list">
+        <div className="setting">
+          <span className="setting-text">
+            <label className="strong" htmlFor="summary-time">
+              Daily summary
+            </label>
+            <span className="caption">
+              One notification with what your agent did that day and anything Picket couldn’t see.
+            </span>
+          </span>
+          <select
+            id="summary-time"
+            className="setting-control"
+            value={settings.summaryMinutes ?? "off"}
+            disabled={save.isPending}
+            onChange={(event) =>
+              save.mutate({
+                summaryMinutes: event.target.value === "off" ? null : Number(event.target.value),
+              })
+            }
+          >
+            <option value="off">Off</option>
+            {summaryTimes.map((minutes) => (
+              <option key={minutes} value={minutes}>
+                {minutesToTime(minutes)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="setting">
+          <span className="setting-text">
+            <label className="strong" htmlFor="start-at-login">
+              Open at login
+            </label>
+            <span className="caption">
+              Picket starts in the menu bar when you log in, so it doesn’t miss anything.
+            </span>
+          </span>
+          <input
+            id="start-at-login"
+            type="checkbox"
+            className="setting-check"
+            checked={settings.startAtLogin}
+            disabled={login.isPending}
+            onChange={(event) => login.mutate(event.target.checked)}
+          />
+        </div>
+        {paused && settings.alertsPausedUntil && (
+          <div className="setting">
+            <span className="setting-text">
+              <span className="strong">Alerts paused</span>
+              <span className="caption" role="status">
+                Until {minutesToTime(minutesOfDay(settings.alertsPausedUntil))}. Picket keeps
+                watching; held alerts arrive when the pause ends. Resume from the menu bar.
+              </span>
+            </span>
+          </div>
+        )}
+        <div className="setting">
+          <span className="setting-text">
+            <span className="strong">Notifications in macOS</span>
+            <span className="caption">
+              Choose banners or alerts, and whether they show on the lock screen.
+            </span>
+          </span>
+          <button
+            type="button"
+            className="button small"
+            onClick={() => void openLink("notification_settings")}
+          >
+            Open Notifications
+          </button>
+        </div>
+        {(save.isError || login.isError) && <Failure error={save.error ?? login.error} />}
+      </div>
+    </section>
+  );
+}
+
+function minutesOfDay(iso: string): number {
+  const date = new Date(iso);
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function verificationText(result: Verification): string {
+  if (!result.valid) {
+    return `Entry ${result.brokenAt} was changed or removed outside Picket. Export your data to keep a copy of what is there.`;
+  }
+  return `The log checks out: ${result.retainedEvents?.toLocaleString() ?? 0} entries, none changed or missing.`;
+}
+
+function DataSection({ settings }: { settings: SettingsData }) {
+  const client = useQueryClient();
+  const save = useMutation({
+    mutationFn: (patch: SettingsPatch) => updateSettings(patch),
+    onSuccess: (next) => client.setQueryData(["settings"], next),
+  });
+  const verify = useMutation({ mutationFn: () => verifyLog() });
+  const exporting = useMutation({ mutationFn: () => exportAll() });
+  return (
+    <section className="settings-group" aria-labelledby="data-heading">
+      <h2 id="data-heading">Your data</h2>
+      <div className="card list">
+        <div className="setting">
+          <span className="setting-text">
+            <label className="strong" htmlFor="retention">
+              Keep history for
+            </label>
+            <span className="caption">
+              Everything stays on this Mac. Older history is deleted for good.
+            </span>
+          </span>
+          <select
+            id="retention"
+            className="setting-control"
+            value={settings.retentionDays}
+            disabled={save.isPending}
+            onChange={(event) => save.mutate({ retentionDays: Number(event.target.value) })}
+          >
+            {retentionChoices.map((days) => (
+              <option key={days} value={days}>
+                {days === 365 ? "1 year" : `${days} days`}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="setting">
+          <span className="setting-text">
+            <span className="strong">Check the log</span>
+            <span className="caption" role="status">
+              {verify.data
+                ? verificationText(verify.data)
+                : "Each entry is chained to the one before, so a change or deletion shows up."}
+            </span>
+          </span>
+          <button
+            type="button"
+            className="button small"
+            disabled={verify.isPending}
+            onClick={() => verify.mutate()}
+          >
+            {verify.isPending ? "Checking…" : "Check now"}
+          </button>
+        </div>
+        <div className="setting">
+          <span className="setting-text">
+            <span className="strong">Export all data</span>
+            <span className="caption" role="status">
+              {exporting.data
+                ? "Saved."
+                : "Everything Picket keeps, as one JSON file, saved where you choose."}
+            </span>
+          </span>
+          <button
+            type="button"
+            className="button small"
+            disabled={exporting.isPending}
+            onClick={() => exporting.mutate()}
+          >
+            {exporting.isPending ? "Exporting…" : "Export…"}
+          </button>
+        </div>
+        {(save.isError || verify.isError || exporting.isError) && (
+          <Failure error={save.error ?? verify.error ?? exporting.error} />
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AboutSection() {
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
   return (
@@ -318,13 +543,21 @@ function AboutSection() {
 
 export function Settings() {
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
+  const settings = useQuery({
+    queryKey: ["settings"],
+    queryFn: getSettings,
+    refetchInterval: 10_000,
+  });
   if (runtime.isSuccess && runtime.data === null) return <DesktopOnly />;
   return (
     <div className="stack stack-narrow">
       <h1>Settings</h1>
       <GoogleSection />
       <AgentSection />
+      {settings.data && <AlertsSection settings={settings.data} />}
       <ModelSection />
+      {settings.data && <DataSection settings={settings.data} />}
+      {settings.isError && <Failure error={settings.error} />}
       <AboutSection />
     </div>
   );

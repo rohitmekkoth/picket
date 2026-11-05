@@ -335,3 +335,52 @@ export async function openLink(target: LinkTarget, thread?: string): Promise<voi
   if (!isTauri()) throw new Error(desktopOnly);
   await invoke("open_link", { target, thread: thread ?? null });
 }
+
+const settings = z.object({
+  summaryMinutes: z.number().int().min(0).max(1439).nullable(),
+  retentionDays: z.number().int().positive(),
+  alertsPausedUntil: time.nullable(),
+  lastSummaryDay: z.string().nullable(),
+  startAtLogin: z.boolean(),
+});
+export type Settings = z.infer<typeof settings>;
+export type SettingsPatch = { summaryMinutes?: number | null; retentionDays?: number };
+
+export async function getSettings(): Promise<Settings | null> {
+  if (!isTauri()) return null;
+  return settings.parse(await invoke<unknown>("get_settings"));
+}
+
+export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return settings.parse(await invoke<unknown>("update_settings", { patch }));
+}
+
+export async function setStartAtLogin(enabled: boolean): Promise<boolean> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return z.boolean().parse(await invoke<unknown>("set_start_at_login", { enabled }));
+}
+
+const verification = z.object({
+  valid: z.boolean(),
+  throughSequence: z.number().int().nullable(),
+  retainedEvents: z.number().int().nullable(),
+  brokenAt: z.number().int().nullable(),
+});
+export type Verification = z.infer<typeof verification>;
+
+export async function verifyLog(): Promise<Verification> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return verification.parse(await invoke<unknown>("verify_log"));
+}
+
+/** Opens a save panel; resolves false when the person cancels. */
+export async function exportIncident(id: string): Promise<boolean> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return z.boolean().parse(await invoke<unknown>("export_incident", { id }));
+}
+
+export async function exportAll(): Promise<boolean> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return z.boolean().parse(await invoke<unknown>("export_all"));
+}

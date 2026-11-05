@@ -147,7 +147,8 @@ fn legacy_store_migrates_without_losing_events() -> Result<(), Box<dyn std::erro
     drop(original);
     let connection = rusqlite::Connection::open(&path)?;
     connection.execute_batch(
-        "DROP TABLE collector_cursors;
+        "DROP TABLE settings;
+         DROP TABLE collector_cursors;
          DROP TABLE calendar_snapshots;
          DROP TABLE engine_state;
          DROP TABLE notification_outbox;

@@ -190,7 +190,7 @@ fn the_ui_contract_lists_every_serialized_variant() -> Result<(), Box<dyn std::e
 /// without a known agent, so a UI test can check `incidentTitle` gives the same words.
 fn alert_titles() -> Value {
     use picket_core::{
-        alerts::incident_title,
+        alerts::{incident_title, reason_explanation},
         views::{IncidentSummary, Kind, Severity, Status},
     };
     let mut cases = Vec::new();
@@ -214,6 +214,7 @@ fn alert_titles() -> Value {
                     "reason": reason,
                     "agent": agent,
                     "title": incident_title(&summary),
+                    "explanation": reason_explanation(reason),
                 }));
             }
         }

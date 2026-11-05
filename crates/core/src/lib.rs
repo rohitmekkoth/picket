@@ -10,6 +10,7 @@ pub mod calendar;
 pub mod engine;
 pub mod eval;
 pub mod event;
+pub mod export;
 pub mod extract;
 pub mod extract_eval;
 pub mod google;
@@ -19,6 +20,7 @@ pub mod ledger;
 pub mod messages;
 pub mod review;
 pub mod rules;
+pub mod settings;
 pub mod store;
 pub mod views;
 

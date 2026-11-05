@@ -11,10 +11,12 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use picket_core::{
     alerts::{self, Post, Target},
+    event::{AgentRegistration, CoverageState},
     ledger::Writer,
+    settings::Settings,
     views::{IncidentSummary, Severity, Status},
 };
 use tauri::Manager;
@@ -30,25 +32,19 @@ const MAX_ID_BYTES: usize = 512;
 
 #[derive(Default)]
 pub struct AlertState {
-    paused_until: Mutex<Option<DateTime<Utc>>>,
     wake: Mutex<Option<Sender<()>>>,
 }
 
 impl AlertState {
-    fn paused_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let mut paused = self.paused_until.lock().ok()?;
-        if paused.is_some_and(|until| until <= now) {
-            *paused = None;
-        }
-        *paused
-    }
-
-    /// Pauses alerts for an hour, or resumes them. Held alerts post on resume.
-    pub fn set_paused(&self, paused: bool) {
-        if let Ok(mut until) = self.paused_until.lock() {
-            *until = paused.then(|| Utc::now() + PAUSE);
-        }
+    /// Pauses alerts for an hour, or resumes them. The pause is a stored setting, so it
+    /// survives a restart; held alerts post when it ends.
+    pub fn set_paused(&self, app: &tauri::AppHandle, paused: bool) -> Result<(), &'static str> {
+        let until = paused.then(|| Utc::now() + PAUSE);
+        crate::ledger(app)?
+            .read(move |store| store.set_alerts_paused_until(until))
+            .map_err(|_| "pause could not be saved")?;
         self.wake();
+        Ok(())
     }
 
     /// Asks the worker to deliver and refresh now instead of at its next tick.
@@ -97,11 +93,20 @@ fn run(app: &tauri::AppHandle, wake: &Receiver<()>) {
         }
         if let Some(writer) = &ledger {
             let now = Utc::now();
-            let paused = app.state::<AlertState>().paused_until(now);
-            if paused.is_none()
-                && let Err(reason) = deliver(app, writer, now)
-            {
-                tracing::warn!(reason, "alert delivery failed");
+            let settings = writer.read(|store| store.settings()).ok();
+            let paused = settings
+                .as_ref()
+                .and_then(|settings| settings.alerts_paused_until)
+                .filter(|until| *until > now);
+            if paused.is_none() {
+                if let Err(reason) = deliver(app, writer, now) {
+                    tracing::warn!(reason, "alert delivery failed");
+                }
+                if let Some(settings) = &settings
+                    && let Err(reason) = daily_summary(app, writer, settings, now)
+                {
+                    tracing::warn!(reason, "daily summary failed");
+                }
             }
             if let Err(reason) = refresh(app, writer, now, paused, &mut shown) {
                 tracing::warn!(reason, "menu bar status failed");
@@ -150,10 +155,76 @@ fn deliver(
     Ok(())
 }
 
+/// Posts the daily summary once per local day, at the chosen time or as soon after it
+/// as Picket runs. A summary missed on an earlier day is not posted late.
+fn daily_summary(
+    app: &tauri::AppHandle,
+    writer: &Writer,
+    settings: &Settings,
+    now: DateTime<Utc>,
+) -> Result<(), &'static str> {
+    let Some(minutes) = settings.summary_minutes else {
+        return Ok(());
+    };
+    let local = now.with_timezone(&Local);
+    let today = local.date_naive();
+    let minutes_now = local.hour() * 60 + local.minute();
+    if u32::from(minutes) > minutes_now || settings.last_summary_day == Some(today) {
+        return Ok(());
+    }
+    let midnight = local_midnight(today, now);
+    let (counts, gaps, summary_items, agents) = writer
+        .read(move |store| {
+            let overview = store.overview(midnight, now, now)?;
+            let gaps: Vec<_> = overview
+                .sources
+                .iter()
+                .filter(|source| {
+                    matches!(source.state, CoverageState::Gap | CoverageState::Delayed)
+                })
+                .map(|source| source.source.clone())
+                .collect();
+            Ok((
+                overview.counts,
+                gaps,
+                store.summary_items(midnight, now)?,
+                store.agents()?,
+            ))
+        })
+        .map_err(|_| "store unavailable")?;
+    let agent = watched_name(&agents);
+    let post = alerts::daily_summary(&alerts::Day {
+        agent: agent.as_deref(),
+        counts,
+        summary_items,
+        gaps,
+    });
+    show(app, &post)?;
+    writer
+        .read(move |store| store.set_last_summary_day(today))
+        .map_err(|_| "store unavailable")
+}
+
+/// The one enabled agent's name, as the window names it, when there is exactly one.
+fn watched_name(agents: &[AgentRegistration]) -> Option<String> {
+    let watched: Vec<_> = agents.iter().filter(|agent| agent.enabled).collect();
+    match watched.as_slice() {
+        [one] => Some(one.name.clone()),
+        _ => None,
+    }
+}
+
+fn local_midnight(day: chrono::NaiveDate, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    day.and_hms_opt(0, 0, 0)
+        .and_then(|start| start.and_local_timezone(Local).earliest())
+        .map_or(fallback, |start| start.with_timezone(&Utc))
+}
+
 fn show(app: &tauri::AppHandle, post: &Post) -> Result<(), &'static str> {
     let target = match &post.target {
         Target::Incident(id) => id.as_str(),
         Target::Review => "review",
+        Target::Overview => "overview",
     };
     let mut builder = app
         .notification()
@@ -200,10 +271,7 @@ fn refresh(
     if shown.as_ref().is_some_and(|(last, _)| *last == key) {
         return Ok(());
     }
-    let midnight = today
-        .and_hms_opt(0, 0, 0)
-        .and_then(|start| start.and_local_timezone(Local).earliest())
-        .map_or(now, |start| start.with_timezone(&Utc));
+    let midnight = local_midnight(today, now);
     let (incidents, actions, agents) = writer
         .read(move |store| {
             let incidents = store.incidents()?;
@@ -212,18 +280,13 @@ fn refresh(
             Ok((incidents, actions, agents))
         })
         .map_err(|_| "store unavailable")?;
-    // Named like the window does: the one enabled agent, if there is exactly one.
-    let watched: Vec<_> = agents.iter().filter(|agent| agent.enabled).collect();
-    let agent = match watched.as_slice() {
-        [one] => Some(one.name.clone()),
-        _ => None,
-    };
+    let agent = watched_name(&agents);
     let view = view(
         &incidents,
         Today {
             actions,
             agent,
-            any_agent: !watched.is_empty(),
+            any_agent: agents.iter().any(|agent| agent.enabled),
         },
         paused,
         google,
@@ -258,6 +321,7 @@ fn view(
     let google_line = match google {
         "disconnected" => Some("Google isn’t connected"),
         "unavailable" => Some("Picket can’t reach Google"),
+        "reconnect_required" => Some("Sign in to Google again"),
         _ => None,
     };
     // A pause the person chose greys the icon; otherwise open items outrank a lost
@@ -317,6 +381,7 @@ fn on_action(app: &tauri::AppHandle, event: &ActionPerformed) {
     };
     let result = match (event.action_id(), target) {
         ("tap" | "review", "review") => open(app, "#/review"),
+        ("tap", "overview") => open(app, "#/overview"),
         ("tap" | "review", id) => incident_id(id).and_then(|id| open_incident(app, id)),
         ("fine", id) => incident_id(id).and_then(|id| mark_fine(app, id)),
         _ => Ok(()),
@@ -336,7 +401,7 @@ pub fn open_incident(app: &tauri::AppHandle, id: &str) -> Result<(), &'static st
     open(app, &format!("#/incident/{}", &id["incident/".len()..]))
 }
 
-fn open(app: &tauri::AppHandle, hash: &str) -> Result<(), &'static str> {
+pub fn open(app: &tauri::AppHandle, hash: &str) -> Result<(), &'static str> {
     crate::show_window(app).map_err(|_| "window unavailable")?;
     let window = app.get_webview_window("main").ok_or("window unavailable")?;
     let literal = serde_json::to_string(hash).map_err(|_| "invalid route")?;
