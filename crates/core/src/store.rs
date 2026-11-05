@@ -828,6 +828,14 @@ impl Store {
     /// An item whose incident cannot be shown is listed in `unshowable` to be cancelled.
     pub fn pending_alerts(&mut self) -> Result<PendingAlerts> {
         let batch = self.pending_notifications()?;
+        // The worker asks every few seconds; an empty queue needs no evidence.
+        if batch.is_empty() {
+            return Ok(PendingAlerts {
+                alerts: Vec::new(),
+                unshowable: Vec::new(),
+                has_more: false,
+            });
+        }
         let mut queued = Vec::with_capacity(batch.len());
         let mut groups = BTreeMap::new();
         for item in batch.iter() {
