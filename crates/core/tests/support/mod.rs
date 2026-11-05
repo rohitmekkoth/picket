@@ -2,8 +2,9 @@
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use picket_core::event::{
-    AccountPolicy, Action, Claim, Coverage, CoverageState, Effect, Event, EventKey, EventPayload,
-    Feedback, Field, NoticeKind, Origin, Request, Source, ToolOutcome, ToolResult,
+    AccountPolicy, Action, Boundary, BoundaryKind, Claim, ContactObserved, Coverage, CoverageState,
+    Days, Effect, Event, EventKey, EventPayload, Feedback, Field, Level, NoticeKind, Origin,
+    Request, RuleSet, Source, ToolOutcome, ToolResult,
 };
 
 pub struct Rng(u64);
@@ -57,7 +58,7 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
     let task = rng.pick(TASKS).to_owned();
     let occurred = at(minute) + Duration::seconds(rng.below(1_800) as i64 - 900);
     let ingested = occurred + Duration::seconds(rng.below(1_200) as i64);
-    let (source, payload) = match rng.below(11) {
+    let (source, payload) = match rng.below(13) {
         0..=2 => {
             let action = action(rng);
             let source = if action == Action::EmailSend {
@@ -178,6 +179,17 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
                 }),
             )
         }
+        11 => (
+            Source::Gmail,
+            EventPayload::ContactObserved(ContactObserved {
+                address: rng.pick(TARGETS).to_owned(),
+                origin: [Origin::Live, Origin::Baseline][rng.below(2) as usize].clone(),
+            }),
+        ),
+        12 => (
+            Source::Picket,
+            EventPayload::Rules(random_rules(rng, occurred)),
+        ),
         _ => (
             Source::Gmail,
             EventPayload::Notice {
@@ -210,6 +222,71 @@ pub fn random_event(rng: &mut Rng, index: usize, minute: i64) -> Event {
         adapter: None,
         payload,
     }
+}
+
+fn level(rng: &mut Rng) -> Level {
+    [Level::Off, Level::Summary, Level::Review, Level::Urgent][rng.below(4) as usize]
+}
+
+/// A rule set with random levels and one of each boundary kind, some already in force.
+fn random_rules(rng: &mut Rng, occurred: DateTime<Utc>) -> RuleSet {
+    let mut rules = RuleSet::default();
+    for (rule, _) in picket_core::rules::BUILT_IN {
+        if rng.below(2) == 0 {
+            rules.levels.insert((*rule).to_owned(), level(rng));
+        }
+    }
+    let kinds = [
+        BoundaryKind::Contact {
+            addresses: vec![rng.pick(TARGETS).to_owned()],
+            domains: vec![],
+            actions: vec![Action::EmailSend, Action::CalendarCreate],
+        },
+        BoundaryKind::CalendarChange {
+            actions: vec![Action::CalendarUpdate],
+        },
+        BoundaryKind::QuietHours {
+            start_minute: rng.below(1440) as u16,
+            end_minute: rng.below(1440) as u16,
+            days: [Days::Every, Days::Weekdays, Days::Weekends][rng.below(3) as usize],
+            zone: "America/Los_Angeles".into(),
+            actions: vec![Action::EmailSend],
+        },
+        BoundaryKind::Burst {
+            count: 1 + rng.below(2) as u32,
+            window_minutes: 5 + rng.below(60) as u32,
+            actions: vec![Action::EmailSend, Action::CalendarCreate],
+        },
+        BoundaryKind::NewRecipient,
+    ];
+    for (index, kind) in kinds.into_iter().enumerate() {
+        if rng.below(3) == 0 {
+            continue;
+        }
+        let kind = match kind {
+            BoundaryKind::QuietHours {
+                start_minute,
+                end_minute,
+                days,
+                zone,
+                actions,
+            } if start_minute == end_minute => BoundaryKind::QuietHours {
+                start_minute,
+                end_minute: (end_minute + 1) % 1440,
+                days,
+                zone,
+                actions,
+            },
+            other => other,
+        };
+        rules.boundaries.push(Boundary {
+            id: format!("b-{index}"),
+            level: level(rng),
+            since: occurred - Duration::minutes(rng.below(120) as i64),
+            kind,
+        });
+    }
+    rules
 }
 
 /// A random history in which feedback names findings that actually exist.

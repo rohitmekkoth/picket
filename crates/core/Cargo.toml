@@ -15,6 +15,7 @@ thiserror = "2"
 mail-parser = "0.11.9"
 phonenumber = "0.3.10"
 tracing.workspace = true
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

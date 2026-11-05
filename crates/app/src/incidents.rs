@@ -3,9 +3,9 @@
 
 use chrono::Utc;
 use picket_core::{
-    event::{Event, EventKey, EventPayload, Source},
+    event::EventPayload,
     ledger::Ledger,
-    store::Batch,
+    store::{Batch, user_event},
     views::{IncidentDetail, IncidentSummary},
 };
 
@@ -61,20 +61,9 @@ pub fn set_agent_revoked(app: tauri::AppHandle, id: String, revoked: bool) -> Re
         .ok_or_else(|| "agent not found".to_string())?;
     let now = Utc::now();
     registration.revoked_at = revoked.then_some(now);
-    let event = Event {
-        schema_version: 1,
-        key: EventKey {
-            account: "local".into(),
-            source: Source::Picket,
-            resource: format!("agent/{}", registration.id),
-            revision: now.timestamp_nanos_opt().unwrap_or_default().to_string(),
-        },
-        occurred_at: now,
-        ingested_at: now,
-        source_time_quality: None,
-        adapter: None,
-        payload: EventPayload::Agent(registration),
-    };
+    let resource = format!("agent/{}", registration.id);
+    let event = user_event("local", &resource, EventPayload::Agent(registration), now)
+        .map_err(|_| "agent could not be saved".to_string())?;
     ledger
         .commit(
             Batch {

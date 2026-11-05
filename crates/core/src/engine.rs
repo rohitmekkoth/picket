@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, AgentRegistration, ClaimChannel, Coverage, CoverageReason,
-    CoverageState, Effect, Event, EventKey, EventPayload, Feedback, Field, NoticeKind, Origin,
-    Request, SnapshotValue, Source, ToolOutcome, ToolResult,
+    AccountPolicy, Action, AgentRegistration, BoundaryKind, ClaimChannel, ContactObserved,
+    Coverage, CoverageReason, CoverageState, Effect, Event, EventKey, EventPayload, Feedback,
+    Field, Level, NoticeKind, Origin, Request, RuleSet, SnapshotValue, Source, ToolOutcome,
+    ToolResult,
 };
+use crate::rules;
 
 const MAX_CANDIDATES: usize = 128;
 const CLAIM_WINDOW: Duration = Duration::minutes(10);
@@ -56,11 +58,30 @@ pub enum ConflictReason {
     OutsideWindow,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Where a finding goes. Declaration order is loudness order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Route {
     Timeline,
+    /// The daily summary only.
+    Summary,
     MediumReview,
     HighReview,
+}
+
+impl Route {
+    /// Medium and high review notify and are listed for review.
+    pub fn needs_review(self) -> bool {
+        matches!(self, Self::MediumReview | Self::HighReview)
+    }
+
+    fn from_level(level: Level) -> Self {
+        match level {
+            Level::Off => Self::Timeline,
+            Level::Summary => Self::Summary,
+            Level::Review => Self::MediumReview,
+            Level::Urgent => Self::HighReview,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -76,6 +97,9 @@ pub struct Assessment {
     /// The attributed agent acted at or after the user marked it revoked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub after_revocation: bool,
+    /// The user's boundaries this effect crossed, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundaries: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,6 +191,13 @@ pub struct Evidence {
     effect_findings: BTreeMap<String, i64>,
     deadlines: BTreeSet<(DateTime<Utc>, i64)>,
     agents: BTreeMap<String, Vec<i64>>,
+    rule_sets: Vec<i64>,
+    claim_findings: BTreeMap<String, i64>,
+    notice_findings: BTreeMap<String, i64>,
+    /// When Picket first saw the user exchange email with an address.
+    known: BTreeMap<(String, String), DateTime<Utc>>,
+    /// Inputs kept only as index entries, so their arrival can still be traced.
+    correspondents: BTreeMap<i64, (String, Vec<String>, DateTime<Utc>)>,
 }
 
 impl Evidence {
@@ -183,10 +214,26 @@ impl Evidence {
 
     /// Adds one visible event. Events the engine never reads are not retained.
     pub fn insert(&mut self, seq: i64, event: Event) {
-        if self.events.contains_key(&seq) {
+        if self.events.contains_key(&seq) || self.correspondents.contains_key(&seq) {
             return;
         }
         let account = event.key.account.clone();
+        if let Some(addresses) = correspondence(&event) {
+            for address in &addresses {
+                let first = self
+                    .known
+                    .entry((account.clone(), address.clone()))
+                    .or_insert(event.occurred_at);
+                *first = (*first).min(event.occurred_at);
+            }
+            if !matches!(&event.payload, EventPayload::Effect(effect)
+                if matches!(effect.origin, Origin::Live | Origin::CatchUp))
+            {
+                self.correspondents
+                    .insert(seq, (account, addresses, event.occurred_at));
+                return;
+            }
+        }
         match &event.payload {
             EventPayload::Effect(effect)
                 if matches!(effect.origin, Origin::Live | Origin::CatchUp) =>
@@ -206,6 +253,8 @@ impl Evidence {
             EventPayload::Claim(claim) if event.key.source == Source::Messages => {
                 self.claims
                     .insert((account.clone(), event.occurred_at, seq));
+                self.claim_findings
+                    .insert(key_finding_id("claim", &event.key), seq);
                 self.deadlines.insert((wait_from(&event) + GRACE, seq));
                 if let Some(resource) = &claim.provider_resource {
                     push_sorted(
@@ -247,6 +296,8 @@ impl Evidence {
                     && matches!(origin, Origin::Live | Origin::CatchUp) =>
             {
                 push_sorted(&mut self.notices, seq);
+                self.notice_findings
+                    .insert(key_finding_id("notice", &event.key), seq);
             }
             _ => {
                 if let Some((value, _)) = feedback(&event) {
@@ -255,6 +306,8 @@ impl Evidence {
                     push_sorted(self.policies.entry(account).or_default(), seq);
                 } else if let Some(agent) = registration(&event) {
                     push_sorted(self.agents.entry(agent.id.clone()).or_default(), seq);
+                } else if rule_set(&event).is_some() {
+                    push_sorted(&mut self.rule_sets, seq);
                 } else if let Some((source, value, observed_at)) = coverage_value(&event) {
                     let list = self
                         .coverage
@@ -312,7 +365,11 @@ impl Evidence {
 
     pub fn findings(&self, now: DateTime<Utc>) -> Vec<Finding> {
         let mut result: Vec<_> = self.assess(now).into_iter().map(effect_finding).collect();
-        result.extend(self.assess_claims(now).into_iter().map(claim_finding));
+        result.extend(
+            self.assess_claims(now)
+                .into_iter()
+                .map(|check| self.claim_finding(check)),
+        );
         result.extend(self.assess_notices().into_iter().map(notice_finding));
         let accounts: BTreeSet<_> = self.coverage.keys().map(|key| key.0.as_str()).collect();
         for account in accounts {
@@ -350,20 +407,8 @@ impl Evidence {
         let policy_ids = policy_hits.iter().map(|(id, _)| id.clone()).collect();
         let request_fit = self.request_fit(event, effect, &actor);
         let pending = now < wait_from(event) + GRACE;
-        let expected_feedback = self
-            .list(self.feedback.get(&finding))
-            .filter_map(|candidate| {
-                if candidate.key.account == event.key.account
-                    && let Some((feedback, occurred_at)) = feedback(candidate)
-                    && occurred_at >= event.occurred_at
-                    && feedback.finding == finding
-                {
-                    return Some((candidate.ingested_at, feedback.expected));
-                }
-                None
-            })
-            .max_by_key(|(at, _)| *at)
-            .and_then(|(_, value)| value);
+        let expected_feedback =
+            self.expected_feedback(&event.key.account, &finding, event.occurred_at);
         let after_revocation = match &actor {
             ActorEvidence::Reported(agent)
             | ActorEvidence::RuntimeLinked(agent)
@@ -372,24 +417,37 @@ impl Evidence {
                 .is_some_and(|at| event.occurred_at >= at),
             _ => false,
         };
+        let crossed = self.crossed_boundaries(event, effect);
+        let mut levels: Vec<Level> = policy_hits
+            .iter()
+            .map(|(_, high)| if *high { Level::Urgent } else { Level::Review })
+            .collect();
+        levels.extend(crossed.iter().map(|(_, level)| *level));
+        if after_revocation {
+            levels.push(self.level(rules::AFTER_REVOCATION));
+        }
+        if !pending
+            && matches!(
+                actor,
+                ActorEvidence::Reported(_)
+                    | ActorEvidence::RuntimeLinked(_)
+                    | ActorEvidence::UserConfirmed(_)
+            )
+            && let RequestFit::Conflicts(conflicts) = &request_fit
+        {
+            levels.extend(
+                conflicts
+                    .iter()
+                    .map(|conflict| self.level(conflict_rule(conflict))),
+            );
+        }
         let route = if expected_feedback == Some(true) {
             Route::Timeline
-        } else if policy_hits.iter().any(|(_, high)| *high) {
-            Route::HighReview
-        } else if after_revocation
-            || !policy_hits.is_empty()
-            || (!pending
-                && matches!(request_fit, RequestFit::Conflicts(_))
-                && matches!(
-                    actor,
-                    ActorEvidence::Reported(_)
-                        | ActorEvidence::RuntimeLinked(_)
-                        | ActorEvidence::UserConfirmed(_)
-                ))
-        {
-            Route::MediumReview
         } else {
-            Route::Timeline
+            levels
+                .into_iter()
+                .max()
+                .map_or(Route::Timeline, Route::from_level)
         };
         Some(Assessment {
             finding,
@@ -401,13 +459,14 @@ impl Evidence {
             route,
             expected_feedback,
             after_revocation,
+            boundaries: crossed.into_iter().map(|(id, _)| id).collect(),
         })
     }
 
     /// A metadata notice prompts review; it does not prove a setting or payment.
     pub fn assess_notices(&self) -> Vec<NoticeAssessment> {
         self.list(Some(&self.notices))
-            .filter_map(notice_assessment)
+            .filter_map(|event| self.notice_assessment(event))
             .collect()
     }
 
@@ -533,7 +592,7 @@ impl Evidence {
         self.coverage_for(account)
             .into_iter()
             .map(|evidence| {
-                let route = coverage_route(&evidence);
+                let route = self.coverage_route(account, &evidence);
                 Finding {
                     id: scoped_id(
                         "coverage",
@@ -591,6 +650,207 @@ impl Evidence {
             .and_then(|(_, seq)| self.get(*seq))
             .and_then(coverage_value)
             .map(|(_, value, observed_at)| (value, observed_at))
+    }
+
+    /// The latest recorded rule set, if the user has changed any rule.
+    pub fn rules(&self) -> Option<&RuleSet> {
+        self.rule_sets
+            .last()
+            .and_then(|seq| self.get(*seq))
+            .and_then(rule_set)
+    }
+
+    fn level(&self, rule: &str) -> Level {
+        rules::level(self.rules(), rule)
+    }
+
+    /// The user's latest decision on a finding made after its subject happened.
+    fn expected_feedback(
+        &self,
+        account: &str,
+        finding: &str,
+        since: DateTime<Utc>,
+    ) -> Option<bool> {
+        self.list(self.feedback.get(finding))
+            .filter_map(|candidate| {
+                if candidate.key.account == account
+                    && let Some((feedback, occurred_at)) = feedback(candidate)
+                    && occurred_at >= since
+                    && feedback.finding == finding
+                {
+                    return Some((candidate.ingested_at, feedback.expected));
+                }
+                None
+            })
+            .max_by_key(|(at, _)| *at)
+            .and_then(|(_, value)| value)
+    }
+
+    fn routed(&self, level: Level, account: &str, finding: &str, since: DateTime<Utc>) -> Route {
+        if self.expected_feedback(account, finding, since) == Some(true) {
+            Route::Timeline
+        } else {
+            Route::from_level(level)
+        }
+    }
+
+    /// Boundaries in force when the effect happened that it crosses, with their levels.
+    /// Changes made by someone else, such as an organizer's update, cross none.
+    fn crossed_boundaries(&self, event: &Event, effect: &Effect) -> Vec<(String, Level)> {
+        let Some(rules) = self.rules() else {
+            return Vec::new();
+        };
+        if effect.external_change {
+            return Vec::new();
+        }
+        rules
+            .boundaries
+            .iter()
+            .filter(|boundary| boundary.level != Level::Off && event.occurred_at >= boundary.since)
+            .filter(|boundary| self.crosses(event, effect, &boundary.kind))
+            .map(|boundary| (boundary.id.clone(), boundary.level))
+            .collect()
+    }
+
+    fn crosses(&self, event: &Event, effect: &Effect, kind: &BoundaryKind) -> bool {
+        match kind {
+            BoundaryKind::Burst {
+                count,
+                window_minutes,
+                actions,
+            } => {
+                actions.contains(&effect.action)
+                    && time_range(
+                        &self.effects,
+                        &event.key.account,
+                        event.occurred_at - Duration::minutes(i64::from(*window_minutes)),
+                        event.occurred_at,
+                    )
+                    .filter_map(|seq| self.get(seq))
+                    .filter(|item| match &item.payload {
+                        EventPayload::Effect(other) => {
+                            !other.external_change && actions.contains(&other.action)
+                        }
+                        _ => false,
+                    })
+                    .count()
+                        > *count as usize
+            }
+            BoundaryKind::NewRecipient => {
+                effect.action == Action::EmailSend
+                    && effect.targets.iter().any(|target| {
+                        self.known
+                            .get(&(event.key.account.clone(), target.clone()))
+                            .is_none_or(|first| *first >= event.occurred_at)
+                    })
+            }
+            kind => rules::crosses(kind, effect, event.occurred_at),
+        }
+    }
+
+    /// Who the evidence says made an effect, for display.
+    pub fn effect_actor(&self, event: &Event) -> ActorEvidence {
+        match &event.payload {
+            EventPayload::Effect(effect) => {
+                self.actor_for(event, effect, &effect_finding_id(&event.key))
+            }
+            _ => ActorEvidence::Unknown,
+        }
+    }
+
+    /// Effects in a period that a boundary would have flagged, ignoring when it started.
+    /// The rule editor shows these before the user saves a boundary.
+    pub fn boundary_hits(
+        &self,
+        kind: &BoundaryKind,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Vec<&Event> {
+        let mut hits: Vec<_> = self
+            .effects
+            .iter()
+            .filter(|(_, at, _)| *at >= from && *at <= to)
+            .filter_map(|(_, _, seq)| self.get(*seq))
+            .filter(|event| match &event.payload {
+                EventPayload::Effect(effect) => {
+                    !effect.external_change && self.crosses(event, effect, kind)
+                }
+                _ => false,
+            })
+            .collect();
+        hits.sort_by_key(|event| std::cmp::Reverse(event.occurred_at));
+        hits
+    }
+
+    fn claim_finding(&self, claim: ClaimCheck) -> Finding {
+        let subject = claim.observed_effect.as_ref().unwrap_or(&claim.claim);
+        let id = key_finding_id("claim", &claim.claim);
+        let level = match claim.status {
+            ClaimStatus::NotObservedInHealthySource => self.level(rules::REPORT_NOT_OBSERVED),
+            ClaimStatus::ContradictedByObservedEffect => self.level(rules::REPORT_CONTRADICTED),
+            _ => Level::Off,
+        };
+        let since = self
+            .claim_findings
+            .get(&id)
+            .and_then(|seq| self.get(*seq))
+            .map_or(DateTime::<Utc>::MIN_UTC, |report| report.occurred_at);
+        Finding {
+            route: self.routed(level, &claim.claim.account, &id, since),
+            group: scoped_id(
+                "incident",
+                &[
+                    subject.account.as_str(),
+                    subject.source.as_str(),
+                    subject.resource.as_str(),
+                ],
+            ),
+            id,
+            detail: FindingDetail::Claim(claim),
+        }
+    }
+
+    fn notice_assessment(&self, event: &Event) -> Option<NoticeAssessment> {
+        let EventPayload::Notice { kind, .. } = &event.payload else {
+            return None;
+        };
+        let rule = match kind {
+            NoticeKind::Forwarding => rules::FORWARDING,
+            NoticeKind::AppAccess => rules::APP_ACCESS,
+            NoticeKind::Otp => rules::OTP,
+            NoticeKind::Purchase => rules::PURCHASE,
+        };
+        Some(NoticeAssessment {
+            notice: event.key.clone(),
+            kind: kind.clone(),
+            route: self.routed(
+                self.level(rule),
+                &event.key.account,
+                &key_finding_id("notice", &event.key),
+                event.occurred_at,
+            ),
+        })
+    }
+
+    /// Lost access and data need review; a delay that catch-up repairs goes to the
+    /// summary. Request capture belongs to the Messages rule.
+    fn coverage_route(&self, account: &str, evidence: &CoverageEvidence) -> Route {
+        let messages =
+            evidence.source == Source::Messages || evidence.capability.starts_with(REQUEST_CAPTURE);
+        let rule = match (&evidence.state, &evidence.reason) {
+            (CoverageState::Healthy, _) => return Route::Timeline,
+            (CoverageState::Delayed, Some(CoverageReason::AuthUnavailable)) if !messages => {
+                rules::GOOGLE_ACCESS
+            }
+            (CoverageState::Delayed, _) => rules::CATCH_UP,
+            (CoverageState::Gap | CoverageState::Disabled, _) if messages => rules::MESSAGES_ACCESS,
+            (CoverageState::Gap | CoverageState::Disabled, _) => rules::GOOGLE_ACCESS,
+        };
+        let finding = scoped_id(
+            "coverage",
+            &[account, evidence.source.as_str(), &evidence.capability],
+        );
+        self.routed(self.level(rule), account, &finding, evidence.observed_at)
     }
 
     /// When the user marked an agent revoked, from its latest registration.
@@ -1000,6 +1260,10 @@ impl Evidence {
     /// mirrors a lookup in the assessment code; retention housekeeping changes nothing.
     fn affected_by(&self, seq: i64) -> BTreeSet<Subject> {
         let mut subjects = BTreeSet::new();
+        if let Some((account, addresses, at)) = self.correspondents.get(&seq) {
+            self.later_emails_to(&mut subjects, account, addresses, *at);
+            return subjects;
+        }
         let Some(event) = self.get(seq) else {
             return subjects;
         };
@@ -1015,6 +1279,22 @@ impl Evidence {
         match &event.payload {
             EventPayload::Effect(_) => {
                 subjects.insert(Subject::Effect(seq));
+                if let Some(addresses) = correspondence(event) {
+                    self.later_emails_to(&mut subjects, account, &addresses, event.occurred_at);
+                }
+                if let Some(window) = self.longest_burst() {
+                    effects(
+                        &mut subjects,
+                        time_range(
+                            &self.effects,
+                            account,
+                            event.occurred_at,
+                            event.occurred_at + window,
+                        )
+                        .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                        .collect(),
+                    );
+                }
                 // A report without a provider ID matches only a unique nearby effect, so a
                 // new effect can change the matches of reports and effects around it.
                 let window = CLAIM_WINDOW * 2 + Duration::seconds(2);
@@ -1100,6 +1380,26 @@ impl Evidence {
                 if let Some(effect) = self.effect_findings.get(&value.finding) {
                     subjects.insert(Subject::Effect(*effect));
                 }
+                if let Some(claim) = self.claim_findings.get(&value.finding) {
+                    subjects.insert(Subject::Claim(*claim));
+                }
+                if let Some(notice) = self.notice_findings.get(&value.finding) {
+                    subjects.insert(Subject::Notice(*notice));
+                }
+                if value.finding.starts_with("coverage/") {
+                    subjects.insert(Subject::Coverage(account.clone()));
+                }
+            }
+            EventPayload::Rules(_) => {
+                // Levels apply to every finding, so a rule change reassesses all of them.
+                subjects.extend(self.effects.iter().map(|(_, _, seq)| Subject::Effect(*seq)));
+                subjects.extend(self.claims.iter().map(|(_, _, seq)| Subject::Claim(*seq)));
+                subjects.extend(self.notices.iter().map(|seq| Subject::Notice(*seq)));
+                subjects.extend(
+                    self.coverage
+                        .keys()
+                        .map(|key| Subject::Coverage(key.0.clone())),
+                );
             }
             EventPayload::Coverage(_) => {
                 subjects.insert(Subject::Coverage(account.clone()));
@@ -1114,6 +1414,52 @@ impl Evidence {
     }
 
     /// Effects linked to the tool result's task, whose linked-action counts may change.
+    /// A new correspondent can make later email to them no longer new.
+    fn later_emails_to(
+        &self,
+        subjects: &mut BTreeSet<Subject>,
+        account: &str,
+        addresses: &[String],
+        at: DateTime<Utc>,
+    ) {
+        let active = self.rules().is_some_and(|rules| {
+            rules
+                .boundaries
+                .iter()
+                .any(|boundary| boundary.kind == BoundaryKind::NewRecipient)
+        });
+        if !active {
+            return;
+        }
+        subjects.extend(
+            time_range(&self.effects, account, at, DateTime::<Utc>::MAX_UTC)
+                .filter(|seq| {
+                    self.get(*seq).is_some_and(|item| match &item.payload {
+                        EventPayload::Effect(effect) => effect
+                            .targets
+                            .iter()
+                            .any(|target| addresses.contains(target)),
+                        _ => false,
+                    })
+                })
+                .map(Subject::Effect),
+        );
+    }
+
+    /// The longest burst window, which bounds how far ahead a new effect counts.
+    fn longest_burst(&self) -> Option<Duration> {
+        self.rules()?
+            .boundaries
+            .iter()
+            .filter_map(|boundary| match &boundary.kind {
+                BoundaryKind::Burst { window_minutes, .. } => {
+                    Some(Duration::minutes(i64::from(*window_minutes)))
+                }
+                _ => None,
+            })
+            .max()
+    }
+
     fn task_effects(&self, subjects: &mut BTreeSet<Subject>, account: &str, tool: &ToolResult) {
         let Some(task) = &tool.task else {
             return;
@@ -1217,12 +1563,12 @@ impl Evidence {
             Subject::Claim(seq) => self
                 .get(*seq)
                 .and_then(|report| self.claim_check(report, now))
-                .map(claim_finding)
+                .map(|check| self.claim_finding(check))
                 .into_iter()
                 .collect(),
             Subject::Notice(seq) => self
                 .get(*seq)
-                .and_then(notice_assessment)
+                .and_then(|event| self.notice_assessment(event))
                 .map(notice_finding)
                 .into_iter()
                 .collect(),
@@ -1391,23 +1737,6 @@ fn effect_finding(assessment: Assessment) -> Finding {
     }
 }
 
-fn claim_finding(claim: ClaimCheck) -> Finding {
-    let subject = claim.observed_effect.as_ref().unwrap_or(&claim.claim);
-    Finding {
-        id: key_finding_id("claim", &claim.claim),
-        group: scoped_id(
-            "incident",
-            &[
-                subject.account.as_str(),
-                subject.source.as_str(),
-                subject.resource.as_str(),
-            ],
-        ),
-        route: Route::Timeline,
-        detail: FindingDetail::Claim(claim),
-    }
-}
-
 fn notice_finding(notice: NoticeAssessment) -> Finding {
     Finding {
         id: key_finding_id("notice", &notice.notice),
@@ -1421,31 +1750,6 @@ fn notice_finding(notice: NoticeAssessment) -> Finding {
         ),
         route: notice.route,
         detail: FindingDetail::Notice(notice),
-    }
-}
-
-fn notice_assessment(event: &Event) -> Option<NoticeAssessment> {
-    let EventPayload::Notice { kind, .. } = &event.payload else {
-        return None;
-    };
-    Some(NoticeAssessment {
-        notice: event.key.clone(),
-        kind: kind.clone(),
-        route: if *kind == NoticeKind::Otp {
-            Route::Timeline
-        } else {
-            Route::MediumReview
-        },
-    })
-}
-
-/// Lost data and states that need the user alert; a delay that catch-up repairs does not.
-fn coverage_route(evidence: &CoverageEvidence) -> Route {
-    match (&evidence.state, &evidence.reason) {
-        (CoverageState::Healthy, _) => Route::Timeline,
-        (CoverageState::Delayed, Some(CoverageReason::AuthUnavailable)) => Route::MediumReview,
-        (CoverageState::Delayed, _) => Route::Timeline,
-        (CoverageState::Gap | CoverageState::Disabled, _) => Route::MediumReview,
     }
 }
 
@@ -1546,6 +1850,54 @@ fn feedback(event: &Event) -> Option<(&Feedback, DateTime<Utc>)> {
             }
         }
         _ => None,
+    }
+}
+
+fn rule_set(event: &Event) -> Option<&RuleSet> {
+    match &event.payload {
+        EventPayload::Rules(value) if event.key.source == Source::Picket => Some(value),
+        EventPayload::Snapshot(snapshot)
+            if event.key.source == Source::Picket && snapshot.original_source == Source::Picket =>
+        {
+            match &snapshot.value {
+                SnapshotValue::Rules(value) => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Addresses an input shows the user exchanging email with: senders that wrote to them
+/// and recipients of anything they sent, including the baseline import.
+fn correspondence(event: &Event) -> Option<Vec<String>> {
+    let contact = |value: &ContactObserved| Some(vec![value.address.clone()]);
+    match &event.payload {
+        EventPayload::Effect(effect)
+            if event.key.source == Source::Gmail && effect.action == Action::EmailSend =>
+        {
+            Some(effect.targets.clone())
+        }
+        EventPayload::ContactObserved(value) if event.key.source == Source::Gmail => contact(value),
+        EventPayload::Snapshot(snapshot) if snapshot.original_source == Source::Gmail => {
+            match &snapshot.value {
+                SnapshotValue::Contact(value) => contact(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn conflict_rule(conflict: &ConflictReason) -> &'static str {
+    match conflict {
+        ConflictReason::ProhibitedAction => rules::PROHIBITED_ACTION,
+        ConflictReason::DifferentAction => rules::DIFFERENT_ACTION,
+        ConflictReason::ExtraTarget => rules::EXTRA_TARGET,
+        ConflictReason::ApprovalMissing => rules::APPROVAL_MISSING,
+        ConflictReason::DifferentCalendarTime => rules::DIFFERENT_TIME,
+        ConflictReason::TooManyActions => rules::TOO_MANY,
+        ConflictReason::OutsideWindow => rules::OUTSIDE_WINDOW,
     }
 }
 
@@ -2104,7 +2456,11 @@ mod tests {
         let revoked_before = [&base[..], &[registration_event(5, Some(5))]].concat();
         let result = one(&revoked_before);
         assert!(result.after_revocation);
-        assert_eq!(result.route, Route::MediumReview);
+        assert_eq!(
+            result.route,
+            Route::HighReview,
+            "revocation is urgent by default"
+        );
         // A later registration without a revocation lifts it.
         let restored = [&revoked_before[..], &[registration_event(15, None)]].concat();
         assert!(!one(&restored).after_revocation);
@@ -2608,9 +2964,10 @@ mod tests {
                 .map(|finding| finding.route)
                 .next()
         };
+        // A delay that catch-up repairs goes to the daily summary and never notifies.
         assert_eq!(
             route(CoverageState::Delayed, Some(CoverageReason::RequestFailed)),
-            Some(Route::Timeline)
+            Some(Route::Summary)
         );
         assert_eq!(
             route(

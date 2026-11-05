@@ -16,6 +16,7 @@ pub mod incidents;
 pub mod ledger;
 pub mod messages;
 pub mod review;
+pub mod rules;
 pub mod store;
 pub mod views;
 

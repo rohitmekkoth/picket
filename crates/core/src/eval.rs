@@ -532,7 +532,7 @@ fn evaluate_case(case: Case) -> Result<(Counts, Vec<String>), Box<dyn std::error
         );
         let alert = case.expected_route != Route::Timeline;
         counts.alert_worthy = usize::from(alert);
-        counts.alerts_on_alert_worthy = usize::from(alert && value.route != Route::Timeline);
+        counts.alerts_on_alert_worthy = usize::from(alert && value.route.needs_review());
         counts.expected_high = usize::from(case.expected_route == Route::HighReview);
         counts.correct_high = usize::from(
             case.expected_route == Route::HighReview && value.route == Route::HighReview,
@@ -544,7 +544,7 @@ fn evaluate_case(case: Case) -> Result<(Counts, Vec<String>), Box<dyn std::error
         counts.high_alerts = usize::from(value.route == Route::HighReview);
         counts.medium_alerts = usize::from(value.route == Route::MediumReview);
         counts.benign_effects = usize::from(!alert);
-        counts.alerts_on_benign = usize::from(!alert && value.route != Route::Timeline);
+        counts.alerts_on_benign = usize::from(!alert && value.route.needs_review());
         if case.linkable && !matches!(value.actor, ActorEvidence::RuntimeLinked(_)) {
             failures.push("instrumented effect was not runtime linked".into());
         }

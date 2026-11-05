@@ -13,10 +13,16 @@ use crate::{
         RequestFit, Route,
     },
     event::{
-        Action, AgentRegistration, ClaimChannel, CoverageReason, CoverageState, Event, EventKey,
-        EventPayload, Field, MessageObserved, NoticeKind, Source,
+        Action, AgentRegistration, Boundary, BoundaryKind, ClaimChannel, CoverageReason,
+        CoverageState, Event, EventKey, EventPayload, Field, Level, MessageObserved, NoticeKind,
+        Source,
     },
+    rules,
 };
+
+/// How far back the rule editor looks when it shows what a boundary would flag.
+pub const PREVIEW_DAYS: i64 = 30;
+const PREVIEW_HITS: usize = 5;
 
 /// How loudly an incident asks for attention, from its findings' routes.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -110,6 +116,8 @@ pub struct IncidentDetail {
     pub report_status: Option<ClaimStatus>,
     pub notice: Option<NoticeKind>,
     pub visibility: Option<VisibilityView>,
+    /// The user's boundaries the effect crossed, as recorded in the current rules.
+    pub boundaries: Vec<Boundary>,
     pub decision: Option<DecisionView>,
     pub history: Vec<HistoryItem>,
 }
@@ -242,7 +250,7 @@ impl FindingRecord {
     fn first_review(&self) -> Option<DateTime<Utc>> {
         self.revisions
             .iter()
-            .find(|(_, finding)| finding.route != Route::Timeline)
+            .find(|(_, finding)| finding.route.needs_review())
             .map(|(at, _)| *at)
     }
 }
@@ -368,8 +376,8 @@ pub fn incident(
         for (at, finding) in &record.revisions {
             if let Some(before) = previous
                 && *at > summary.flagged_at
-                && before.route != Route::Timeline
-                && finding.route != Route::Timeline
+                && before.route.needs_review()
+                && finding.route.needs_review()
                 && before.detail != finding.detail
             {
                 history.push(HistoryItem {
@@ -408,6 +416,21 @@ pub fn incident(
         report_status,
         notice,
         visibility,
+        boundaries: effect_assessment
+            .map(|assessment| {
+                evidence
+                    .rules()
+                    .map(|rules| {
+                        rules
+                            .boundaries
+                            .iter()
+                            .filter(|boundary| assessment.boundaries.contains(&boundary.id))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default(),
         decision,
         history,
         summary,
@@ -430,9 +453,7 @@ fn summary(
         })
         .max()
         .unwrap_or(Severity::Review);
-    let open = current
-        .iter()
-        .any(|finding| finding.route != Route::Timeline);
+    let open = current.iter().any(|finding| finding.route.needs_review());
     let status = match decision(evidence, &current) {
         Some(DecisionView {
             expected: false, ..
@@ -539,7 +560,7 @@ fn subject_time(evidence: &Evidence, finding: &Finding) -> Option<DateTime<Utc>>
 }
 
 fn reasons(finding: &Finding) -> Vec<Reason> {
-    if finding.route == Route::Timeline {
+    if !finding.route.needs_review() {
         return Vec::new();
     }
     match &finding.detail {
@@ -719,4 +740,102 @@ fn agent_name(id: &str, agents: &[AgentRegistration]) -> String {
         .iter()
         .find(|agent| agent.id == id)
         .map_or_else(|| id.to_owned(), |agent| agent.name.clone())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulesView {
+    pub levels: Vec<RuleLevelView>,
+    pub boundaries: Vec<BoundaryView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleLevelView {
+    pub id: &'static str,
+    pub level: Level,
+    pub default: Level,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryView {
+    #[serde(flatten)]
+    pub boundary: Boundary,
+    /// Effects in the last `PREVIEW_DAYS` it would have flagged, had it been in force.
+    pub recent: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewView {
+    pub count: usize,
+    pub hits: Vec<PreviewHit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewHit {
+    pub at: DateTime<Utc>,
+    pub action: Action,
+    pub subject: Option<String>,
+    pub people: Vec<Person>,
+    pub agent: Option<String>,
+}
+
+pub fn rules_view(evidence: &Evidence, now: DateTime<Utc>) -> RulesView {
+    let current = evidence.rules();
+    let from = now - chrono::Duration::days(PREVIEW_DAYS);
+    RulesView {
+        levels: rules::BUILT_IN
+            .iter()
+            .map(|(id, default)| RuleLevelView {
+                id,
+                level: rules::level(current, id),
+                default: *default,
+            })
+            .collect(),
+        boundaries: current
+            .map(|rules| {
+                rules
+                    .boundaries
+                    .iter()
+                    .map(|boundary| BoundaryView {
+                        recent: evidence.boundary_hits(&boundary.kind, from, now).len(),
+                        boundary: boundary.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+pub fn preview(
+    evidence: &Evidence,
+    kind: &BoundaryKind,
+    now: DateTime<Utc>,
+    agents: &[AgentRegistration],
+) -> PreviewView {
+    let hits = evidence.boundary_hits(kind, now - chrono::Duration::days(PREVIEW_DAYS), now);
+    PreviewView {
+        count: hits.len(),
+        hits: hits
+            .into_iter()
+            .take(PREVIEW_HITS)
+            .filter_map(|event| {
+                let view = effect_view(event, &[])?;
+                let agent = actor_agents(&evidence.effect_actor(event))
+                    .into_iter()
+                    .next()
+                    .map(|id| agent_name(&id, agents));
+                Some(PreviewHit {
+                    at: view.at,
+                    action: view.action,
+                    subject: view.subject,
+                    people: view.people,
+                    agent,
+                })
+            })
+            .collect(),
+    }
 }
