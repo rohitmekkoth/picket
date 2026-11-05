@@ -133,6 +133,77 @@ pub struct AccountPolicy {
     pub enabled: bool,
 }
 
+/// How loudly a rule asks for attention.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    /// Recorded, never flagged.
+    Off,
+    /// Only in the daily summary.
+    Summary,
+    /// Notifies, grouped.
+    Review,
+    /// Notifies right away.
+    Urgent,
+}
+
+/// The user's rules: a level per built-in rule (absent means its default) and their
+/// own boundaries. Each change records the whole set, so one event is one version.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RuleSet {
+    #[serde(default)]
+    pub levels: BTreeMap<String, Level>,
+    #[serde(default)]
+    pub boundaries: Vec<Boundary>,
+}
+
+/// A line the user does not want crossed, whoever acts. It applies to effects that
+/// happen from `since`, so adding one never flags the past; a preview shows the past.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Boundary {
+    pub id: String,
+    pub level: Level,
+    pub since: DateTime<Utc>,
+    pub kind: BoundaryKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BoundaryKind {
+    /// Never send email or invites to these addresses or anyone at these domains.
+    Contact {
+        addresses: Vec<String>,
+        domains: Vec<String>,
+        actions: Vec<Action>,
+    },
+    /// Never make these Calendar changes.
+    CalendarChange { actions: Vec<Action> },
+    /// Nothing sent between two local times. `end` before `start` crosses midnight.
+    QuietHours {
+        start_minute: u16,
+        end_minute: u16,
+        days: Days,
+        zone: String,
+        actions: Vec<Action>,
+    },
+    /// More than `count` actions within `window_minutes`.
+    Burst {
+        count: u32,
+        window_minutes: u32,
+        actions: Vec<Action>,
+    },
+    /// Email to someone Picket has not seen the user exchange email with before.
+    NewRecipient,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Days {
+    Every,
+    Weekdays,
+    Weekends,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Field<T> {
@@ -330,6 +401,7 @@ pub enum SnapshotValue {
     Feedback(Feedback),
     Policy(AccountPolicy),
     Agent(AgentRegistration),
+    Rules(RuleSet),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -356,6 +428,7 @@ pub enum EventPayload {
     Feedback(Feedback),
     Policy(AccountPolicy),
     Agent(AgentRegistration),
+    Rules(RuleSet),
     Message(MessageObserved),
     Extraction(ExtractionRecord),
     Snapshot(Snapshot),
@@ -378,6 +451,7 @@ impl EventPayload {
             Self::Feedback(_) => "feedback",
             Self::Policy(_) => "policy",
             Self::Agent(_) => "agent",
+            Self::Rules(_) => "rules",
             Self::Message(_) => "message",
             Self::Extraction(_) => "extraction",
             Self::Snapshot(_) => "snapshot",

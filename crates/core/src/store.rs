@@ -9,13 +9,13 @@ use thiserror::Error;
 
 use crate::calendar::CalendarState;
 use crate::event::{
-    AgentRegistration, Coverage, CoverageState, Event, EventKey, EventPayload, Snapshot,
-    SnapshotValue, Source, canonical_json,
+    AgentRegistration, Boundary, BoundaryKind, Coverage, CoverageState, Event, EventKey,
+    EventPayload, Level, RuleSet, Snapshot, SnapshotValue, Source, canonical_json,
 };
 use crate::{
     engine::{Assessor, Finding},
     incidents::{self, ENGINE_VERSION, OutboxBatch, ReconcileSummary},
-    views::{self, FindingRecord, IncidentDetail, IncidentSummary},
+    views::{self, FindingRecord, IncidentDetail, IncidentSummary, PreviewView, RulesView},
 };
 
 const SCHEMA_VERSION: i64 = 6;
@@ -416,7 +416,17 @@ impl Store {
                 },
             });
         }
-        let summary = incidents::persist(&tx, findings, now, head)?;
+        // Reassessment caused only by the user's own settings or decisions, or by a new
+        // engine version, revises findings without new notifications: nothing happened
+        // in the user's accounts, and history must not arrive as a burst of alerts.
+        let (stored_version, assessed_before): (i64, bool) = tx.query_row(
+            "SELECT engine_version, clock IS NOT NULL FROM engine_state WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let quiet = (assessed_before && stored_version != ENGINE_VERSION)
+            || (!batch.events.is_empty() && batch.events.iter().all(user_configuration));
+        let summary = incidents::persist(&tx, findings, now, head, quiet)?;
         tx.commit()?;
         Ok(Committed { sequences, summary })
     }
@@ -584,34 +594,24 @@ impl Store {
         let Some(group) = groups.get(id) else {
             return Ok(false);
         };
-        let stamp = now
-            .timestamp_nanos_opt()
-            .ok_or(StoreError::Invalid("decision time out of range"))?;
         let events = group
             .iter()
             .filter_map(|record| record.revisions.last().map(|(_, finding)| finding))
             .filter_map(|finding| {
                 let account = views::finding_account(finding)?;
-                Some(Event {
-                    schema_version: 1,
-                    key: EventKey {
-                        account: account.to_owned(),
-                        source: Source::Picket,
-                        resource: format!("feedback/{}", finding.id),
-                        revision: stamp.to_string(),
-                    },
-                    occurred_at: now,
-                    ingested_at: now,
-                    source_time_quality: None,
-                    adapter: None,
-                    payload: EventPayload::Feedback(crate::event::Feedback {
-                        finding: finding.id.clone(),
-                        expected,
-                        actor: None,
-                    }),
-                })
+                let payload = EventPayload::Feedback(crate::event::Feedback {
+                    finding: finding.id.clone(),
+                    expected,
+                    actor: None,
+                });
+                Some(user_event(
+                    account,
+                    &format!("feedback/{}", finding.id),
+                    payload,
+                    now,
+                ))
             })
-            .collect();
+            .collect::<Result<_>>()?;
         self.commit(
             Batch {
                 events,
@@ -620,6 +620,105 @@ impl Store {
             now,
         )?;
         Ok(true)
+    }
+
+    pub fn rules(&mut self, now: DateTime<Utc>) -> Result<RulesView> {
+        Ok(views::rules_view(self.evidence()?, now))
+    }
+
+    /// What a boundary would have flagged recently, before the user saves it.
+    pub fn preview_boundary(
+        &mut self,
+        kind: BoundaryKind,
+        now: DateTime<Utc>,
+    ) -> Result<PreviewView> {
+        let kind = normalize_kind(kind);
+        let probe = RuleSet {
+            levels: BTreeMap::new(),
+            boundaries: vec![Boundary {
+                id: "preview".into(),
+                level: Level::Review,
+                since: now,
+                kind: kind.clone(),
+            }],
+        };
+        crate::rules::validate(&probe, now).map_err(|_| StoreError::Invalid("invalid boundary"))?;
+        let agents = self.agents()?;
+        Ok(views::preview(self.evidence()?, &kind, now, &agents))
+    }
+
+    pub fn set_rule_level(&mut self, rule: &str, level: Level, now: DateTime<Utc>) -> Result<()> {
+        if crate::rules::default_level(rule).is_none() {
+            return Err(StoreError::Invalid("unknown rule"));
+        }
+        self.change_rules(now, |rules| {
+            rules.levels.insert(rule.to_owned(), level);
+            Some(())
+        })
+        .map(|_| ())
+    }
+
+    /// Adds a boundary, or changes one by id while keeping when it started. Returns its id.
+    pub fn save_boundary(
+        &mut self,
+        id: Option<&str>,
+        level: Level,
+        kind: BoundaryKind,
+        now: DateTime<Utc>,
+    ) -> Result<String> {
+        let kind = normalize_kind(kind);
+        self.change_rules(now, |rules| {
+            if let Some(id) = id {
+                let boundary = rules.boundaries.iter_mut().find(|item| item.id == id)?;
+                boundary.level = level;
+                boundary.kind = kind;
+                return Some(id.to_owned());
+            }
+            let next = (1..)
+                .map(|number| format!("b-{number}"))
+                .find(|candidate| rules.boundaries.iter().all(|item| item.id != *candidate))?;
+            rules.boundaries.push(Boundary {
+                id: next.clone(),
+                level,
+                since: now,
+                kind,
+            });
+            Some(next)
+        })?
+        .ok_or(StoreError::Invalid("boundary not found"))
+    }
+
+    pub fn delete_boundary(&mut self, id: &str, now: DateTime<Utc>) -> Result<bool> {
+        Ok(self
+            .change_rules(now, |rules| {
+                let before = rules.boundaries.len();
+                rules.boundaries.retain(|item| item.id != id);
+                (rules.boundaries.len() < before).then_some(())
+            })?
+            .is_some())
+    }
+
+    /// Applies a change to the current rules and records the result as one version.
+    /// Nothing is recorded when the change does not apply.
+    fn change_rules<T>(
+        &mut self,
+        now: DateTime<Utc>,
+        change: impl FnOnce(&mut RuleSet) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let mut rules = self.evidence()?.rules().cloned().unwrap_or_default();
+        let Some(result) = change(&mut rules) else {
+            return Ok(None);
+        };
+        crate::rules::validate(&rules, now).map_err(|_| StoreError::Invalid("invalid rule set"))?;
+        let event = user_event("local", "rules", EventPayload::Rules(rules), now)?;
+        self.commit(
+            Batch {
+                events: vec![event],
+                ..Batch::default()
+            },
+            now,
+        )?;
+        Ok(Some(result))
     }
 
     fn evidence(&mut self) -> Result<&crate::engine::Evidence> {
@@ -735,7 +834,7 @@ impl Store {
         let mut latest = BTreeMap::new();
         let mut statement = self.connection.prepare(
             "SELECT seq, canonical FROM events
-             WHERE seq <= ?1 AND kind IN ('feedback', 'contact_observed', 'coverage', 'policy', 'agent', 'snapshot') ORDER BY seq",
+             WHERE seq <= ?1 AND kind IN ('feedback', 'contact_observed', 'coverage', 'policy', 'agent', 'rules', 'snapshot') ORDER BY seq",
         )?;
         let rows = statement.query_map([through_sequence], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -769,6 +868,11 @@ impl Store {
                     original_occurred_at: event.occurred_at,
                     value: SnapshotValue::Agent(value),
                 },
+                EventPayload::Rules(value) => Snapshot {
+                    original_source: event.key.source,
+                    original_occurred_at: event.occurred_at,
+                    value: SnapshotValue::Rules(value),
+                },
                 EventPayload::Snapshot(value) => value,
                 _ => continue,
             };
@@ -789,6 +893,7 @@ impl Store {
                     format!("policy/{}/{}", event.key.account, value.id)
                 }
                 SnapshotValue::Agent(value) => format!("agent/{}", value.id),
+                SnapshotValue::Rules(_) => "rules".to_owned(),
             };
             latest.insert(identity, (sequence, event.key.account, snapshot));
         }
@@ -897,7 +1002,7 @@ fn review_groups(
         "WITH flagged AS (
            SELECT DISTINCT json_extract(CAST(payload AS TEXT), '$.group') AS grp
            FROM assessment_revisions
-           WHERE json_extract(CAST(payload AS TEXT), '$.route') <> 'Timeline'
+           WHERE json_extract(CAST(payload AS TEXT), '$.route') IN ('MediumReview', 'HighReview')
              AND (?1 IS NULL OR json_extract(CAST(payload AS TEXT), '$.group') = ?1)
          )
          SELECT finding, assessed_at, payload FROM assessment_revisions
@@ -956,6 +1061,87 @@ impl views::Messages for MessageLookup<'_> {
             _ => None,
         }
     }
+}
+
+/// An input the user made in Picket. Its revision is the time plus a digest of the
+/// content, so two different changes in the same instant never collide and a retried
+/// identical change is recorded once.
+pub fn user_event(
+    account: &str,
+    resource: &str,
+    payload: EventPayload,
+    now: DateTime<Utc>,
+) -> Result<Event> {
+    let stamp = now
+        .timestamp_nanos_opt()
+        .ok_or(StoreError::Invalid("time out of range"))?;
+    let digest = Sha256::digest(canonical_json(&payload)?);
+    let short: String = digest
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(Event {
+        schema_version: 1,
+        key: EventKey {
+            account: account.to_owned(),
+            source: Source::Picket,
+            resource: resource.to_owned(),
+            revision: format!("{stamp}-{short}"),
+        },
+        occurred_at: now,
+        ingested_at: now,
+        source_time_quality: None,
+        adapter: None,
+        payload,
+    })
+}
+
+/// Addresses and domains as the engine compares them: normalized, sorted, unique.
+fn normalize_kind(kind: BoundaryKind) -> BoundaryKind {
+    let tidy = |values: Vec<String>, normalize: fn(&str) -> String| {
+        let mut values: Vec<_> = values
+            .iter()
+            .map(|value| normalize(value))
+            .filter(|value| !value.is_empty())
+            .collect();
+        values.sort();
+        values.dedup();
+        values
+    };
+    match kind {
+        BoundaryKind::Contact {
+            addresses,
+            domains,
+            actions,
+        } => {
+            let mut unique = Vec::new();
+            for action in actions {
+                if !unique.contains(&action) {
+                    unique.push(action);
+                }
+            }
+            let actions = unique;
+            BoundaryKind::Contact {
+                addresses: tidy(addresses, crate::rules::normalize_address),
+                domains: tidy(domains, crate::rules::normalize_domain),
+                actions,
+            }
+        }
+        other => other,
+    }
+}
+
+/// Inputs the user makes in Picket itself rather than observations of their accounts.
+fn user_configuration(event: &Event) -> bool {
+    event.key.source == Source::Picket
+        && matches!(
+            event.payload,
+            EventPayload::Rules(_)
+                | EventPayload::Feedback(_)
+                | EventPayload::Agent(_)
+                | EventPayload::Policy(_)
+        )
 }
 
 fn load_assessor(connection: &Connection) -> Result<Assessor> {
@@ -1088,7 +1274,7 @@ fn validate_event(event: &Event) -> Result<()> {
     }
     if matches!(
         event.payload,
-        EventPayload::Checkpoint { .. } | EventPayload::Agent(_)
+        EventPayload::Checkpoint { .. } | EventPayload::Agent(_) | EventPayload::Rules(_)
     ) && event.key.source != Source::Picket
     {
         return Err(StoreError::Invalid("only Picket may write this record"));
@@ -1096,6 +1282,8 @@ fn validate_event(event: &Event) -> Result<()> {
     match &event.payload {
         EventPayload::Agent(agent) => crate::agent::validate(agent)
             .map_err(|_| StoreError::Invalid("invalid agent registration"))?,
+        EventPayload::Rules(rules) => crate::rules::validate(rules, event.occurred_at)
+            .map_err(|_| StoreError::Invalid("invalid rule set"))?,
         EventPayload::Message(message)
             if event.key.source != Source::Messages
                 || !crate::agent::valid_id(&message.agent)

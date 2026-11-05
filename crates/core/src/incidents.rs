@@ -12,7 +12,7 @@ use crate::{
     store::Result,
 };
 
-pub(crate) const ENGINE_VERSION: i64 = 2;
+pub(crate) const ENGINE_VERSION: i64 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OutboxKind {
@@ -57,6 +57,7 @@ pub(crate) fn persist(
     findings: Vec<Finding>,
     now: DateTime<Utc>,
     through_sequence: i64,
+    quiet: bool,
 ) -> Result<ReconcileSummary> {
     let assessed = findings.len();
     let mut revised = 0;
@@ -117,6 +118,11 @@ pub(crate) fn persist(
         {
             continue;
         }
+        // A quiet revision keeps a pending alert that still applies and cancels one that
+        // no longer does, but never adds one.
+        if quiet && pending_before > 0 && ready_for_alert(&finding) {
+            continue;
+        }
         tx.execute(
             "UPDATE notification_outbox SET state='cancelled' WHERE finding=?1 AND state='pending'",
             [&finding.id],
@@ -126,7 +132,9 @@ pub(crate) fn persist(
             [&finding.id],
             |row| row.get(0),
         )?;
-        let kind = if delivered > 0 {
+        let kind = if quiet {
+            None
+        } else if delivered > 0 {
             material.then_some(OutboxKind::Correction)
         } else if ready_for_alert(&finding) {
             Some(OutboxKind::Alert)
@@ -231,9 +239,9 @@ fn ready_for_alert(finding: &Finding) -> bool {
             finding.route == Route::HighReview
                 || (finding.route == Route::MediumReview && !effect.pending)
         }
-        FindingDetail::Notice(_) => finding.route == Route::MediumReview,
-        FindingDetail::Claim(_) => false,
-        FindingDetail::Coverage(_) => finding.route == Route::MediumReview,
+        FindingDetail::Notice(_) | FindingDetail::Claim(_) | FindingDetail::Coverage(_) => {
+            finding.route.needs_review()
+        }
     }
 }
 
@@ -246,6 +254,8 @@ fn material_change(old: &Finding, new: &Finding) -> bool {
             before.actor != after.actor
                 || before.request_fit != after.request_fit
                 || before.policy_ids != after.policy_ids
+                || before.boundaries != after.boundaries
+                || before.after_revocation != after.after_revocation
                 || before.expected_feedback != after.expected_feedback
         }
         (FindingDetail::Claim(_), FindingDetail::Claim(_)) => false,

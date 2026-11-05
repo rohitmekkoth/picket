@@ -65,7 +65,7 @@ fn effect() -> Event {
 }
 
 #[test]
-fn restart_and_retry_keep_one_alert_and_late_feedback_creates_correction()
+fn restart_and_retry_keep_one_alert_and_the_users_decision_sends_nothing_more()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("synthetic.db");
@@ -102,12 +102,11 @@ fn restart_and_retry_keep_one_alert_and_late_feedback_creates_correction()
             actor: None,
         }),
     );
+    // The user's own decision revises the finding but never notifies them about it.
     reopened.append_assessed(&feedback, at(11))?;
-    let pending = reopened.pending_notifications()?;
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].kind, OutboxKind::Correction);
+    assert!(reopened.pending_notifications()?.is_empty());
     assert_eq!(reopened.reconcile(at(20))?.queued, 0);
-    assert_eq!(reopened.pending_notifications()?.len(), 1);
+    assert!(reopened.pending_notifications()?.is_empty());
     let (_, assessment) = reopened
         .current_findings()?
         .into_iter()
