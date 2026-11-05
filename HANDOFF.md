@@ -67,6 +67,15 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 - Increment 2, `feature/m6-messages` (PR #15): agent registrations, the read-only `chat.db` reader with its own `attributedBody` decoder, the Messages worker with Full Disk Access detection, a minimal Agents panel, and `request_not_captured` until request extraction confirms capture. E4 with Instinct passed; results are in `docs/decisions.md`. Picket.app needs Full Disk Access; ad hoc rebuilds may lose the grant.
 
+## M8 progress
+
+- Plan: [docs/m8-plan.md](docs/m8-plan.md); visual reference: the M8 screens canvas linked there. Decisions: `docs/decisions.md`, "M8 incident model and decisions" and "M8 rule levels and boundaries".
+- Increment 1 (PR #39, merged): incident views from assessed evidence, decisions as feedback events, agent revocation.
+- Increment 2 (PR #40, merged): per-rule levels (Urgent, Review, Summary, Off) for every finding kind; boundaries (contacts and domains, Calendar changes, quiet hours, bursts, new recipients) with a 30-day preview; quiet reassessment for user configuration and engine upgrades (engine version 3).
+- Increment 3 (`feature/m8-review-ui`, PR #41): Overview counts and Activity timeline; the product screens; fixed-destination link opener; generated UI contract (`ui/src/lib/contract.json`, refresh with `PICKET_UPDATE_CONTRACT=1 cargo test -p picket-core --test ui_contract`); Playwright screens against a synthetic IPC core.
+- Remaining: notification delivery, tray states and Pause (4); Settings, digest, export, reconnect (5); setup wizard (6, waits on the Google client choice below); uninstall and wipe (7); acceptance run with Instinct and visual pass (8).
+- Open owner decision: a Picket-owned Google OAuth client published to production but unverified (one-click sign-in, no weekly expiry, at most 100 users) versus each user's own client. The owner creates the Google Cloud project if chosen.
+
 ## Next work
 
 v1 targets one agent, Instinct over iMessage, end to end and deployed (owner decision 2026-11-02). M7 is closed for v1 (owner decision 2026-11-04): the live run's defects are fixed (PRs #30, #33) and verified by replaying the real conversation with `picket replay-extraction` (needs Full Disk Access; run from Terminal). An owner-written phrasing set was skipped; extraction robustness is later work. Known limits: approval and completion wording are keyword lists that miss unusual phrasing (failing toward unknown), and a bare "Yes" the model does not read as approval is missed. Dependencies were updated before M8; mail-parser stays on 0.11.9 until its 1.x rewrite matures (see decisions). Next: M8 (product UI and alerts), then M9 (release, including publishing the Google OAuth app so sign-ins do not expire weekly, and Developer ID signing so Full Disk Access survives updates). Fetch `main` and create a dedicated branch before implementation. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
