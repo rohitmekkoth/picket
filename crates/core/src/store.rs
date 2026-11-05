@@ -572,9 +572,7 @@ impl Store {
             return Ok(None);
         };
         let agents = self.agents()?;
-        if self.assessor.is_none() {
-            self.assessor = Some(load_assessor(&self.connection)?);
-        }
+        self.evidence()?;
         let Some(assessor) = &self.assessor else {
             return Err(StoreError::Unavailable);
         };
@@ -620,6 +618,46 @@ impl Store {
             now,
         )?;
         Ok(true)
+    }
+
+    pub fn overview(
+        &mut self,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<crate::activity::OverviewView> {
+        let agents = self.agents()?;
+        self.evidence()?;
+        let Some(assessor) = &self.assessor else {
+            return Err(StoreError::Unavailable);
+        };
+        Ok(crate::activity::overview(
+            assessor.evidence(),
+            from,
+            to,
+            now,
+            &agents,
+            &MessageLookup(&self.connection),
+        ))
+    }
+
+    pub fn activity(
+        &mut self,
+        query: &crate::activity::Query<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<crate::activity::ActivityPage> {
+        let agents = self.agents()?;
+        self.evidence()?;
+        let Some(assessor) = &self.assessor else {
+            return Err(StoreError::Unavailable);
+        };
+        Ok(crate::activity::activity(
+            assessor.evidence(),
+            query,
+            now,
+            &agents,
+            &MessageLookup(&self.connection),
+        ))
     }
 
     pub fn rules(&mut self, now: DateTime<Utc>) -> Result<RulesView> {

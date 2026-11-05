@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("Google observation preview stays local and supports keyboard interaction", async ({
+test("the browser preview stays local, says it needs the app, and supports the keyboard", async ({
   page,
   browserName,
 }, testInfo) => {
@@ -13,30 +13,29 @@ test("Google observation preview stays local and supports keyboard interaction",
     if (url.hostname !== "127.0.0.1") remoteRequests.push(request.url());
   });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Browser preview" })).toBeVisible();
-  for (const name of ["Request", "Claim", "Effect"]) {
-    await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(page.getByText("Open the desktop app")).toBeVisible();
+  for (const name of ["Overview", "Review", "Activity", "Rules", "Settings"]) {
+    await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
   }
-  await expect(page.getByRole("heading", { name: "Gmail and primary Calendar" })).toBeVisible();
-  await expect(page.getByText(/Open the desktop app to connect Google/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Registered agents" })).toBeVisible();
-  await expect(page.getByText(/Open the desktop app to add agents/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Local model" })).toBeVisible();
   // Safari uses Option-Tab for links when full keyboard access is disabled.
   const nextControl = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
   await page.keyboard.press(nextControl);
-  await expect(page.getByRole("link", { name: "Picket home" })).toBeFocused();
+  await expect(page.getByRole("link", { name: "Picket overview" })).toBeFocused();
   await page.keyboard.press(nextControl);
-  await expect(page.getByRole("button", { name: "Check connection" })).toBeFocused();
+  await expect(page.getByRole("link", { name: "Overview", exact: true })).toBeFocused();
+  await page.keyboard.press(nextControl);
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "Check connection" })).toBeEnabled();
+  await expect(page).toHaveURL(/#\/review$/);
+  await expect(page.getByRole("link", { name: "Review", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
   expect(failures).toEqual([]);
   expect(remoteRequests).toEqual([]);
-  // Keep a visual artifact for local review without retaining passing CI artifacts.
-  await page.screenshot({ path: testInfo.outputPath("foundation.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("preview.png"), fullPage: true });
 });
 
 test("notification actions select a visible test result", async ({ page }) => {

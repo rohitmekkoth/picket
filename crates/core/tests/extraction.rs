@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, FixedOffset, TimeZone, Utc};
 use picket_core::{
+    activity::{Filter, ItemKind, Query, Verdict, Who},
     engine::{ActorEvidence, ClaimStatus, ConflictReason, FindingDetail, RequestFit},
     event::{
         Action, AgentMode, AgentRegistration, Effect, Event, EventKey, EventPayload,
@@ -717,6 +718,57 @@ fn an_incident_shows_the_request_report_and_unrequested_recipient_it_was_judged_
         ]
     );
     assert!(fixture.store.incident("incident/unknown")?.is_none());
+
+    let overview = fixture.store.overview(at(0), at(30), at(20))?;
+    assert_eq!(overview.counts.agent_actions, 1);
+    assert_eq!(overview.counts.review, 1);
+    assert_eq!(
+        overview.counts.as_asked + overview.counts.unclear + overview.counts.not_linked,
+        0
+    );
+    assert_eq!(
+        overview.recent.len(),
+        1,
+        "a matched report is shown on its effect"
+    );
+    let query = Query {
+        from: at(0),
+        to: at(30),
+        who: Who::Everyone,
+        result: Filter::Any,
+        before: None,
+        limit: 1,
+    };
+    let first = fixture.store.activity(&query, at(20))?;
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].kind, ItemKind::Email);
+    assert_eq!(first.items[0].verdict, Verdict::Review);
+    assert_eq!(
+        first.items[0].incident.as_deref(),
+        Some(summary.id.as_str())
+    );
+    let second = fixture.store.activity(
+        &Query {
+            before: first.next.as_deref(),
+            ..query
+        },
+        at(20),
+    )?;
+    assert_eq!(second.items[0].kind, ItemKind::Request);
+    assert_eq!(
+        second.items[0].message.as_deref(),
+        Some("Email Sam about lunch Thursday")
+    );
+    assert!(second.next.is_none());
+    let reviews = fixture.store.activity(
+        &Query {
+            result: Filter::AsAsked,
+            limit: 50,
+            ..query
+        },
+        at(20),
+    )?;
+    assert!(reviews.items.is_empty());
 
     assert!(
         !fixture

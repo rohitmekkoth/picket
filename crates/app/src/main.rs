@@ -4,6 +4,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 #[cfg(target_os = "macos")]
+mod activity;
+#[cfg(target_os = "macos")]
 mod agents;
 #[cfg(target_os = "macos")]
 mod google_auth;
@@ -13,6 +15,8 @@ mod google_http;
 mod google_runtime;
 #[cfg(target_os = "macos")]
 mod incidents;
+#[cfg(target_os = "macos")]
+mod links;
 #[cfg(target_os = "macos")]
 mod model;
 #[cfg(target_os = "macos")]
@@ -203,10 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         connect_google,
         agents::list_agents,
         agents::register_agent,
+        activity::get_overview,
+        activity::list_activity,
         incidents::list_incidents,
         incidents::get_incident,
         incidents::resolve_incident,
         incidents::set_agent_revoked,
+        links::open_link,
         rules::get_rules,
         rules::set_rule_level,
         rules::preview_boundary,

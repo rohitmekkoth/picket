@@ -28,12 +28,12 @@ tell application "System Events"
                     if role of e is "AXStaticText" then set end of labels to value of e
                 end try
             end repeat
-            if labels contains "Desktop core connected" then exit repeat
+            if labels contains "What Picket can see" then exit repeat
             delay 0.1
         end repeat
-        if labels does not contain "Desktop core connected" then error "Native Rust connection is not displayed."
-        if labels contains "Open the desktop app to connect Google." then error "Google connection commands are unavailable in the packaged app."
-        if labels does not contain "Google Desktop OAuth client ID" and labels does not contain "Connection: monitoring" and labels does not contain "Connection: starting" then error "Google connection controls or status are missing."
+        -- The overview's data comes only from the Rust core; the browser preview shows a notice instead.
+        if labels does not contain "What Picket can see" then error "Native Rust connection is not displayed."
+        if labels contains "Open the desktop app" then error "Core commands are unavailable in the packaged app."
 
         -- Closing must preserve the process and its tray icon.
         click (first button of window "Picket" whose subrole is "AXCloseButton")
@@ -61,5 +61,5 @@ tell application "System Events"
     end repeat
     if exists process "picket-app" then error "Picket did not quit."
 end tell
-return "PASS: native IPC status, Google connection UI, close-to-tray, tray presence, single-instance restore, and quit"
+return "PASS: native IPC overview, close-to-tray, tray presence, single-instance restore, and quit"
 end run

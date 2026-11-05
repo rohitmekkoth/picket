@@ -1,0 +1,66 @@
+{
+  "action": [
+    "email_send",
+    "calendar_create",
+    "calendar_update",
+    "calendar_delete",
+    "calendar_rsvp"
+  ],
+  "coverageReason": [
+    "cursor_expired",
+    "page_limit",
+    "missing_resource",
+    "request_failed",
+    "auth_unavailable",
+    "interrupted",
+    "permission_missing",
+    "unsupported_format",
+    "undecodable",
+    "extraction_unavailable"
+  ],
+  "coverageState": [
+    "healthy",
+    "delayed",
+    "gap",
+    "disabled"
+  ],
+  "level": [
+    "urgent",
+    "review",
+    "summary",
+    "off"
+  ],
+  "notice": [
+    "forwarding",
+    "app_access",
+    "purchase",
+    "otp"
+  ],
+  "reason": [
+    "after_revocation",
+    "boundary",
+    "prohibited_action",
+    "approval_missing",
+    "extra_target",
+    "different_calendar_time",
+    "too_many_actions",
+    "different_action",
+    "outside_window",
+    "report_not_observed",
+    "report_contradicted",
+    "forwarding",
+    "app_access",
+    "otp",
+    "purchase",
+    "sign_in_needed",
+    "source_gap",
+    "source_delayed"
+  ],
+  "source": [
+    "gmail",
+    "calendar",
+    "messages",
+    "open_claw",
+    "picket"
+  ]
+}

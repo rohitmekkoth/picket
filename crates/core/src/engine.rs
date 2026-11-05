@@ -652,6 +652,60 @@ impl Evidence {
             .map(|(_, value, observed_at)| (value, observed_at))
     }
 
+    /// Live and catch-up effects that happened in a period, any account.
+    pub(crate) fn effects_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<&Event> {
+        self.effects
+            .iter()
+            .filter(|(_, at, _)| *at >= from && *at <= to)
+            .filter_map(|(_, _, seq)| self.get(*seq))
+            .collect()
+    }
+
+    pub(crate) fn claims_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<&Event> {
+        self.claims
+            .iter()
+            .filter(|(_, at, _)| *at >= from && *at <= to)
+            .filter_map(|(_, _, seq)| self.get(*seq))
+            .collect()
+    }
+
+    pub(crate) fn requests_between(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<&Event> {
+        self.requests
+            .values()
+            .flatten()
+            .filter_map(|seq| self.get(*seq))
+            .filter(|event| event.occurred_at >= from && event.occurred_at <= to)
+            .collect()
+    }
+
+    /// Recorded coverage states, oldest first, with when each was observed.
+    pub(crate) fn coverage_history(&self) -> Vec<(&str, Source, &Coverage, DateTime<Utc>)> {
+        self.coverage
+            .iter()
+            .flat_map(|((account, _, _), list)| {
+                list.iter().filter_map(move |(_, seq)| {
+                    self.get(*seq)
+                        .and_then(coverage_value)
+                        .map(|(source, value, observed_at)| {
+                            (account.as_str(), source.clone(), value, observed_at)
+                        })
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn effect_assessment(
+        &self,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> Option<Assessment> {
+        self.assess_effect(event, now)
+    }
+
+    pub(crate) fn report_check(&self, report: &Event, now: DateTime<Utc>) -> Option<ClaimCheck> {
+        self.claim_check(report, now)
+    }
+
     /// The latest recorded rule set, if the user has changed any rule.
     pub fn rules(&self) -> Option<&RuleSet> {
         self.rule_sets
@@ -784,6 +838,15 @@ impl Evidence {
 
     fn claim_finding(&self, claim: ClaimCheck) -> Finding {
         let subject = claim.observed_effect.as_ref().unwrap_or(&claim.claim);
+        Finding {
+            route: self.claim_route(&claim),
+            group: incident_group(subject),
+            id: key_finding_id("claim", &claim.claim),
+            detail: FindingDetail::Claim(claim),
+        }
+    }
+
+    pub(crate) fn claim_route(&self, claim: &ClaimCheck) -> Route {
         let id = key_finding_id("claim", &claim.claim);
         let level = match claim.status {
             ClaimStatus::NotObservedInHealthySource => self.level(rules::REPORT_NOT_OBSERVED),
@@ -795,19 +858,7 @@ impl Evidence {
             .get(&id)
             .and_then(|seq| self.get(*seq))
             .map_or(DateTime::<Utc>::MIN_UTC, |report| report.occurred_at);
-        Finding {
-            route: self.routed(level, &claim.claim.account, &id, since),
-            group: scoped_id(
-                "incident",
-                &[
-                    subject.account.as_str(),
-                    subject.source.as_str(),
-                    subject.resource.as_str(),
-                ],
-            ),
-            id,
-            detail: FindingDetail::Claim(claim),
-        }
+        self.routed(level, &claim.claim.account, &id, since)
     }
 
     fn notice_assessment(&self, event: &Event) -> Option<NoticeAssessment> {
@@ -2067,6 +2118,18 @@ fn same_targets(left: &[String], right: &[String]) -> bool {
 }
 
 /// The stable finding identity for an observed effect, used by feedback.
+/// The incident a subject's findings are grouped under.
+pub fn incident_group(key: &EventKey) -> String {
+    scoped_id(
+        "incident",
+        &[
+            key.account.as_str(),
+            key.source.as_str(),
+            key.resource.as_str(),
+        ],
+    )
+}
+
 pub fn effect_finding_id(key: &EventKey) -> String {
     key_finding_id("effect", key)
 }
