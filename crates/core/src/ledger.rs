@@ -19,7 +19,6 @@ use crate::{
 /// Deadlines pass without new input, so the writer reassesses on this interval.
 const TICK: Duration = Duration::from_secs(5);
 const RETENTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const RETENTION_DAYS: i64 = 180;
 /// Pending commits per writer; a full queue makes producers wait, not drop.
 const QUEUE: usize = 64;
 
@@ -122,7 +121,8 @@ impl Writer {
         let mut store = Store::open(path)?;
         let now = Utc::now();
         store.reconcile(now)?;
-        store.retain_older_than(now - chrono::Duration::days(RETENTION_DAYS))?;
+        let days = store.settings()?.retention_days;
+        store.retain_older_than(now - chrono::Duration::days(i64::from(days)))?;
         let (sender, receiver) = mpsc::sync_channel(QUEUE);
         let thread = thread::Builder::new()
             .name("picket-writer".into())
@@ -229,7 +229,12 @@ fn run(mut store: Store, receiver: Receiver<Request>) {
             Err(RecvTimeoutError::Disconnected) => return,
         }
         if Instant::now() >= next_retention {
-            let cutoff = Utc::now() - chrono::Duration::days(RETENTION_DAYS);
+            let days = store
+                .settings()
+                .map_or(crate::settings::DEFAULT_RETENTION_DAYS, |settings| {
+                    settings.retention_days
+                });
+            let cutoff = Utc::now() - chrono::Duration::days(i64::from(days));
             if store.retain_older_than(cutoff).is_err() {
                 tracing::warn!("event retention failed");
             }

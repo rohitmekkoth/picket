@@ -7,11 +7,12 @@ import {
   type IncidentSummary,
   level,
   notice,
+  type Reason,
   reason,
   source,
 } from "./api";
 import contract from "./contract.json";
-import { incidentTitle } from "./copy";
+import { incidentTitle, reasonExplanation } from "./copy";
 
 // contract.json is written by the core's ui_contract test from the Rust types, so a
 // variant the core can send but these schemas would reject fails here, not at runtime.
@@ -43,4 +44,5 @@ test.each(alertCopy)("a $kind incident for $reason is titled as its notification
     people: [],
   } as IncidentSummary;
   expect(incidentTitle(summary)).toBe(item.title);
+  expect(reasonExplanation[item.reason as Reason]).toBe(item.explanation);
 });

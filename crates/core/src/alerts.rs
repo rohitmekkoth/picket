@@ -6,7 +6,11 @@ use std::{collections::BTreeMap, fmt::Display};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 
-use crate::views::{IncidentSummary, Kind, Person, Reason, Status};
+use crate::{
+    activity::Counts,
+    event::Source,
+    views::{IncidentSummary, Kind, Person, Reason, Status},
+};
 
 /// Review-level notifications post at most this often, grouped (design: notification behavior).
 pub const REVIEW_INTERVAL: Duration = Duration::minutes(10);
@@ -28,6 +32,7 @@ pub struct PendingAlert {
 pub enum Target {
     Incident(String),
     Review,
+    Overview,
 }
 
 /// One notification to post, and the outbox items it delivers.
@@ -143,6 +148,99 @@ fn group(items: &[Merged<'_>], paced: bool, what: &str) -> Post {
     }
 }
 
+/// What the daily summary covers: one local day.
+pub struct Day<'a> {
+    /// The one watched agent's name, when there is exactly one.
+    pub agent: Option<&'a str>,
+    pub counts: Counts,
+    /// Findings routed to the summary level, such as purchase notices.
+    pub summary_items: usize,
+    /// Sources with a gap or delay at the end of the day.
+    pub gaps: Vec<Source>,
+}
+
+/// The daily summary notification. It opens the Overview, and never says Picket saw
+/// everything: gaps are named, and counts are what Picket could link.
+pub fn daily_summary(day: &Day<'_>) -> Post {
+    let who = day.agent.unwrap_or("Your agents");
+    let counts = &day.counts;
+    let mut sentences = Vec::new();
+    if counts.agent_actions == 0 {
+        sentences.push(format!("{who} did nothing Picket could link today."));
+    } else {
+        let parts: Vec<String> = [
+            (counts.as_asked, "as asked"),
+            (counts.review, "to review"),
+            (counts.unclear, "unclear"),
+        ]
+        .iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, what)| format!("{count} {what}"))
+        .collect();
+        let things = plural(counts.agent_actions, "thing", "things");
+        sentences.push(if parts.is_empty() {
+            format!("{who} did {things}.")
+        } else {
+            format!("{who} did {things}: {}.", parts.join(", "))
+        });
+    }
+    if counts.not_linked == 1 {
+        sentences.push("1 other change wasn’t linked to an agent.".into());
+    } else if counts.not_linked > 1 {
+        sentences.push(format!(
+            "{} other changes weren’t linked to an agent.",
+            counts.not_linked
+        ));
+    }
+    if day.summary_items > 0 {
+        sentences.push(format!(
+            "{} for this summary.",
+            plural(day.summary_items, "notice", "notices")
+        ));
+    }
+    let mut gaps: Vec<&str> = day.gaps.iter().map(source_name).collect();
+    gaps.dedup();
+    if !gaps.is_empty() {
+        sentences.push(format!(
+            "Picket couldn’t see all of {} today.",
+            and_list(&gaps)
+        ));
+    }
+    Post {
+        title: match day.agent {
+            Some(agent) => format!("Today with {agent}"),
+            None => "Today in Picket".into(),
+        },
+        body: sentences.join(" "),
+        target: Target::Overview,
+        actions: false,
+        paced: false,
+        outbox: Vec::new(),
+    }
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+fn source_name(source: &Source) -> &'static str {
+    match source {
+        Source::Gmail => "Gmail",
+        Source::Calendar => "Calendar",
+        Source::Messages => "your chat",
+        Source::OpenClaw => "OpenClaw",
+        Source::Picket => "Picket",
+    }
+}
+
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// The headline for an incident. Mirrors `incidentTitle` in `ui/src/lib/copy.ts`; the
 /// UI contract test checks both give the same words.
 pub fn incident_title(summary: &IncidentSummary) -> String {
@@ -176,6 +274,32 @@ pub fn incident_title(summary: &IncidentSummary) -> String {
         Reason::SignInNeeded => "Picket needs you to sign in to Google again".into(),
         Reason::SourceGap => "Picket couldn’t see everything for a while".into(),
         Reason::SourceDelayed => "Picket is catching up".into(),
+    }
+}
+
+/// Why an incident was raised, in one sentence. Mirrors `reasonExplanation` in copy.ts.
+pub fn reason_explanation(reason: Reason) -> &'static str {
+    match reason {
+        Reason::AfterRevocation => "You marked this agent revoked before it acted.",
+        Reason::Boundary => "It crossed a boundary you set.",
+        Reason::ProhibitedAction => "Your request said not to do this.",
+        Reason::ApprovalMissing => "You asked to approve it first, and you hadn’t.",
+        Reason::ExtraTarget => "Someone received it who wasn’t named in your request.",
+        Reason::DifferentCalendarTime => "The time differs from the one you asked for.",
+        Reason::TooManyActions => "It happened more times than you asked for.",
+        Reason::DifferentAction => "It was a different kind of action from the one you asked for.",
+        Reason::OutsideWindow => "It happened outside the time you gave.",
+        Reason::ReportNotObserved => {
+            "The agent reported it, but nothing matching appeared in your account."
+        }
+        Reason::ReportContradicted => "What the agent reported doesn’t match what Picket saw.",
+        Reason::Forwarding => "An email that looks like a forwarding notice arrived.",
+        Reason::AppAccess => "An email that looks like an app access notice arrived.",
+        Reason::Otp => "A verification code arrived.",
+        Reason::Purchase => "An order or receipt email arrived.",
+        Reason::SignInNeeded => "Google stopped accepting Picket’s sign-in.",
+        Reason::SourceGap => "Some activity may be missing for this period.",
+        Reason::SourceDelayed => "Picket fell behind and is checking what happened meanwhile.",
     }
 }
 
@@ -355,6 +479,43 @@ mod tests {
         item.incident.subject = None;
         let posts = plan(&[item], None, at(60 * 24 * 2), &Utc);
         assert_eq!(posts[0].body, "Jan 15, 8:00 AM");
+    }
+
+    #[test]
+    fn the_daily_summary_counts_and_names_gaps() {
+        let counts = Counts {
+            agent_actions: 4,
+            as_asked: 3,
+            review: 1,
+            unclear: 0,
+            not_linked: 1,
+        };
+        let post = daily_summary(&Day {
+            agent: Some("Instinct"),
+            counts,
+            summary_items: 2,
+            gaps: vec![Source::Gmail, Source::Messages],
+        });
+        assert_eq!(post.title, "Today with Instinct");
+        assert_eq!(
+            post.body,
+            "Instinct did 4 things: 3 as asked, 1 to review. 1 other change wasn’t linked to \
+             an agent. 2 notices for this summary. Picket couldn’t see all of Gmail and your \
+             chat today."
+        );
+        assert_eq!(post.target, Target::Overview);
+
+        let quiet = daily_summary(&Day {
+            agent: None,
+            counts: Counts::default(),
+            summary_items: 0,
+            gaps: vec![],
+        });
+        assert_eq!(quiet.title, "Today in Picket");
+        assert_eq!(
+            quiet.body,
+            "Your agents did nothing Picket could link today."
+        );
     }
 
     #[test]

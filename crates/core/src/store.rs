@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -16,10 +16,11 @@ use crate::{
     alerts::PendingAlert,
     engine::{Assessor, Finding, Route},
     incidents::{self, ENGINE_VERSION, OutboxBatch, OutboxKind, ReconcileSummary},
+    settings::{Settings, SettingsPatch},
     views::{self, FindingRecord, IncidentDetail, IncidentSummary, PreviewView, RulesView},
 };
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -251,6 +252,22 @@ impl Store {
                  ALTER TABLE notification_outbox ADD COLUMN delivered_at TEXT;
                  ALTER TABLE notification_outbox ADD COLUMN paced INTEGER NOT NULL DEFAULT 0;
                  PRAGMA user_version=7;
+                 COMMIT;",
+            )?;
+        }
+        if version < 8 {
+            // Preferences, not evidence: one validated row (see `settings`).
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 CREATE TABLE settings (
+                   id INTEGER PRIMARY KEY CHECK(id = 1),
+                   summary_minutes INTEGER CHECK(summary_minutes BETWEEN 0 AND 1439),
+                   retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650),
+                   alerts_paused_until TEXT,
+                   last_summary_day TEXT
+                 );
+                 INSERT INTO settings(id, summary_minutes, retention_days) VALUES (1, 1260, 180);
+                 PRAGMA user_version=8;
                  COMMIT;",
             )?;
         }
@@ -893,6 +910,84 @@ impl Store {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?)
+    }
+
+    pub fn settings(&self) -> Result<Settings> {
+        let (summary, retention, paused, last): (Option<u16>, u16, Option<String>, Option<String>) =
+            self.connection.query_row(
+                "SELECT summary_minutes, retention_days, alerts_paused_until, last_summary_day
+                 FROM settings WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        let paused = paused
+            .map(|value| {
+                DateTime::parse_from_rfc3339(&value)
+                    .map(|time| time.with_timezone(&Utc))
+                    .map_err(|_| StoreError::Invalid("invalid pause time"))
+            })
+            .transpose()?;
+        let last = last
+            .map(|value| {
+                NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+                    .map_err(|_| StoreError::Invalid("invalid summary day"))
+            })
+            .transpose()?;
+        Ok(Settings {
+            summary_minutes: summary,
+            retention_days: retention,
+            alerts_paused_until: paused,
+            last_summary_day: last,
+        })
+    }
+
+    /// Applies a validated change from the Settings screen. A shorter retention applies
+    /// at once, so data the person asked to drop does not wait for the daily pass.
+    pub fn update_settings(
+        &mut self,
+        patch: &SettingsPatch,
+        now: DateTime<Utc>,
+    ) -> Result<Settings> {
+        let next = self.settings()?.apply(patch).map_err(StoreError::Invalid)?;
+        self.connection.execute(
+            "UPDATE settings SET summary_minutes=?1, retention_days=?2 WHERE id=1",
+            params![next.summary_minutes, next.retention_days],
+        )?;
+        self.retain_older_than(now - chrono::Duration::days(i64::from(next.retention_days)))?;
+        Ok(next)
+    }
+
+    pub fn set_alerts_paused_until(&mut self, until: Option<DateTime<Utc>>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE settings SET alerts_paused_until=?1 WHERE id=1",
+            [until.map(|time| time.to_rfc3339())],
+        )?;
+        Ok(())
+    }
+
+    /// Records the local day the latest daily summary covered.
+    pub fn set_last_summary_day(&mut self, day: NaiveDate) -> Result<()> {
+        self.connection.execute(
+            "UPDATE settings SET last_summary_day=?1 WHERE id=1",
+            [day.format("%Y-%m-%d").to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Findings routed to the daily summary that were first assessed in the period and
+    /// still are summary items.
+    pub fn summary_items(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<usize> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(DISTINCT current.finding) FROM assessment_current AS current
+             JOIN assessment_revisions AS now
+               ON now.finding=current.finding AND now.revision=current.revision
+             WHERE json_extract(CAST(now.payload AS TEXT), '$.route')='Summary'
+               AND (SELECT MIN(assessed_at) FROM assessment_revisions AS first
+                    WHERE first.finding=current.finding) BETWEEN ?1 AND ?2",
+            params![from.to_rfc3339(), to.to_rfc3339()],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     pub fn verify(&self) -> Result<Verification> {
