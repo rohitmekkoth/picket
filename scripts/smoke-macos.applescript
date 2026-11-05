@@ -23,7 +23,10 @@ tell application "System Events"
             set allElements to entire contents of window "Picket"
             set labels to {}
             repeat with e in allElements
-                if role of e is "AXStaticText" then set end of labels to value of e
+                -- A re-render can remove an element after the snapshot; skip it.
+                try
+                    if role of e is "AXStaticText" then set end of labels to value of e
+                end try
             end repeat
             if labels contains "Desktop core connected" then exit repeat
             delay 0.1
