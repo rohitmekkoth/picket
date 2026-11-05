@@ -12,6 +12,8 @@ mod google_http;
 #[cfg(target_os = "macos")]
 mod google_runtime;
 #[cfg(target_os = "macos")]
+mod incidents;
+#[cfg(target_os = "macos")]
 mod model;
 #[cfg(target_os = "macos")]
 use std::{
@@ -199,6 +201,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         connect_google,
         agents::list_agents,
         agents::register_agent,
+        incidents::list_incidents,
+        incidents::get_incident,
+        incidents::resolve_incident,
+        incidents::set_agent_revoked,
         model::model_status,
         model::download_model
     ]);

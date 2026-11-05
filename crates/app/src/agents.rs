@@ -118,6 +118,7 @@ pub fn register_agent(
         connected_since: None,
         enabled: true,
         region,
+        revoked_at: None,
     };
     agent::validate(&registration).map_err(|error| error.to_string())?;
     let now = Utc::now();
