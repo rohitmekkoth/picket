@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::event::{
-    AccountPolicy, Action, ClaimChannel, Coverage, CoverageReason, CoverageState, Effect, Event,
-    EventKey, EventPayload, Feedback, Field, NoticeKind, Origin, Request, SnapshotValue, Source,
-    ToolOutcome, ToolResult,
+    AccountPolicy, Action, AgentRegistration, ClaimChannel, Coverage, CoverageReason,
+    CoverageState, Effect, Event, EventKey, EventPayload, Feedback, Field, NoticeKind, Origin,
+    Request, SnapshotValue, Source, ToolOutcome, ToolResult,
 };
 
 const MAX_CANDIDATES: usize = 128;
@@ -73,6 +73,9 @@ pub struct Assessment {
     pub pending: bool,
     pub route: Route,
     pub expected_feedback: Option<bool>,
+    /// The attributed agent acted at or after the user marked it revoked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_revocation: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -135,6 +138,16 @@ pub struct Finding {
     pub detail: FindingDetail,
 }
 
+/// The events behind one effect assessment: the effect, the request it was judged
+/// against, the agent reports that match it, and recipients the request did not cover.
+#[derive(Clone, Debug)]
+pub struct EffectBasis<'a> {
+    pub effect: &'a Event,
+    pub request: Option<&'a Event>,
+    pub reports: Vec<&'a Event>,
+    pub extra_targets: Vec<String>,
+}
+
 /// Engine-relevant visible events, indexed so an assessment reads only its candidates.
 /// Each index key is a necessary condition of the predicate that consumes it, so a
 /// lookup returns a superset of the matches a full scan would find. Candidates are
@@ -153,6 +166,7 @@ pub struct Evidence {
     notices: Vec<i64>,
     effect_findings: BTreeMap<String, i64>,
     deadlines: BTreeSet<(DateTime<Utc>, i64)>,
+    agents: BTreeMap<String, Vec<i64>>,
 }
 
 impl Evidence {
@@ -239,6 +253,8 @@ impl Evidence {
                     push_sorted(self.feedback.entry(value.finding.clone()).or_default(), seq);
                 } else if policy(&event).is_some() {
                     push_sorted(self.policies.entry(account).or_default(), seq);
+                } else if let Some(agent) = registration(&event) {
+                    push_sorted(self.agents.entry(agent.id.clone()).or_default(), seq);
                 } else if let Some((source, value, observed_at)) = coverage_value(&event) {
                     let list = self
                         .coverage
@@ -348,11 +364,20 @@ impl Evidence {
             })
             .max_by_key(|(at, _)| *at)
             .and_then(|(_, value)| value);
+        let after_revocation = match &actor {
+            ActorEvidence::Reported(agent)
+            | ActorEvidence::RuntimeLinked(agent)
+            | ActorEvidence::UserConfirmed(agent) => self
+                .revoked_at(agent)
+                .is_some_and(|at| event.occurred_at >= at),
+            _ => false,
+        };
         let route = if expected_feedback == Some(true) {
             Route::Timeline
         } else if policy_hits.iter().any(|(_, high)| *high) {
             Route::HighReview
-        } else if !policy_hits.is_empty()
+        } else if after_revocation
+            || !policy_hits.is_empty()
             || (!pending
                 && matches!(request_fit, RequestFit::Conflicts(_))
                 && matches!(
@@ -375,6 +400,7 @@ impl Evidence {
             pending,
             route,
             expected_feedback,
+            after_revocation,
         })
     }
 
@@ -567,6 +593,81 @@ impl Evidence {
             .map(|(_, value, observed_at)| (value, observed_at))
     }
 
+    /// When the user marked an agent revoked, from its latest registration.
+    fn revoked_at(&self, agent: &str) -> Option<DateTime<Utc>> {
+        self.list(self.agents.get(agent))
+            .filter_map(registration)
+            .last()
+            .and_then(|registration| registration.revoked_at)
+    }
+
+    /// The user's latest decision on a finding: expected, not expected, or withdrawn
+    /// (`None`), with when it was recorded.
+    pub fn decision(&self, account: &str, finding: &str) -> Option<(Option<bool>, DateTime<Utc>)> {
+        self.list(self.feedback.get(finding))
+            .filter(|candidate| candidate.key.account == account)
+            .filter_map(|candidate| {
+                feedback(candidate)
+                    .filter(|(value, _)| value.finding == finding)
+                    .map(|(value, at)| (candidate.ingested_at, value.expected, at))
+            })
+            .max_by_key(|(ingested, _, _)| *ingested)
+            .map(|(_, expected, at)| (expected, at))
+    }
+
+    /// The effect event a finding is about.
+    pub fn effect_event(&self, key: &EventKey) -> Option<&Event> {
+        self.effect_findings
+            .get(&effect_finding_id(key))
+            .and_then(|seq| self.get(*seq))
+    }
+
+    /// Any retained event by its key and kind, for display.
+    pub fn event(&self, key: &EventKey, kind: &str) -> Option<&Event> {
+        self.events
+            .values()
+            .find(|event| event.key == *key && event.payload.kind() == kind)
+    }
+
+    /// What an effect's assessment rests on, chosen by the same selection the
+    /// assessment uses, so a view cannot show a different request or report.
+    pub fn effect_basis(&self, assessment: &Assessment) -> Option<EffectBasis<'_>> {
+        let event = self.effect_event(&assessment.effect)?;
+        let EventPayload::Effect(effect) = &event.payload else {
+            return None;
+        };
+        let account = &event.key.account;
+        let mut candidates: BTreeMap<i64, &Event> = self
+            .claims_near(account, event.occurred_at)
+            .into_iter()
+            .collect();
+        candidates.extend(self.by_resource(account, &event.key.resource));
+        let reports = candidates
+            .into_values()
+            .filter(|candidate| match &candidate.payload {
+                EventPayload::Claim(claim) => self.claim_matches(candidate, claim, event, effect),
+                _ => false,
+            })
+            .collect();
+        let request = self
+            .select_request(event, effect, &assessment.actor)
+            .ok()
+            .map(|(request, _)| request);
+        let extra = match request.map(|request| &request.payload) {
+            Some(EventPayload::Request(value)) => extra_targets(value, effect)
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some(EffectBasis {
+            effect: event,
+            request,
+            reports,
+            extra_targets: extra,
+        })
+    }
+
     fn actor_for(&self, event: &Event, effect: &Effect, finding: &str) -> ActorEvidence {
         if effect.external_change {
             return ActorEvidence::Unknown;
@@ -719,9 +820,28 @@ impl Evidence {
     }
 
     fn request_fit(&self, event: &Event, effect: &Effect, actor: &ActorEvidence) -> RequestFit {
+        match self.select_request(event, effect, actor) {
+            Ok((request, count)) => match &request.payload {
+                EventPayload::Request(value) => {
+                    compare_request(value, effect, count, event.occurred_at)
+                }
+                _ => RequestFit::NoObservedRequest,
+            },
+            Err(fit) => fit,
+        }
+    }
+
+    /// The request an effect is judged against, with the linked action count, or the
+    /// verdict when no single request applies.
+    fn select_request<'a>(
+        &'a self,
+        event: &Event,
+        effect: &Effect,
+        actor: &ActorEvidence,
+    ) -> Result<(&'a Event, Option<u32>), RequestFit> {
         let agent = match actor {
             ActorEvidence::Reported(agent) | ActorEvidence::RuntimeLinked(agent) => agent,
-            _ => return RequestFit::NotAssessed,
+            _ => return Err(RequestFit::NotAssessed),
         };
         let account = &event.key.account;
         // A task link needs a reason: a runtime result for this resource, or a claim that
@@ -749,7 +869,7 @@ impl Evidence {
             })
             .collect();
         if task_hints.len() > 1 {
-            return RequestFit::AmbiguousTask;
+            return Err(RequestFit::AmbiguousTask);
         }
         // A report can come after the user has moved on to another request; a hint whose
         // task did not yet exist when the effect happened names the wrong task. The task
@@ -780,30 +900,30 @@ impl Evidence {
                     EventPayload::Request(request)
                         if task_hint.is_none_or(|task| request.task == *task) =>
                     {
-                        Some((candidate.occurred_at, request))
+                        Some((candidate.occurred_at, candidate, request))
                     }
                     _ => None,
                 }
             })
             .collect();
         if candidates.len() > MAX_CANDIDATES {
-            return RequestFit::InsufficientEvidence;
+            return Err(RequestFit::InsufficientEvidence);
         }
         let mut latest = BTreeMap::new();
-        for (at, request) in candidates {
-            let entry = latest.entry(&request.task).or_insert((at, request));
+        for (at, candidate, request) in candidates {
+            let entry = latest.entry(&request.task).or_insert((at, candidate));
             if at > entry.0 {
-                *entry = (at, request);
+                *entry = (at, candidate);
             }
         }
         if task_hint.is_none() && latest.len() == 1 {
-            return RequestFit::InsufficientEvidence;
+            return Err(RequestFit::InsufficientEvidence);
         }
         match latest.len() {
             0 if self.request_captured(account, agent, event.occurred_at) => {
-                RequestFit::NoObservedRequest
+                Err(RequestFit::NoObservedRequest)
             }
-            0 => RequestFit::RequestNotCaptured,
+            0 => Err(RequestFit::RequestNotCaptured),
             1 => match latest.into_values().next() {
                 Some((_, request)) => {
                     let count = task_hint.and_then(|task| {
@@ -811,11 +931,11 @@ impl Evidence {
                             .then(|| self.linked_action_count(event, agent, task))
                             .flatten()
                     });
-                    compare_request(request, effect, count, event.occurred_at)
+                    Ok((request, count))
                 }
-                None => RequestFit::NoObservedRequest,
+                None => Err(RequestFit::NoObservedRequest),
             },
-            _ => RequestFit::AmbiguousTask,
+            _ => Err(RequestFit::AmbiguousTask),
         }
     }
 
@@ -951,6 +1071,30 @@ impl Evidence {
                     .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
                     .collect(),
                 );
+            }
+            EventPayload::Agent(_) | EventPayload::Snapshot(_) if registration(event).is_some() => {
+                // Any change can add or lift a revocation; reassess from the earliest one.
+                let since = registration(event).and_then(|agent| {
+                    self.list(self.agents.get(&agent.id))
+                        .filter_map(registration)
+                        .filter_map(|item| item.revoked_at)
+                        .min()
+                });
+                if let Some(since) = since {
+                    let accounts: BTreeSet<_> = self
+                        .effects
+                        .iter()
+                        .map(|(account, _, _)| account.clone())
+                        .collect();
+                    for account in accounts {
+                        effects(
+                            &mut subjects,
+                            time_range(&self.effects, &account, since, DateTime::<Utc>::MAX_UTC)
+                                .filter_map(|seq| self.get(seq).map(|item| (seq, item)))
+                                .collect(),
+                        );
+                    }
+                }
             }
             EventPayload::Feedback(value) => {
                 if let Some(effect) = self.effect_findings.get(&value.finding) {
@@ -1405,6 +1549,21 @@ fn feedback(event: &Event) -> Option<(&Feedback, DateTime<Utc>)> {
     }
 }
 
+fn registration(event: &Event) -> Option<&AgentRegistration> {
+    match &event.payload {
+        EventPayload::Agent(value) if event.key.source == Source::Picket => Some(value),
+        EventPayload::Snapshot(snapshot)
+            if event.key.source == Source::Picket && snapshot.original_source == Source::Picket =>
+        {
+            match &snapshot.value {
+                SnapshotValue::Agent(value) => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn policy(event: &Event) -> Option<(&AccountPolicy, DateTime<Utc>)> {
     match &event.payload {
         EventPayload::Policy(value) if event.key.source == Source::Picket => {
@@ -1423,6 +1582,21 @@ fn policy(event: &Event) -> Option<(&AccountPolicy, DateTime<Utc>)> {
     }
 }
 
+/// Effect recipients the request neither addressed nor named.
+pub fn extra_targets<'a>(request: &Request, effect: &'a Effect) -> Vec<&'a str> {
+    let Field::Known(targets) = &request.targets else {
+        return Vec::new();
+    };
+    effect
+        .targets
+        .iter()
+        .filter(|target| {
+            !targets.contains(target) && !named_in(&request.target_names, effect, target)
+        })
+        .map(String::as_str)
+        .collect()
+}
+
 fn compare_request(
     request: &Request,
     effect: &Effect,
@@ -1438,11 +1612,7 @@ fn compare_request(
     {
         conflicts.push(ConflictReason::DifferentAction);
     }
-    if let Field::Known(targets) = &request.targets
-        && effect.targets.iter().any(|target| {
-            !targets.contains(target) && !named_in(&request.target_names, effect, target)
-        })
-    {
+    if !extra_targets(request, effect).is_empty() {
         conflicts.push(ConflictReason::ExtraTarget);
     }
     if request.requires_approval == Field::Known(true) && !request.approved {
@@ -1883,6 +2053,112 @@ mod tests {
             value.external_change = true;
         }
         assert_eq!(one(&[changed, tool()]).actor, ActorEvidence::Unknown);
+    }
+
+    fn reported_claim() -> Event {
+        event(
+            Source::Messages,
+            "claim-1",
+            11,
+            EventPayload::Claim(Claim {
+                target_names: Vec::new(),
+                channel: crate::event::ClaimChannel::UserAccount,
+                agent: "agent-1".into(),
+                task: None,
+                action: Action::EmailSend,
+                targets: vec!["a@example.test".into()],
+                provider_resource: Some("message-1".into()),
+            }),
+        )
+    }
+
+    fn registration_event(minute: i64, revoked: Option<i64>) -> Event {
+        let mut value = event(
+            Source::Picket,
+            "agent/agent-1",
+            minute,
+            EventPayload::Agent(AgentRegistration {
+                id: "agent-1".into(),
+                name: "Agent".into(),
+                mode: crate::event::AgentMode::EffectsOnly,
+                handles: Vec::new(),
+                connected_since: None,
+                enabled: true,
+                region: None,
+                revoked_at: revoked.map(time),
+            }),
+        );
+        value.key.account = "local".into();
+        value.key.revision = minute.to_string();
+        value
+    }
+
+    #[test]
+    fn activity_after_revocation_needs_review_and_earlier_activity_does_not() {
+        let base = [effect(), reported_claim()];
+        assert!(!one(&base).after_revocation);
+        let revoked_later = [&base[..], &[registration_event(12, Some(12))]].concat();
+        let result = one(&revoked_later);
+        assert!(!result.after_revocation);
+        assert_eq!(result.route, Route::Timeline);
+        let revoked_before = [&base[..], &[registration_event(5, Some(5))]].concat();
+        let result = one(&revoked_before);
+        assert!(result.after_revocation);
+        assert_eq!(result.route, Route::MediumReview);
+        // A later registration without a revocation lifts it.
+        let restored = [&revoked_before[..], &[registration_event(15, None)]].concat();
+        assert!(!one(&restored).after_revocation);
+    }
+
+    #[test]
+    fn a_late_revocation_reassesses_earlier_effects_incrementally() {
+        let mut assessor = Assessor::default();
+        assessor.observe(1, effect(), time(20));
+        assessor.observe(2, reported_claim(), time(20));
+        assessor.advance(time(20));
+        assessor.observe(3, registration_event(5, Some(5)), time(21));
+        let findings = assessor.advance(time(21));
+        let revised = findings
+            .iter()
+            .find_map(|finding| match &finding.detail {
+                FindingDetail::Effect(assessment) => Some(assessment),
+                _ => None,
+            })
+            .map(|assessment| assessment.after_revocation);
+        assert_eq!(revised, Some(true));
+    }
+
+    #[test]
+    fn effect_basis_names_the_request_reports_and_extra_recipients() {
+        let mut wide = effect();
+        if let EventPayload::Effect(value) = &mut wide.payload {
+            value.targets.push("b@example.test".into());
+        }
+        let mut claim = reported_claim();
+        if let EventPayload::Claim(value) = &mut claim.payload {
+            value.targets.push("b@example.test".into());
+            value.task = Some("task-1".into());
+        }
+        let inputs = [request(), wide, claim, capture(0, CoverageState::Healthy)];
+        let evidence = Evidence::visible(&inputs, time(20));
+        let assessment = evidence.assess(time(20)).remove(0);
+        assert_eq!(
+            assessment.request_fit,
+            RequestFit::Conflicts(vec![ConflictReason::ExtraTarget])
+        );
+        let basis = evidence.effect_basis(&assessment);
+        let basis = basis.as_ref();
+        assert_eq!(
+            basis
+                .and_then(|item| item.request)
+                .map(|item| item.key.resource.as_str()),
+            Some("user-request")
+        );
+        assert_eq!(basis.map(|item| item.reports.len()), Some(1));
+        assert_eq!(
+            basis.map(|item| item.extra_targets.clone()),
+            Some(vec!["b@example.test".to_owned()])
+        );
     }
 
     #[test]

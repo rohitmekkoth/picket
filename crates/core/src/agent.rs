@@ -148,6 +148,7 @@ mod tests {
             connected_since: None,
             enabled: true,
             region: Some("US".into()),
+            revoked_at: None,
         };
         assert_eq!(validate(&agent), Ok(()));
         agent.handles = vec!["(415) 555-0132".into()];

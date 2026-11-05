@@ -11,6 +11,7 @@ use picket_core::{
     },
     extract::{ScriptedModel, extract_pending},
     store::{Batch, Store},
+    views::{ActorBasis, HistoryKind, Kind, Reason, Severity, Status},
 };
 use serde_json::{Value, json};
 
@@ -119,6 +120,7 @@ impl Fixture {
                 connected_since: None,
                 enabled: true,
                 region: None,
+                revoked_at: None,
             }),
         );
         store.append_assessed(&registration, at(0))?;
@@ -142,8 +144,11 @@ impl Fixture {
     ) -> Result<()> {
         self.texts.insert(guid.into(), text.into());
         self.model.responses.push((text.into(), reply));
-        self.store
-            .append_assessed(&message(guid, minute, direction), at(minute))?;
+        let mut observed = message(guid, minute, direction);
+        if let EventPayload::Message(value) = &mut observed.payload {
+            value.snippet = picket_core::agent::snippet(text);
+        }
+        self.store.append_assessed(&observed, at(minute))?;
         Ok(())
     }
 
@@ -635,5 +640,103 @@ fn a_late_report_and_an_explicit_approval_keep_the_send_with_its_own_task() -> R
         RequestFit::InsufficientEvidence,
         "judged against the approved thank-you task, not the later budget request"
     );
+    Ok(())
+}
+
+#[test]
+fn an_incident_shows_the_request_report_and_unrequested_recipient_it_was_judged_on() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.say(
+        "m1",
+        1,
+        MessageDirection::FromUser,
+        "Email Sam about lunch Thursday",
+        request("new_task", "not_required", false),
+    )?;
+    let mut email = sent("g1", 2, "sam@example.test", "Sam Lee");
+    if let EventPayload::Effect(value) = &mut email.payload {
+        value.targets.push("jordan@example.test".into());
+        value
+            .target_names
+            .insert("jordan@example.test".into(), "Jordan Park".into());
+    }
+    fixture.store.append_assessed(&email, at(2))?;
+    fixture.say(
+        "m2",
+        3,
+        MessageDirection::FromAgent,
+        "Sent!",
+        claim_for_task(&["Sam"], "m1"),
+    )?;
+    fixture.extract(4)?;
+    assert!(
+        fixture.store.incidents()?.is_empty(),
+        "nothing is flagged while follow-up can still arrive"
+    );
+    fixture.store.reconcile(at(20))?;
+
+    let incidents = fixture.store.incidents()?;
+    assert_eq!(incidents.len(), 1);
+    let summary = &incidents[0];
+    assert_eq!(summary.kind, Kind::Email);
+    assert_eq!(summary.severity, Severity::Review);
+    assert_eq!(summary.status, Status::Open);
+    assert_eq!(summary.reasons, vec![Reason::ExtraTarget]);
+    assert_eq!(summary.agent.as_deref(), Some("Instinct"));
+    let unrequested: Vec<_> = summary
+        .people
+        .iter()
+        .filter(|person| person.unrequested)
+        .map(|person| person.name.as_deref())
+        .collect();
+    assert_eq!(unrequested, vec![Some("Jordan Park")]);
+
+    let detail = fixture
+        .store
+        .incident(&summary.id)?
+        .ok_or("incident detail missing")?;
+    assert_eq!(
+        detail
+            .request
+            .as_ref()
+            .and_then(|request| request.message.as_deref()),
+        Some("Email Sam about lunch Thursday")
+    );
+    assert_eq!(detail.reports.len(), 1);
+    assert_eq!(detail.reports[0].message.as_deref(), Some("Sent!"));
+    assert_eq!(detail.actor.basis, ActorBasis::Reported);
+    assert_eq!(detail.actor.agents, vec!["Instinct".to_string()]);
+    let kinds: Vec<_> = detail.history.iter().map(|item| item.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            HistoryKind::Requested,
+            HistoryKind::Happened,
+            HistoryKind::Reported,
+            HistoryKind::Flagged
+        ]
+    );
+    assert!(fixture.store.incident("incident/unknown")?.is_none());
+
+    assert!(
+        !fixture
+            .store
+            .decide("incident/unknown", Some(true), at(21))?
+    );
+    let summary_id = detail.summary.id.clone();
+    for (minute, expected) in [(21, Some(true)), (22, Some(false)), (23, None)] {
+        assert!(fixture.store.decide(&summary_id, expected, at(minute))?);
+        fixture.store.reconcile(at(minute))?;
+        let status = fixture.store.incidents()?[0].status;
+        let wanted = match expected {
+            Some(true) => Status::Fine,
+            Some(false) => Status::NotOk,
+            None => Status::Open,
+        };
+        assert_eq!(
+            status, wanted,
+            "an incident stays listed, and undo reopens it"
+        );
+    }
     Ok(())
 }

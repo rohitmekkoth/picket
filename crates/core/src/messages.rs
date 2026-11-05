@@ -673,6 +673,7 @@ pub(crate) mod tests {
             connected_since: None,
             enabled: true,
             region: None,
+            revoked_at: None,
         }
     }
 

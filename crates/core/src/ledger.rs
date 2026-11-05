@@ -97,10 +97,14 @@ impl Ledger for Store {
     }
 }
 
-struct Request {
-    batch: Batch,
-    now: DateTime<Utc>,
-    reply: SyncSender<Result<Committed>>,
+enum Request {
+    Commit {
+        batch: Batch,
+        now: DateTime<Utc>,
+        reply: SyncSender<Result<Committed>>,
+    },
+    /// A query against the writer's in-memory evidence, which the engine assessed.
+    Read(Box<dyn FnOnce(&mut Store) + Send>),
 }
 
 /// A collector's handle. Reads see every batch this handle committed, because a
@@ -134,6 +138,21 @@ impl Writer {
         ))
     }
 
+    /// Runs a query on the writer thread, after every earlier commit, against the
+    /// evidence the engine assessed. Incident views use it so they match the findings.
+    pub fn read<T: Send + 'static>(
+        &self,
+        query: impl FnOnce(&mut Store) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.sender
+            .send(Request::Read(Box::new(move |store| {
+                let _ = reply.send(query(store));
+            })))
+            .map_err(|_| StoreError::Unavailable)?;
+        response.recv().map_err(|_| StoreError::Unavailable)?
+    }
+
     /// Another handle with its own read connection, for a different collector thread.
     pub fn connect(&self) -> Result<Self> {
         Ok(Self {
@@ -160,7 +179,7 @@ impl Ledger for Writer {
     fn commit(&mut self, batch: Batch, now: DateTime<Utc>) -> Result<Committed> {
         let (reply, response) = mpsc::sync_channel(1);
         self.sender
-            .send(Request { batch, now, reply })
+            .send(Request::Commit { batch, now, reply })
             .map_err(|_| StoreError::Unavailable)?;
         response.recv().map_err(|_| StoreError::Unavailable)?
     }
@@ -196,11 +215,12 @@ fn run(mut store: Store, receiver: Receiver<Request>) {
     let mut next_retention = Instant::now() + RETENTION_INTERVAL;
     loop {
         match receiver.recv_timeout(TICK) {
-            Ok(request) => {
-                let result = store.commit(request.batch, request.now);
+            Ok(Request::Commit { batch, now, reply }) => {
+                let result = store.commit(batch, now);
                 // A producer that stopped waiting has nothing left to do with the result.
-                let _ = request.reply.send(result);
+                let _ = reply.send(result);
             }
+            Ok(Request::Read(query)) => query(&mut store),
             Err(RecvTimeoutError::Timeout) => {
                 if store.reconcile(Utc::now()).is_err() {
                     tracing::warn!("assessment tick failed");
@@ -274,6 +294,10 @@ mod tests {
         let mut writer = writer;
         writer.commit(healthy(), Utc::now())?;
         writer.commit(healthy(), Utc::now())?;
+        // Reads run on the writer thread after every earlier commit.
+        let retained = writer.read(|store| Ok(store.verify()?.retained_events))?;
+        assert_eq!(retained, 1);
+        assert!(writer.read(|store| store.incidents())?.is_empty());
         drop(writer);
         thread.join().map_err(|_| "writer panicked")?;
         let store = Store::open_read_only(&path)?;
