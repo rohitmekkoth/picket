@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Expose the runtime diagnostic, Google connection, agent registration, overview and activity, incident review, rules, local model, settings and export commands.",
+  "description": "Expose the runtime diagnostic, Google connection, agent registration, overview and activity, incident review, rules, local model, settings, export and wipe commands.",
   "windows": ["main"],
   "permissions": [
     "allow-get-runtime-info",
@@ -29,6 +29,7 @@
     "allow-set-start-at-login",
     "allow-verify-log",
     "allow-export-incident",
-    "allow-export-all"
+    "allow-export-all",
+    "allow-wipe-all"
   ]
 }

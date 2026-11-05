@@ -7,7 +7,7 @@ use tauri::Manager;
 
 use crate::GoogleState;
 
-const GOOGLE_ACCESS: &str = "https://myaccount.google.com/connections";
+pub const GOOGLE_ACCESS: &str = "https://myaccount.google.com/connections";
 const NOTIFICATION_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 const FULL_DISK_ACCESS: &str =

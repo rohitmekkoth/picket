@@ -124,6 +124,11 @@ test("settings keep the connection, agents and model together", async ({ page },
   ).toBeVisible();
   await page.getByRole("button", { name: "Export…" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
+  await page.getByRole("button", { name: "Uninstall and wipe…" }).click();
+  await expect(page.getByText("Delete everything Picket keeps on this Mac?")).toBeVisible();
+  await settle(page, "settings-wipe", testInfo);
+  await page.getByRole("button", { name: "Cancel" }).click();
+  expect((await calls(page)).some((call) => call.cmd === "wipe_all")).toBe(false);
   const saved = (await calls(page)).filter((call) => call.cmd === "update_settings");
   expect(saved.map((call) => call.args.patch)).toEqual([{ retentionDays: 90 }]);
   await settle(page, "settings", testInfo);
