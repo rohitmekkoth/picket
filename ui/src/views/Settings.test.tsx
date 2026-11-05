@@ -42,6 +42,8 @@ const defaults = {
   alertsPausedUntil: null,
   lastSummaryDay: null,
   startAtLogin: true,
+  setupCompleted: true,
+  picketClient: true,
 };
 const model = vi.mocked(getModel);
 const list = vi.mocked(listAgents);

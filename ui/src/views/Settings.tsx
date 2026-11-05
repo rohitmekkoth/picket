@@ -15,6 +15,7 @@ import {
   wipeAll,
 } from "../lib/api";
 import { minutesToTime } from "../lib/format";
+import { href } from "../lib/router";
 import {
   type AgentMode,
   type Agents,
@@ -572,6 +573,20 @@ function UninstallSection() {
   );
 }
 
+function SetupLink() {
+  return (
+    <div className="setting">
+      <span className="setting-text">
+        <span className="strong">Setup</span>
+        <span className="caption">Go through the first-run steps again.</span>
+      </span>
+      <a className="button small" href={href({ page: "setup", step: "welcome" })}>
+        Run setup again
+      </a>
+    </div>
+  );
+}
+
 function AboutSection() {
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
   return (
@@ -600,6 +615,7 @@ function AboutSection() {
             Check connection
           </button>
         </div>
+        <SetupLink />
       </div>
     </section>
   );

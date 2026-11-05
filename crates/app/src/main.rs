@@ -123,6 +123,18 @@ async fn connect_google(
     Ok(())
 }
 
+/// Signs in with Picket's own Google client: one click, no Cloud Console.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn sign_in_google(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GoogleState>,
+) -> Result<(), String> {
+    let (client_id, client_secret) = google_auth::picket_client()
+        .ok_or_else(|| "This build has no Picket Google client; use your own".to_string())?;
+    connect_google(app, state, client_id.into(), client_secret.into()).await
+}
+
 /// Signs in again with the saved client after Google rejected the grant.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -234,6 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         google_connected,
         connect_google,
         reconnect_google,
+        sign_in_google,
         agents::list_agents,
         agents::register_agent,
         activity::get_overview,
@@ -256,6 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings::verify_log,
         settings::export_incident,
         settings::export_all,
+        settings::complete_setup,
         wipe::wipe_all
     ]);
     #[cfg(not(target_os = "macos"))]
@@ -336,7 +350,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             alerts::start(app.handle())?;
             // A background launch, such as at login, stays in the menu bar; macOS shows
             // banners only for apps that are not frontmost.
-            if std::env::args().any(|arg| arg == BACKGROUND_ARG) {
+            // Until setup is finished, Picket opens its window even when started in the
+            // background, so a first run is never silent.
+            #[cfg(target_os = "macos")]
+            let setup_done = ledger(app.handle())
+                .and_then(|writer| {
+                    writer
+                        .read(|store| store.settings())
+                        .map_err(|_| "settings unavailable")
+                })
+                .is_ok_and(|settings| settings.setup_completed);
+            #[cfg(not(target_os = "macos"))]
+            let setup_done = true;
+            if setup_done && std::env::args().any(|arg| arg == BACKGROUND_ARG) {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             } else {

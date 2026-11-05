@@ -23,12 +23,15 @@ pub struct SettingsView {
     settings: Settings,
     /// Read from macOS each time, so it matches System Settings > Login Items.
     start_at_login: bool,
+    /// This build can sign in with Picket's own Google client.
+    picket_client: bool,
 }
 
 fn view(app: &tauri::AppHandle, settings: Settings) -> SettingsView {
     SettingsView {
         settings,
         start_at_login: app.autolaunch().is_enabled().unwrap_or(false),
+        picket_client: crate::google_auth::picket_client().is_some(),
     }
 }
 
@@ -171,4 +174,16 @@ async fn choose(
                 .map_err(|_| "unsupported location".to_string())
         })
         .transpose()
+}
+
+/// Records that the setup wizard was finished or closed.
+#[tauri::command]
+pub fn complete_setup(app: tauri::AppHandle) -> Result<SettingsView, String> {
+    let settings = crate::ledger(&app)?
+        .read(|store| {
+            store.set_setup_completed(Utc::now())?;
+            store.settings()
+        })
+        .map_err(|_| "setup could not be saved".to_string())?;
+    Ok(view(&app, settings))
 }

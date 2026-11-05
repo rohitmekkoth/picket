@@ -9,7 +9,11 @@ export type Route =
   | { page: "activity" }
   | { page: "rules" }
   | { page: "boundary"; id: string | null }
-  | { page: "settings" };
+  | { page: "settings" }
+  | { page: "setup"; step: SetupStep };
+
+export const setupSteps = ["welcome", "google", "agent", "access", "alerts", "finish"] as const;
+export type SetupStep = (typeof setupSteps)[number];
 
 export function parse(hash: string): Route {
   const path = hash.replace(/^#\/?/, "");
@@ -27,6 +31,11 @@ export function parse(hash: string): Route {
       return { page: "rules" };
     case "settings":
       return { page: "settings" };
+    case "setup":
+      return {
+        page: "setup",
+        step: setupSteps.find((step) => step === rest[0]) ?? "welcome",
+      };
     default:
       return { page: "overview" };
   }
@@ -48,6 +57,8 @@ export function href(route: Route): string {
       return route.id ? `#/rules/boundary/${route.id}` : "#/rules/new";
     case "settings":
       return "#/settings";
+    case "setup":
+      return `#/setup/${route.step}`;
   }
 }
 
