@@ -13,6 +13,7 @@ fn main() {
             "get_incident",
             "resolve_incident",
             "set_agent_revoked",
+            "open_link",
             "get_rules",
             "set_rule_level",
             "preview_boundary",

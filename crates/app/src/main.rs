@@ -16,6 +16,8 @@ mod google_runtime;
 #[cfg(target_os = "macos")]
 mod incidents;
 #[cfg(target_os = "macos")]
+mod links;
+#[cfg(target_os = "macos")]
 mod model;
 #[cfg(target_os = "macos")]
 mod rules;
@@ -211,6 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         incidents::get_incident,
         incidents::resolve_incident,
         incidents::set_agent_revoked,
+        links::open_link,
         rules::get_rules,
         rules::set_rule_level,
         rules::preview_boundary,

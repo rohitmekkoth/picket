@@ -15,6 +15,7 @@
     "allow-get-incident",
     "allow-resolve-incident",
     "allow-set-agent-revoked",
+    "allow-open-link",
     "allow-get-rules",
     "allow-set-rule-level",
     "allow-preview-boundary",
