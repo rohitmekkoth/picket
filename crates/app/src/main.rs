@@ -34,6 +34,8 @@ use std::{
 };
 use tracing_subscriber::EnvFilter;
 
+const BACKGROUND_ARG: &str = "--background";
+
 #[cfg(target_os = "macos")]
 struct GoogleState {
     session: Mutex<Option<google_auth::Session>>,
@@ -275,6 +277,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tray::apply(app.handle(), &initial)?;
             #[cfg(target_os = "macos")]
             alerts::start(app.handle())?;
+            // A background launch, such as at login, stays in the menu bar; macOS shows
+            // banners only for apps that are not frontmost.
+            if std::env::args().any(|arg| arg == BACKGROUND_ARG) {
+                #[cfg(target_os = "macos")]
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            } else {
+                show_window(app.handle())?;
+            }
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "Picket started");
             Ok(())
         })

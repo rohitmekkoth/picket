@@ -1,6 +1,6 @@
 # M8 product UI and alerts plan
 
-Status: increments 1-3 merged (PRs #39-#41); increment 4 is next. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
+Status: increments 1-3 merged (PRs #39-#41); increment 4 (alerts) in PR #42. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
 
 ## Outcome
 
@@ -54,6 +54,6 @@ No earlier mockups exist (owner, 2026-11-04). The [M8 screens canvas](https://cl
 
 ## Risks
 
-- Banner presentation was not observed in M1; if macOS shows alerts only in Notification Center for an ad hoc signed app, the fallback is the tray icon state and a documented setting, with Developer ID signing in M9.
+- Banner presentation: checked in increment 4. Banners show while Picket is in the background; with its window frontmost, alerts go only to Notification Center (see decisions).
 - Full Disk Access is lost on ad hoc rebuilds until M9 signing; the wizard's polling step must handle a revoked grant cleanly.
 - Google sign-ins in Testing mode expire weekly until the OAuth app is published in M9; reconnect required makes this visible rather than silent.
