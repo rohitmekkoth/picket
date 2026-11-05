@@ -26,6 +26,8 @@ mod rules;
 mod settings;
 mod tray;
 #[cfg(target_os = "macos")]
+mod wipe;
+#[cfg(target_os = "macos")]
 use std::{
     sync::{
         Mutex,
@@ -67,6 +69,9 @@ struct LedgerState(Mutex<Option<picket_core::ledger::Writer>>);
 /// A writer handle for one collector thread.
 #[cfg(target_os = "macos")]
 fn ledger(app: &tauri::AppHandle) -> Result<picket_core::ledger::Writer, &'static str> {
+    if wipe::wiping() {
+        return Err("Picket is being wiped");
+    }
     let state = app.state::<LedgerState>();
     let mut writer = state.0.lock().map_err(|_| "event store state failed")?;
     if writer.is_none() {
@@ -250,7 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings::set_start_at_login,
         settings::verify_log,
         settings::export_incident,
-        settings::export_all
+        settings::export_all,
+        wipe::wipe_all
     ]);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.invoke_handler(tauri::generate_handler![get_runtime_info]);

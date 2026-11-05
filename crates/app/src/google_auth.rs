@@ -403,6 +403,16 @@ fn verified_profile(client: &Client, access_token: &str) -> Result<String, AuthE
     Ok(profile.email_address.to_lowercase())
 }
 
+/// Deletes the saved Google connection from the Keychain. Nothing saved is not an error.
+pub fn forget() -> Result<(), AuthError> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|_| AuthError::Keychain)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err(AuthError::Keychain),
+    }
+}
+
 fn save(credentials: &Credentials) -> Result<(), AuthError> {
     let entry =
         keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).map_err(|_| AuthError::Keychain)?;

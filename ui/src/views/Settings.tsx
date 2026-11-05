@@ -12,6 +12,7 @@ import {
   updateSettings,
   type Verification,
   verifyLog,
+  wipeAll,
 } from "../lib/api";
 import { minutesToTime } from "../lib/format";
 import {
@@ -508,6 +509,69 @@ function DataSection({ settings }: { settings: SettingsData }) {
   );
 }
 
+function UninstallSection() {
+  const [confirming, setConfirming] = useState(false);
+  const wipe = useMutation({ mutationFn: () => wipeAll() });
+  return (
+    <section className="settings-group" aria-labelledby="uninstall-heading">
+      <h2 id="uninstall-heading">Uninstall</h2>
+      <div className="card list">
+        {confirming ? (
+          <div className="setting setting-form">
+            <span className="strong">Delete everything Picket keeps on this Mac?</span>
+            <ul className="caption wipe-list">
+              <li>Your history, incidents, rules and settings</li>
+              <li>The on-device model</li>
+              <li>Picket’s Google sign-in in your Keychain, and the login item</li>
+            </ul>
+            <span className="caption">
+              This can’t be undone. Picket then opens your Google account’s third-party access page,
+              so you can remove Picket there, and quits. macOS keeps Full Disk Access and
+              notification settings until you remove them in System Settings; drag Picket to the
+              Trash to remove the app.
+            </span>
+            <div className="actions">
+              <button
+                type="button"
+                className="button danger"
+                disabled={wipe.isPending}
+                onClick={() => wipe.mutate()}
+              >
+                {wipe.isPending ? "Deleting…" : "Delete everything and quit"}
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={wipe.isPending}
+                onClick={() => setConfirming(false)}
+              >
+                Cancel
+              </button>
+            </div>
+            {wipe.isError && <Failure error={wipe.error} />}
+          </div>
+        ) : (
+          <div className="setting">
+            <span className="setting-text">
+              <span className="strong">Uninstall and wipe</span>
+              <span className="caption">
+                Delete all of Picket’s data from this Mac before you remove the app.
+              </span>
+            </span>
+            <button
+              type="button"
+              className="button small danger-text"
+              onClick={() => setConfirming(true)}
+            >
+              Uninstall and wipe…
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AboutSection() {
   const runtime = useQuery({ queryKey: ["runtime"], queryFn: getRuntimeInfo });
   return (
@@ -559,6 +623,7 @@ export function Settings() {
       {settings.data && <DataSection settings={settings.data} />}
       {settings.isError && <Failure error={settings.error} />}
       <AboutSection />
+      <UninstallSection />
     </div>
   );
 }
