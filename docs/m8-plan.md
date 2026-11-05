@@ -1,6 +1,6 @@
 # M8 product UI and alerts plan
 
-Status: planned 2026-11-04, not started. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
+Status: increments 1-3 merged (PRs #39-#41); increment 4 is next. v1 targets one agent, Instinct over iMessage. This plan implements M8 in [design.md](design.md) (user experience, UI and notifications, privacy defaults) with the user-flow gate in [alignment-engine-plan.md](alignment-engine-plan.md).
 
 ## Outcome
 
@@ -44,7 +44,7 @@ Each is its own branch and PR, verified with `make check`, `make test`, `make e2
 3. **App shell and review screens** (`feature/m8-review-ui`). Hash router and navigation; Overview (today / 7 / 30 days, agent counts, open items, coverage and integrity), Incident detail, Activity, Rules and the boundary editor; live refresh from core events. Existing panels move into Settings.
 4. **Alerts** (`feature/m8-alerts`). Delivery worker with rate limits, corrections and actions; click-through to the incident; tray icon states and menu (counts, up to three open alerts, Pause 1 h); notification permission request; banner presentation check.
 5. **Settings, digest and export** (`feature/m8-settings`). Settings table and screen, daily digest notification, start at login, retention, verify log, incident Markdown and full JSON export, reconnect required.
-6. **Setup wizard** (`feature/m8-setup`). Welcome, Connect Google (own OAuth client guide), Add Instinct, Full Disk Access with polling, baseline import and model download with progress; resumable, each step skippable and revisitable.
+6. **Setup wizard** (`feature/m8-setup`). Welcome, Connect Google (one-click sign-in with Picket's own client; own client as an advanced option, see decisions), Add Instinct, Full Disk Access with polling, baseline import and model download with progress; resumable, each step skippable and revisitable.
 7. **Uninstall and wipe** (`feature/m8-wipe`). Wipe command and the verification script.
 8. **Acceptance run and polish** (`feature/m8-acceptance`). Scripted live run with Instinct on the controlled account (owner sends the iMessages), a full visual pass in light and dark at the default and minimum window sizes, wipe check on a scratch macOS user if available, handoff.
 
