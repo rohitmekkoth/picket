@@ -170,6 +170,16 @@ export function fixtures() {
       monitoring: true,
     },
     google_connected: "monitoring",
+    get_settings: {
+      summaryMinutes: 1260,
+      retentionDays: 180,
+      alertsPausedUntil: null,
+      lastSummaryDay: null,
+      startAtLogin: true,
+    },
+    verify_log: { valid: true, throughSequence: 1657, retainedEvents: 1657, brokenAt: null },
+    export_incident: true,
+    export_all: true,
     list_agents: {
       agents: [
         {
@@ -311,6 +321,10 @@ export async function mockDesktop(page: Page, overrides: Partial<Record<string, 
           return null;
         }
         if (cmd === "save_boundary") return args.id ?? "b-3";
+        if (cmd === "update_settings") {
+          Object.assign(state.get_settings as object, args.patch);
+          return structuredClone(state.get_settings);
+        }
         if (cmd in state) return structuredClone(state[cmd]);
         return null;
       },

@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
+import { getSettings, updateSettings, verifyLog } from "../lib/api";
 import {
   connectGoogle,
   getGoogleStatus,
   getModel,
   getRuntimeInfo,
   listAgents,
+  reconnectGoogle,
   registerAgent,
 } from "../lib/runtime";
 import { Settings } from "./Settings";
@@ -15,12 +17,32 @@ vi.mock("../lib/runtime", () => ({
   getRuntimeInfo: vi.fn(),
   getGoogleStatus: vi.fn(),
   connectGoogle: vi.fn(),
+  reconnectGoogle: vi.fn(),
   listAgents: vi.fn(),
   registerAgent: vi.fn(),
   getModel: vi.fn(),
   downloadModel: vi.fn(),
 }));
-vi.mock("../lib/api", () => ({ openLink: vi.fn(), setAgentRevoked: vi.fn() }));
+vi.mock("../lib/api", () => ({
+  openLink: vi.fn(),
+  setAgentRevoked: vi.fn(),
+  getSettings: vi.fn(),
+  updateSettings: vi.fn(),
+  setStartAtLogin: vi.fn(),
+  verifyLog: vi.fn(),
+  exportAll: vi.fn(),
+}));
+const settings = vi.mocked(getSettings);
+const update = vi.mocked(updateSettings);
+const verify = vi.mocked(verifyLog);
+const reconnect = vi.mocked(reconnectGoogle);
+const defaults = {
+  summaryMinutes: 1260,
+  retentionDays: 180,
+  alertsPausedUntil: null,
+  lastSummaryDay: null,
+  startAtLogin: true,
+};
 const model = vi.mocked(getModel);
 const list = vi.mocked(listAgents);
 const register = vi.mocked(registerAgent);
@@ -44,6 +66,7 @@ beforeEach(() => {
   getGoogle.mockResolvedValue("monitoring");
   list.mockResolvedValue({ agents: [], messages: "inactive" });
   model.mockResolvedValue(null);
+  settings.mockResolvedValue(defaults);
 });
 
 test("the browser preview does not pretend the core is connected", async () => {
@@ -95,16 +118,50 @@ test("an iMessage agent can be added and missing access is explained", async () 
   expect(screen.getByRole("button", { name: "Open System Settings" })).toBeInTheDocument();
 });
 
-test("a lost Google sign-in can be renewed", async () => {
+test("a rejected Google sign-in is renewed with one click", async () => {
+  getGoogle.mockResolvedValue("reconnect_required");
+  reconnect.mockResolvedValue();
+  renderSettings();
+  expect(await screen.findByText("Google stopped accepting Picket’s sign-in")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Google Desktop OAuth client ID")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+  await waitFor(() => expect(reconnect).toHaveBeenCalled());
+});
+
+test("an unreachable Google can be retried with a client", async () => {
   getGoogle.mockResolvedValue("unavailable");
   connect.mockResolvedValue();
   renderSettings();
-  expect(await screen.findByRole("button", { name: "Sign in again" })).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText("Google Desktop OAuth client ID"), {
+  fireEvent.change(await screen.findByLabelText("Google Desktop OAuth client ID"), {
     target: { value: "synthetic-client" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Sign in again" }));
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
   await waitFor(() => expect(connect).toHaveBeenCalledWith("synthetic-client", ""));
+});
+
+test("the summary time and history length are saved as validated values", async () => {
+  update.mockImplementation(async (patch) => ({ ...defaults, ...patch }));
+  renderSettings();
+  const summary = await screen.findByLabelText("Daily summary");
+  expect(summary).toHaveValue("1260");
+  fireEvent.change(summary, { target: { value: "off" } });
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ summaryMinutes: null }));
+  fireEvent.change(screen.getByLabelText("Keep history for"), { target: { value: "90" } });
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ retentionDays: 90 }));
+});
+
+test("checking the log reports what it found", async () => {
+  verify.mockResolvedValue({
+    valid: true,
+    throughSequence: 1657,
+    retainedEvents: 1657,
+    brokenAt: null,
+  });
+  renderSettings();
+  fireEvent.click(await screen.findByRole("button", { name: "Check now" }));
+  expect(
+    await screen.findByText("The log checks out: 1,657 entries, none changed or missing."),
+  ).toBeInTheDocument();
 });
 
 test("core failures can recover through the check button", async () => {

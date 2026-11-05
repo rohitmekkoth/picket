@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge, DesktopOnly, Empty, Failure, Icon } from "../components/ui";
 import {
+  exportIncident,
   getIncident,
   type IncidentDetail,
   openLink,
@@ -303,6 +304,7 @@ function NextSteps({
     mutationFn: () => (agentId ? setAgentRevoked(agentId, true) : Promise.resolve()),
     onSuccess: () => client.invalidateQueries(),
   });
+  const save = useMutation({ mutationFn: () => exportIncident(incident.id) });
   return (
     <ul className="checklist">
       {incident.effect?.thread && (
@@ -333,6 +335,22 @@ function NextSteps({
           onClick={() => void openLink("google_access")}
         >
           Open Google settings
+        </button>
+      </li>
+      <li>
+        <span>
+          <span className="strong">Save a report</span>
+          <span className="caption" role="status">
+            {save.data ? "Saved." : "A Markdown file with what happened, to keep or share."}
+          </span>
+        </span>
+        <button
+          type="button"
+          className="button small"
+          disabled={save.isPending}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? "Saving…" : "Export report…"}
         </button>
       </li>
       {agentId && (

@@ -1077,6 +1077,41 @@ select {
 .setting-form > div {
   margin-top: 10px;
 }
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 14px 18px;
+  border: 1px solid var(--urgent-line);
+  border-radius: 12px;
+  background: var(--urgent-bg);
+  color: var(--urgent-ink);
+}
+.banner-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.banner .caption {
+  color: inherit;
+}
+.setting-control {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.setting-check {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.setting-text label.strong {
+  display: block;
+}
 .state {
   font-size: 13px;
   font-weight: 600;
