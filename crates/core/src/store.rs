@@ -20,7 +20,7 @@ use crate::{
     views::{self, FindingRecord, IncidentDetail, IncidentSummary, PreviewView, RulesView},
 };
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
@@ -268,6 +268,15 @@ impl Store {
                  );
                  INSERT INTO settings(id, summary_minutes, retention_days) VALUES (1, 1260, 180);
                  PRAGMA user_version=8;
+                 COMMIT;",
+            )?;
+        }
+        if version < 9 {
+            // Setup is resumable from real state; only finishing it is recorded.
+            connection.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE settings ADD COLUMN setup_completed_at TEXT;
+                 PRAGMA user_version=9;
                  COMMIT;",
             )?;
         }
@@ -913,13 +922,27 @@ impl Store {
     }
 
     pub fn settings(&self) -> Result<Settings> {
-        let (summary, retention, paused, last): (Option<u16>, u16, Option<String>, Option<String>) =
-            self.connection.query_row(
-                "SELECT summary_minutes, retention_days, alerts_paused_until, last_summary_day
-                 FROM settings WHERE id=1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
+        let (summary, retention, paused, last, setup): (
+            Option<u16>,
+            u16,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = self.connection.query_row(
+            "SELECT summary_minutes, retention_days, alerts_paused_until, last_summary_day,
+                    setup_completed_at
+             FROM settings WHERE id=1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
         let paused = paused
             .map(|value| {
                 DateTime::parse_from_rfc3339(&value)
@@ -938,6 +961,7 @@ impl Store {
             retention_days: retention,
             alerts_paused_until: paused,
             last_summary_day: last,
+            setup_completed: setup.is_some(),
         })
     }
 
@@ -961,6 +985,15 @@ impl Store {
         self.connection.execute(
             "UPDATE settings SET alerts_paused_until=?1 WHERE id=1",
             [until.map(|time| time.to_rfc3339())],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the person finished or closed the setup wizard.
+    pub fn set_setup_completed(&mut self, now: DateTime<Utc>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE settings SET setup_completed_at=?1 WHERE id=1",
+            [now.to_rfc3339()],
         )?;
         Ok(())
     }

@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { Icon, type IconName, Mark } from "./components/ui";
-import { listIncidents } from "./lib/api";
-import { href, type Route, useRoute } from "./lib/router";
+import { getSettings, listIncidents } from "./lib/api";
+import { href, navigate, type Route, useRoute } from "./lib/router";
 import { listAgents } from "./lib/runtime";
 import { Activity } from "./views/Activity";
 import { BoundaryEditor } from "./views/BoundaryEditor";
@@ -11,6 +11,7 @@ import { Overview } from "./views/Overview";
 import { Review } from "./views/Review";
 import { Rules } from "./views/Rules";
 import { Settings } from "./views/Settings";
+import { Setup } from "./views/Setup";
 
 const sections: { page: Route["page"]; label: string; icon: IconName }[] = [
   { page: "overview", label: "Overview", icon: "home" },
@@ -107,11 +108,28 @@ function Page({ route }: { route: Route }): ReactNode {
       return <BoundaryEditor id={route.id} />;
     case "settings":
       return <Settings />;
+    case "setup":
+      return null;
   }
+}
+
+/** Opens setup once, on the first window load, until it is finished or skipped. */
+function useFirstRun(route: Route) {
+  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const checked = useRef(false);
+  useEffect(() => {
+    if (checked.current || !settings.isSuccess) return;
+    checked.current = true;
+    if (settings.data && !settings.data.setupCompleted && route.page === "overview") {
+      navigate({ page: "setup", step: "welcome" });
+    }
+  }, [settings.isSuccess, settings.data, route.page]);
 }
 
 export function App() {
   const route = useRoute();
+  useFirstRun(route);
+  if (route.page === "setup") return <Setup step={route.step} />;
   return (
     <div className="app">
       <Sidebar current={section(route)} />

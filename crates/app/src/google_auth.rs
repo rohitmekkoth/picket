@@ -150,6 +150,15 @@ fn existing_account_id(email: &str) -> Result<Option<String>, AuthError> {
     }
 }
 
+/// Picket's own OAuth client, when this build includes one (see `build.rs`).
+pub fn picket_client() -> Option<(&'static str, &'static str)> {
+    let id = option_env!("PICKET_GOOGLE_CLIENT_ID")?;
+    Some((
+        id,
+        option_env!("PICKET_GOOGLE_CLIENT_SECRET").unwrap_or_default(),
+    ))
+}
+
 /// The OAuth client of the saved connection, for signing in again with one click.
 pub fn stored_client() -> Result<Option<(String, String)>, AuthError> {
     let entry =
