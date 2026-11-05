@@ -329,6 +329,16 @@ select {
   font-size: 15px;
   font-weight: 650;
 }
+.page-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+}
 .quiet-link {
   font-size: 13px;
   text-decoration: none;

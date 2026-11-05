@@ -59,7 +59,7 @@ test("an incident tells the story and records the decision", async ({ page }, te
   await expect(page.getByRole("heading", { name: "What you can do now" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Mark revoked" })).toBeVisible();
   await page.getByRole("button", { name: "Export report…" }).click();
-  await expect(page.getByText("Saved.")).toBeVisible();
+  await expect(page.getByText("Report saved.")).toBeVisible();
   await settle(page, "incident-not-ok", testInfo);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "This was fine" })).toBeVisible();

@@ -290,6 +290,27 @@ const historyText: Record<IncidentDetail["history"][number]["kind"], (agent: str
   marked_not_ok: () => "You said it wasn’t OK",
 };
 
+/** Saves the incident as a Markdown report, whatever its status. */
+function ExportReport({ id }: { id: string }) {
+  const save = useMutation({ mutationFn: () => exportIncident(id) });
+  return (
+    <div className="page-footer">
+      <span className="muted" role="status">
+        {save.data ? "Report saved." : "Keep or share a copy of what happened."}
+      </span>
+      <button
+        type="button"
+        className="button small"
+        disabled={save.isPending}
+        onClick={() => save.mutate()}
+      >
+        {save.isPending ? "Saving…" : "Export report…"}
+      </button>
+      {save.isError && <Failure error={save.error} />}
+    </div>
+  );
+}
+
 function NextSteps({
   incident,
   agentId,
@@ -304,7 +325,6 @@ function NextSteps({
     mutationFn: () => (agentId ? setAgentRevoked(agentId, true) : Promise.resolve()),
     onSuccess: () => client.invalidateQueries(),
   });
-  const save = useMutation({ mutationFn: () => exportIncident(incident.id) });
   return (
     <ul className="checklist">
       {incident.effect?.thread && (
@@ -335,22 +355,6 @@ function NextSteps({
           onClick={() => void openLink("google_access")}
         >
           Open Google settings
-        </button>
-      </li>
-      <li>
-        <span>
-          <span className="strong">Save a report</span>
-          <span className="caption" role="status">
-            {save.data ? "Saved." : "A Markdown file with what happened, to keep or share."}
-          </span>
-        </span>
-        <button
-          type="button"
-          className="button small"
-          disabled={save.isPending}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending ? "Saving…" : "Export report…"}
         </button>
       </li>
       {agentId && (
@@ -511,6 +515,7 @@ export function Incident({ id }: { id: string }) {
           ))}
         </ol>
       </section>
+      <ExportReport id={data.id} />
     </div>
   );
 }
