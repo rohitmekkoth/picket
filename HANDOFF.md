@@ -40,7 +40,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M6 - Messages:** Read-only agent-message capture (PR #15). OpenClaw is out of v1 scope; its adapter is kept on `feature/m6-openclaw`.
 - [x] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging; without the model, request capture is reported unavailable (no keyword fallback, see decisions). Closed for v1 on 2026-11-04 with known wording limits (see decisions).
 - [x] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and daily summary, export, and wipe. Closed 2026-11-10 after the live acceptance run (PRs #39-#43, #46-#48).
-- [ ] **M9 - Release:** Packaging, release attestations, Homebrew tap, documentation, and fresh-Mac install test.
+- [x] **M9 - Release:** v1.0.0 published 2026-11-10: signed DMG and app zip with SHA256SUMS and build provenance on GitHub Releases, cask `rohitmekkoth/tap/picket`, MIT license, user README. Remaining: the fresh-Mac install test (owner, on another Mac).
 
 The milestone scopes and acceptance criteria in `docs/design.md`, with the alignment refinements and proposed release gates in `docs/alignment-engine-plan.md`, guide implementation. No accuracy targets have been measured yet.
 
@@ -84,17 +84,13 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 ## Next work
 
-v1 targets one agent, Instinct over iMessage, end to end and deployed (owner decision 2026-11-02). M7 is closed for v1 (2026-11-04) with known wording limits (see decisions). M8 is closed (2026-11-10). Next is M9 (release): Developer ID signing so Full Disk Access survives updates, the Tauri updater, release packaging, and GitHub Releases on the public repository as the download location (the repository has been public since 2026-11-05). Fetch `main` and create a dedicated branch before implementation. Keep Google credentials, account content, and runtime databases out of Git. Do not infer agent identity from timing or email headers.
+v1.0.0 is released (2026-11-10). Open items:
 
-M5 verification on `feature/m5-google-collectors`: `make check`, `make test`, `make eval` (288 cases), `make audit`, `make e2e` (6 cases), and `make smoke-macos` passed. All three PR #11 CI jobs passed. In a controlled Google test account, OAuth and Keychain restore worked; a sent message and primary Calendar create, update, and delete appeared as effects. Gmail and Calendar live coverage were healthy, Calendar recovered from an expired sync cursor, and the local event chain verified through 191 records. Replay showed four timeline effects with unknown actor and no false alerts. The metadata-only Gmail scope cannot date-filter message listings; M5 caps the first scan at 50 listed messages per label and records incomplete baseline coverage separately when more history exists. Real-source accuracy and agent attribution remain unmeasured.
+1. Fresh-Mac install test (owner, on someone else's Mac): `brew install --cask rohitmekkoth/tap/picket`, Open Anyway, setup wizard, one Instinct request; time it against the design's 10 minutes. Fix anything found in a v1.0.1.
+2. Dependabot: close #37 (`@types/node` 26; Node 24 is pinned), defer #24 (`mail-parser` 1.0 rewrites the parser API used for Gmail headers), rebase and merge #36 (Biome 2.6.4).
+3. Consider branch protection on `main` requiring the three CI jobs.
 
-M4 runs with `make eval` or `picket eval --mock --report path/to/report.json`. It prints a mode table and writes a privacy-safe JSON report. The fixed baseline fails all-abstain behavior and lost conflict recall. Its 288 variants are correlated synthetic cases; confidence intervals, real-source accuracy, extraction, latency and alerts per day remain `not_measured`. See `eval/README.md`.
-
-M4 verification: `make eval`, `make check`, `make test`, `make e2e` (6 browser cases), and `make audit` passed locally. PR #9 and post-merge main CI passed. M4 adds no real-source validation or product monitoring.
-
-M3 passed `make check`, `make test`, `make e2e` (6 Playwright cases), and `make audit` locally. The core tests include schema migration, replay/restart, transaction rollback, notification revision behavior, and 24 labeled scenarios. The first local E2E attempt failed to bind the dev port inside the sandbox; rerunning with local port access passed. No UI/native lifecycle code changed, so `make smoke-macos` is not required. The CLI replay reports privacy-safe counts and does not deliver alerts; the core's outbox has no OS delivery worker yet. Do not represent M3 as a finished monitoring product.
-
-Repository housekeeping is separate from M2: Dependabot PR #2 proposes Node 26 type definitions while this project pins Node 24, so review it before merging. Its red branch status combines three cancelled checks with three passing checks; `main` CI is green. Older merged feature branches still exist on GitHub and can be deleted when convenient. The repository currently has no `main` branch protection; consider requiring CI checks before future merges.
+To release a new version: bump `version` in `Cargo.toml` (workspace and the two internal pins), `crates/app/tauri.conf.json` and `package.json`, update `docs/release-notes.md`, merge, then push a matching `v*` tag. Signing material is in the git-ignored `local/signing/` (back it up; losing it changes the app identity and resets every user's Full Disk Access). See `docs/decisions.md`, "M9 release", and "After v1" below.
 
 ## Resume checklist
 

@@ -10,7 +10,7 @@ cask "picket" do
   homepage "https://github.com/rohitmekkoth/picket"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Picket.app"
 
