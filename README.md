@@ -81,3 +81,7 @@ make dev
 Start with the [development handoff](HANDOFF.md), then the [design](docs/design.md), [architecture](docs/architecture.md), [development notes](docs/setup/development.md) and [decisions](docs/decisions.md). Never commit credentials, messages, mailbox data, databases or model files.
 
 Report security issues as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

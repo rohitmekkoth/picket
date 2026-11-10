@@ -248,3 +248,5 @@ Implementation notes, 2026-10-27:
 - No in-app updater in v1. The design promises no update checks and an allowlist of Google and the model host; an updater would contact GitHub on every launch. Homebrew users update with `brew upgrade`; DMG users download again. Supersedes the 2026-11-04 suggestion to add the Tauri updater.
 - Distribution: GitHub Releases on the public repository and a cask in `rohitmekkoth/homebrew-tap`, arm64 only (`brew install --cask rohitmekkoth/tap/picket`). Version 1.0.0.
 - Google: Picket's client stays published but unverified (owner accepts the 100-user cap; restricted-scope verification needs a paid security assessment).
+- License (owner, 2026-11-10): MIT. Possible because the Messages decoder is Picket's own, not the GPL `imessage-database`. `cargo deny` license policy passes.
+- Verified: after the one Full Disk Access grant to the self-signed build, a rebuild with a new version kept the grant (no permission-missing coverage after relaunch).
