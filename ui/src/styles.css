@@ -1260,14 +1260,19 @@ select {
   padding-left: 14px;
   border-left: 3px solid var(--line);
 }
-.setup-actions {
+.setup-actions,
+.google-sign-in {
   gap: 12px;
 }
-.setup-note {
+.google-sign-in {
+  flex: 1 1 auto;
+}
+.google-sign-in-note {
   margin-top: 8px;
   max-width: 520px;
 }
-.setup-form {
+.setup-form,
+.google-sign-in-form {
   display: flex;
 }
 .setup-steps {

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
+import { GoogleSignIn } from "../components/GoogleSignIn";
 import { DesktopOnly, Failure } from "../components/ui";
 import {
   exportAll,
@@ -19,7 +20,6 @@ import { href } from "../lib/router";
 import {
   type AgentMode,
   type Agents,
-  connectGoogle,
   downloadModel,
   getGoogleStatus,
   getModel,
@@ -75,23 +75,11 @@ function GoogleSection() {
     queryFn: getGoogleStatus,
     refetchInterval: 5000,
   });
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const connect = useMutation({
-    mutationFn: () => connectGoogle(clientId.trim(), clientSecret),
-    onSuccess: () => {
-      setClientSecret("");
-      return client.invalidateQueries();
-    },
-  });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const reconnect = useMutation({
     mutationFn: () => reconnectGoogle(),
     onSuccess: () => client.invalidateQueries(),
   });
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    connect.mutate();
-  }
   const status = google.data ?? "disconnected";
   const connected = status === "monitoring" || status === "starting" || status === "degraded";
   const rejected = status === "reconnect_required";
@@ -122,43 +110,17 @@ function GoogleSection() {
             <button
               type="button"
               className="button small primary"
-              disabled={reconnect.isPending}
               onClick={() => reconnect.mutate()}
             >
-              {reconnect.isPending ? "Waiting for Google…" : "Sign in again"}
+              {reconnect.isPending ? "Open Google sign-in again" : "Sign in again"}
             </button>
             {reconnect.isError && <Failure error={reconnect.error} />}
           </div>
         )}
-        {!connected && !rejected && (
-          <form className="setting setting-form" onSubmit={onSubmit}>
-            <label htmlFor="client-id">Google Desktop OAuth client ID</label>
-            <input
-              id="client-id"
-              autoComplete="off"
-              value={clientId}
-              onChange={(event) => setClientId(event.target.value)}
-              required
-            />
-            <label htmlFor="client-secret">Client secret, if supplied</label>
-            <input
-              id="client-secret"
-              type="password"
-              autoComplete="off"
-              value={clientSecret}
-              onChange={(event) => setClientSecret(event.target.value)}
-            />
-            <div>
-              <button type="submit" className="button primary" disabled={connect.isPending}>
-                {connect.isPending
-                  ? "Waiting for Google…"
-                  : status === "disconnected"
-                    ? "Connect Google"
-                    : "Try again"}
-              </button>
-            </div>
-            {connect.isError && <Failure error={connect.error} />}
-          </form>
+        {!connected && !rejected && settings.data && (
+          <div className="setting">
+            <GoogleSignIn picketClient={settings.data.picketClient} />
+          </div>
         )}
       </div>
     </section>

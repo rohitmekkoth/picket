@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { GoogleSignIn } from "../components/GoogleSignIn";
 import { Failure, Icon, Mark } from "../components/ui";
 import {
   completeSetup,
@@ -12,13 +13,11 @@ import {
 import { minutesToTime } from "../lib/format";
 import { navigate, type SetupStep, setupSteps } from "../lib/router";
 import {
-  connectGoogle,
   downloadModel,
   getGoogleStatus,
   getModel,
   listAgents,
   registerAgent,
-  signInGoogle,
 } from "../lib/runtime";
 
 // The first-run wizard. Each step reads the real state (signed in, agent added, access
@@ -81,30 +80,11 @@ function Welcome() {
 }
 
 function Google({ picketClient }: { picketClient: boolean }) {
-  const client = useQueryClient();
   const google = useQuery({
     queryKey: ["google-status"],
     queryFn: getGoogleStatus,
     refetchInterval: 3000,
   });
-  const [own, setOwn] = useState(!picketClient);
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const signIn = useMutation({
-    mutationFn: () => signInGoogle(),
-    onSuccess: () => client.invalidateQueries(),
-  });
-  const connect = useMutation({
-    mutationFn: () => connectGoogle(clientId.trim(), clientSecret),
-    onSuccess: () => {
-      setClientSecret("");
-      return client.invalidateQueries();
-    },
-  });
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    connect.mutate();
-  }
   const status = google.data;
   const connected = status === "monitoring" || status === "starting" || status === "degraded";
   return (
@@ -126,56 +106,7 @@ function Google({ picketClient }: { picketClient: boolean }) {
       {connected ? (
         <Done>Connected. Picket is reading the last few weeks to learn who you usually email.</Done>
       ) : (
-        <div className="stack setup-actions">
-          {picketClient && (
-            <div>
-              <button
-                type="button"
-                className="button primary"
-                disabled={signIn.isPending}
-                onClick={() => signIn.mutate()}
-              >
-                {signIn.isPending ? "Waiting for Google…" : "Sign in with Google"}
-              </button>
-              <p className="caption setup-note">
-                Your browser opens Google’s sign-in. Google hasn’t reviewed Picket yet, so it shows
-                a warning: choose Advanced, then Go to Picket.
-              </p>
-              {signIn.isError && <Failure error={signIn.error} />}
-            </div>
-          )}
-          {picketClient && !own && (
-            <button type="button" className="link-button" onClick={() => setOwn(true)}>
-              Use your own Google Cloud client instead
-            </button>
-          )}
-          {own && (
-            <form className="setting-form setup-form" onSubmit={onSubmit}>
-              <label htmlFor="setup-client-id">Google Desktop OAuth client ID</label>
-              <input
-                id="setup-client-id"
-                autoComplete="off"
-                value={clientId}
-                onChange={(event) => setClientId(event.target.value)}
-                required
-              />
-              <label htmlFor="setup-client-secret">Client secret, if supplied</label>
-              <input
-                id="setup-client-secret"
-                type="password"
-                autoComplete="off"
-                value={clientSecret}
-                onChange={(event) => setClientSecret(event.target.value)}
-              />
-              <div>
-                <button type="submit" className="button" disabled={connect.isPending}>
-                  {connect.isPending ? "Waiting for Google…" : "Sign in with this client"}
-                </button>
-              </div>
-              {connect.isError && <Failure error={connect.error} />}
-            </form>
-          )}
-        </div>
+        <GoogleSignIn picketClient={picketClient} />
       )}
     </>
   );

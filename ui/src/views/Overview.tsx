@@ -175,13 +175,8 @@ function Reconnect() {
           Google stopped accepting Picket’s sign-in. Sign in again to pick up where it left off.
         </span>
       </span>
-      <button
-        type="button"
-        className="button small primary"
-        disabled={reconnect.isPending}
-        onClick={() => reconnect.mutate()}
-      >
-        {reconnect.isPending ? "Waiting for Google…" : "Sign in again"}
+      <button type="button" className="button small primary" onClick={() => reconnect.mutate()}>
+        {reconnect.isPending ? "Open Google sign-in again" : "Sign in again"}
       </button>
       {reconnect.isError && <Failure error={reconnect.error} />}
     </section>

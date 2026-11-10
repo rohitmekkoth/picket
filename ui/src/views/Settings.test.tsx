@@ -10,6 +10,7 @@ import {
   listAgents,
   reconnectGoogle,
   registerAgent,
+  signInGoogle,
 } from "../lib/runtime";
 import { Settings } from "./Settings";
 
@@ -18,6 +19,7 @@ vi.mock("../lib/runtime", () => ({
   getGoogleStatus: vi.fn(),
   connectGoogle: vi.fn(),
   reconnectGoogle: vi.fn(),
+  signInGoogle: vi.fn(),
   listAgents: vi.fn(),
   registerAgent: vi.fn(),
   getModel: vi.fn(),
@@ -51,6 +53,7 @@ const register = vi.mocked(registerAgent);
 const getRuntime = vi.mocked(getRuntimeInfo);
 const getGoogle = vi.mocked(getGoogleStatus);
 const connect = vi.mocked(connectGoogle);
+const signIn = vi.mocked(signInGoogle);
 const desktop = { version: "0.1.0", platform: "macos", architecture: "aarch64", monitoring: true };
 
 function renderSettings() {
@@ -130,14 +133,28 @@ test("a rejected Google sign-in is renewed with one click", async () => {
   await waitFor(() => expect(reconnect).toHaveBeenCalled());
 });
 
+test("a disconnected Google signs in with one click and can be retried while waiting", async () => {
+  getGoogle.mockResolvedValue("disconnected");
+  signIn.mockReturnValue(new Promise(() => {}));
+  renderSettings();
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in with Google" }));
+  expect(screen.queryByLabelText("Google Desktop OAuth client ID")).not.toBeInTheDocument();
+  // A closed browser tab must not leave the person waiting out the sign-in limit.
+  fireEvent.click(await screen.findByRole("button", { name: "Open Google sign-in again" }));
+  await waitFor(() => expect(signIn).toHaveBeenCalledTimes(2));
+});
+
 test("an unreachable Google can be retried with a client", async () => {
   getGoogle.mockResolvedValue("unavailable");
   connect.mockResolvedValue();
   renderSettings();
-  fireEvent.change(await screen.findByLabelText("Google Desktop OAuth client ID"), {
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Use your own Google Cloud client instead" }),
+  );
+  fireEvent.change(screen.getByLabelText("Google Desktop OAuth client ID"), {
     target: { value: "synthetic-client" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  fireEvent.click(screen.getByRole("button", { name: "Sign in with this client" }));
   await waitFor(() => expect(connect).toHaveBeenCalledWith("synthetic-client", ""));
 });
 
