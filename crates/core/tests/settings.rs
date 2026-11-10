@@ -23,6 +23,8 @@ fn settings_persist_and_reject_invalid_values() -> Result<(), Box<dyn std::error
     store.set_alerts_paused_until(Some(at(1)))?;
     let day = NaiveDate::from_ymd_opt(2026, 11, 5).ok_or("date")?;
     store.set_last_summary_day(day)?;
+    assert!(!store.settings()?.setup_completed);
+    store.set_setup_completed(at(0))?;
     let invalid: SettingsPatch = serde_json::from_str(r#"{"retentionDays":2}"#)?;
     assert!(store.update_settings(&invalid, at(0)).is_err());
     drop(store);
@@ -33,5 +35,6 @@ fn settings_persist_and_reject_invalid_values() -> Result<(), Box<dyn std::error
     assert_eq!(settings.retention_days, 90);
     assert_eq!(settings.alerts_paused_until, Some(at(1)));
     assert_eq!(settings.last_summary_day, Some(day));
+    assert!(settings.setup_completed);
     Ok(())
 }

@@ -176,6 +176,8 @@ export function fixtures() {
       alertsPausedUntil: null,
       lastSummaryDay: null,
       startAtLogin: true,
+      setupCompleted: true,
+      picketClient: true,
     },
     verify_log: { valid: true, throughSequence: 1657, retainedEvents: 1657, brokenAt: null },
     export_incident: true,
@@ -321,6 +323,10 @@ export async function mockDesktop(page: Page, overrides: Partial<Record<string, 
           return null;
         }
         if (cmd === "save_boundary") return args.id ?? "b-3";
+        if (cmd === "complete_setup") {
+          Object.assign(state.get_settings as object, { setupCompleted: true });
+          return structuredClone(state.get_settings);
+        }
         if (cmd === "update_settings") {
           Object.assign(state.get_settings as object, args.patch);
           return structuredClone(state.get_settings);

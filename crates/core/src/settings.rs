@@ -18,6 +18,8 @@ pub struct Settings {
     pub alerts_paused_until: Option<DateTime<Utc>>,
     /// The local day the last daily summary covered.
     pub last_summary_day: Option<NaiveDate>,
+    /// The setup wizard was finished or closed; it does not open by itself again.
+    pub setup_completed: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             retention_days: DEFAULT_RETENTION_DAYS,
             alerts_paused_until: None,
             last_summary_day: None,
+            setup_completed: false,
         }
     }
 }

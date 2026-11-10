@@ -149,3 +149,49 @@ test("a rejected Google sign-in is the first thing the overview says", async ({
   await settle(page, "overview-reconnect", testInfo);
   expect(problems).toEqual([]);
 });
+
+test("a first run walks through setup and every step can be revisited", async ({
+  page,
+}, testInfo) => {
+  const problems = guard(page);
+  const base = (await import("./desktop")).fixtures();
+  await mockDesktop(page, {
+    get_settings: { ...base.get_settings, setupCompleted: false },
+    google_connected: "disconnected",
+  });
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", {
+      name: "Picket keeps an independent record of what your AI agent does",
+    }),
+  ).toBeVisible();
+  await settle(page, "setup-welcome", testInfo);
+  await page.getByRole("button", { name: "Get started" }).click();
+  await expect(page.getByRole("heading", { name: "Connect your Google account" })).toBeVisible();
+  await page.getByRole("button", { name: "Sign in with Google" }).click();
+  expect((await calls(page)).some((call) => call.cmd === "sign_in_google")).toBe(true);
+  await page.getByRole("button", { name: "Use your own Google Cloud client instead" }).click();
+  await expect(page.getByLabel("Google Desktop OAuth client ID")).toBeVisible();
+  await settle(page, "setup-google", testInfo);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByText("Watching Instinct.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Let Picket read your chat with Instinct" }),
+  ).toBeVisible();
+  await settle(page, "setup-access", testInfo);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "How Picket tells you" })).toBeVisible();
+  await settle(page, "setup-alerts", testInfo);
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Let Picket read your chat with Instinct" }),
+  ).toBeVisible();
+  await page.goto("/#/setup/finish");
+  await expect(page.getByText("The model is ready.")).toBeVisible();
+  await settle(page, "setup-finish", testInfo);
+  await page.getByRole("button", { name: "Finish setup" }).click();
+  await expect(page.getByRole("heading", { name: "2 things need a look" })).toBeVisible();
+  expect((await calls(page)).some((call) => call.cmd === "complete_setup")).toBe(true);
+  expect(problems).toEqual([]);
+});

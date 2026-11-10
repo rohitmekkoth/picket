@@ -1188,3 +1188,118 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Setup wizard: one centred card, no sidebar. */
+.setup {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.setup-head .brand {
+  padding: 0;
+}
+.setup-progress-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+.setup-progress-list .on {
+  color: var(--ink);
+  font-weight: 600;
+}
+.setup-progress-list .done {
+  color: var(--ok-ink);
+}
+.setup-head .link-button {
+  align-self: center;
+}
+@media (max-width: 760px) {
+  .setup-progress-list {
+    display: none;
+  }
+}
+.setup-body {
+  flex: 1;
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 40px 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.setup-card h1 {
+  font-size: 26px;
+}
+.setup-card .lede {
+  margin-top: -12px;
+}
+.setup-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.setup-facts li {
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+}
+.setup-actions,
+.google-sign-in {
+  gap: 12px;
+}
+.google-sign-in {
+  flex: 1 1 auto;
+}
+.google-sign-in-note {
+  margin-top: 8px;
+  max-width: 520px;
+}
+.setup-form,
+.google-sign-in-form {
+  display: flex;
+}
+.setup-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.setup-done {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ok-line);
+  border-radius: 10px;
+  background: var(--ok-surface);
+  color: var(--ok-ink);
+}
+.setup-progress {
+  width: 100%;
+  max-width: 420px;
+  accent-color: var(--accent);
+}
+.setup-foot {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-soft);
+}

@@ -37,6 +37,12 @@ export async function connectGoogle(clientId: string, clientSecret: string): Pro
   await invoke("connect_google", { clientId, clientSecret });
 }
 
+/** Signs in with Picket's own Google client, through the system browser. */
+export async function signInGoogle(): Promise<void> {
+  if (!isTauri()) throw new Error("Open the desktop app to connect Google.");
+  await invoke("sign_in_google");
+}
+
 /** Signs in again with the saved client, after Google rejected Picket's sign-in. */
 export async function reconnectGoogle(): Promise<void> {
   if (!isTauri()) throw new Error("Open the desktop app to connect Google.");

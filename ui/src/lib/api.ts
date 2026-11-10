@@ -342,6 +342,8 @@ const settings = z.object({
   alertsPausedUntil: time.nullable(),
   lastSummaryDay: z.string().nullable(),
   startAtLogin: z.boolean(),
+  setupCompleted: z.boolean(),
+  picketClient: z.boolean(),
 });
 export type Settings = z.infer<typeof settings>;
 export type SettingsPatch = { summaryMinutes?: number | null; retentionDays?: number };
@@ -389,4 +391,10 @@ export async function exportAll(): Promise<boolean> {
 export async function wipeAll(): Promise<void> {
   if (!isTauri()) throw new Error(desktopOnly);
   await invoke("wipe_all");
+}
+
+/** Records that setup was finished or skipped, so it does not open by itself again. */
+export async function completeSetup(): Promise<Settings> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  return settings.parse(await invoke<unknown>("complete_setup"));
 }
