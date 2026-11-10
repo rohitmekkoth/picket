@@ -412,7 +412,10 @@ export function Incident({ id }: { id: string }) {
   // With one watched agent, name it even when Picket can't tell who acted.
   const watched = agents.data?.agents.filter((agent) => agent.enabled) ?? [];
   const agentName =
-    data.agent ?? data.actor.agents[0] ?? (watched.length === 1 ? watched[0].name : "your agent");
+    data.agent ??
+    data.actor.agents[0] ??
+    (watched.length === 1 ? watched[0]?.name : undefined) ??
+    "your agent";
   const agentId = agents.data?.agents.find((agent) => agent.name === agentName)?.id ?? null;
   const open = data.status === "open";
   return (
