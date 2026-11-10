@@ -1,0 +1,126 @@
+name: Release
+
+# A version tag builds the signed arm64 app and DMG, publishes them with checksums and
+# build provenance, and updates the Homebrew cask. Secrets are only read by the steps
+# that need them and are never printed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      SIGNING_IDENTITY: Picket Self-Signed Code Signing
+      # Public fingerprint of the release certificate; a build signed by anything else fails.
+      SIGNING_LEAF: 9879149406518883578caa01b9912eacc606dc7c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.99.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check the tag matches the app version
+        run: |
+          version=$(jq -r .version crates/app/tauri.conf.json)
+          test "${GITHUB_REF_NAME}" = "v${version}" || {
+            echo "Tag ${GITHUB_REF_NAME} does not match app version ${version}"
+            exit 1
+          }
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Install the signing certificate in a temporary keychain
+        env:
+          SIGNING_P12: ${{ secrets.PICKET_SIGNING_P12 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.PICKET_SIGNING_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          keychain_password=$(openssl rand -base64 24)
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" \
+            -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" > /dev/null
+          # Keychain paths have no spaces; word splitting lists them.
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/signing.p12"
+
+      - name: Build the app and DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          PICKET_GOOGLE_CLIENT_ID: ${{ secrets.PICKET_GOOGLE_CLIENT_ID }}
+          PICKET_GOOGLE_CLIENT_SECRET: ${{ secrets.PICKET_GOOGLE_CLIENT_SECRET }}
+        run: pnpm tauri build --bundles app,dmg
+
+      - name: Verify the signature
+        run: |
+          app=target/release/bundle/macos/Picket.app
+          codesign --verify --deep --strict "$app"
+          codesign -dr - "$app" 2>&1 | grep -q "certificate leaf = H\"${SIGNING_LEAF}\""
+
+      - name: Collect release files and checksums
+        run: |
+          mkdir -p dist-release
+          cp target/release/bundle/dmg/*.dmg "dist-release/Picket_${VERSION}_aarch64.dmg"
+          ditto -c -k --keepParent target/release/bundle/macos/Picket.app \
+            "dist-release/Picket_${VERSION}_aarch64.app.zip"
+          cd dist-release && shasum -a 256 ./Picket_* > SHA256SUMS && cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist-release/Picket_*
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist-release/* \
+            --title "Picket ${VERSION}" --notes-file docs/release-notes.md
+
+      - name: Update the Homebrew cask
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          sha=$(shasum -a 256 "dist-release/Picket_${VERSION}_aarch64.dmg" | cut -d' ' -f1)
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 "git@github.com:${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          sed -e "s/@VERSION@/${VERSION}/" -e "s/@SHA256@/${sha}/" \
+            packaging/homebrew/picket.rb > "$RUNNER_TEMP/tap/Casks/picket.rb"
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "picket-release"
+          git config user.email "picket-release@users.noreply.github.com"
+          git add Casks/picket.rb
+          git commit -m "picket ${VERSION}"
+          git push
+          rm -f "$key"
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2>/dev/null || true
