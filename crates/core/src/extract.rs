@@ -33,6 +33,12 @@ const MAX_TOKENS: u32 = 400;
 const MAX_CLAIMS: usize = 4;
 /// A message that could not be extracted may hold a request for this long.
 const FAILURE_HORIZON: Duration = Duration::days(7);
+/// Messages older than this when first seen, such as most of the setup baseline, are
+/// recorded as skipped instead of read by the model, so a long history never delays
+/// extracting what the person is asking right now.
+const EXTRACTION_HORIZON: Duration = Duration::hours(24);
+/// Recorded as the model of a skipped message, which no model read.
+const NOT_READ: &str = "not-read";
 /// How long after its latest request a task stays under discussion for follow-ups.
 const TASK_HORIZON: Duration = Duration::days(14);
 
@@ -96,11 +102,22 @@ pub fn extract_pending(
         }
     };
     for message in pending.iter().take(MESSAGES_PER_PASS) {
-        let Some(model) = model.as_deref_mut() else {
-            break;
-        };
         let EventPayload::Message(observed) = &message.payload else {
             continue;
+        };
+        if message.occurred_at < now - EXTRACTION_HORIZON {
+            let skipped = record(message, observed, ExtractionOutcome::Skipped, NOT_READ, now);
+            ledger.commit(
+                Batch {
+                    events: vec![skipped],
+                    ..Batch::default()
+                },
+                now,
+            )?;
+            continue;
+        }
+        let Some(model) = model.as_deref_mut() else {
+            break;
         };
         let Some(agent) = agents.iter().find(|agent| agent.id == observed.agent) else {
             continue;

@@ -222,8 +222,13 @@ fn poll(
     match messages::poll_messages(chat, writer, &account, &agents, now) {
         Ok(progress) => {
             set(app, "capturing");
-            extract(app, chat, writer, &account, extractor);
-            Some(progress)
+            // Either a capture or an extraction backlog continues without the pause.
+            let extracted = extract(app, chat, writer, &account, extractor);
+            Some(if extracted == Progress::Behind {
+                Progress::Behind
+            } else {
+                progress
+            })
         }
         Err(error) => {
             // Reopen next time; access or the schema may have changed.
@@ -241,7 +246,7 @@ fn extract(
     writer: &mut Writer,
     account: &str,
     extractor: &mut Extractor,
-) {
+) -> Progress {
     let pending = writer
         .pending_extractions(account, 1)
         .is_ok_and(|pending| !pending.is_empty());
@@ -256,9 +261,11 @@ fn extract(
         .runner
         .as_mut()
         .map(|runner| runner as &mut dyn LocalModel);
-    if extract_pending(writer, model, &mut text, &zone, account, Utc::now()).is_err() {
-        tracing::warn!("extraction pass failed");
-    }
+    let progress = extract_pending(writer, model, &mut text, &zone, account, Utc::now())
+        .unwrap_or_else(|_| {
+            tracing::warn!("extraction pass failed");
+            Progress::CaughtUp
+        });
     if pending {
         extractor.used = Some(Instant::now());
     } else if extractor
@@ -268,6 +275,7 @@ fn extract(
         extractor.runner = None;
         extractor.used = None;
     }
+    progress
 }
 
 /// Loads and verifies the installed model, if the user downloaded one.

@@ -368,6 +368,8 @@ pub enum ExtractionOutcome {
     NotATask,
     /// The text was unavailable or the model output failed validation.
     Failed,
+    /// Older than the extraction horizon when first seen; its text was never read.
+    Skipped,
 }
 
 /// The durable record that one message revision was extracted, by which model and

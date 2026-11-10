@@ -265,6 +265,40 @@ fn an_agent_message_cannot_approve_or_create_a_request() -> Result<()> {
 }
 
 #[test]
+fn history_older_than_a_day_is_skipped_so_a_new_request_is_read_at_once() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.say(
+        "old",
+        1,
+        MessageDirection::FromUser,
+        "Email Sam the old menu",
+        request("new_task", "not_required", false),
+    )?;
+    let now = 2 * 24 * 60;
+    fixture.say(
+        "new",
+        now - 1,
+        MessageDirection::FromUser,
+        "Email Sam the new menu",
+        request("new_task", "not_required", false),
+    )?;
+    fixture.extract(now)?;
+    assert_eq!(fixture.model.calls, 1, "only the recent message is read");
+    assert_eq!(fixture.requests()?.len(), 1);
+    let skipped = fixture
+        .store
+        .events()?
+        .into_iter()
+        .filter(|row| {
+            matches!(&row.event.payload, EventPayload::Extraction(record)
+                if record.outcome == picket_core::event::ExtractionOutcome::Skipped)
+        })
+        .count();
+    assert_eq!(skipped, 1);
+    Ok(())
+}
+
+#[test]
 fn invented_recipients_are_dropped_and_times_resolve_in_local_time() -> Result<()> {
     let mut fixture = Fixture::new()?;
     let mut invented = request("new_task", "not_required", false);
