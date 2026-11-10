@@ -384,3 +384,9 @@ export async function exportAll(): Promise<boolean> {
   if (!isTauri()) throw new Error(desktopOnly);
   return z.boolean().parse(await invoke<unknown>("export_all"));
 }
+
+/** Deletes everything Picket keeps on this Mac, opens Google's access page and quits. */
+export async function wipeAll(): Promise<void> {
+  if (!isTauri()) throw new Error(desktopOnly);
+  await invoke("wipe_all");
+}

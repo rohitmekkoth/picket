@@ -28,6 +28,7 @@ fn main() {
             "verify_log",
             "export_incident",
             "export_all",
+            "wipe_all",
         ]),
     ))
     .unwrap_or_else(|error| panic!("failed to build Picket app metadata: {error}"));
