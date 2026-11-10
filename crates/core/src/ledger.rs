@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     calendar::CalendarState,
-    event::{AgentRegistration, Event, EventKey, Source},
+    event::{AgentRegistration, Event, EventKey, MessageDirection, Source},
     store::{Batch, CollectorCursor, Committed, Result, Store, StoreError},
 };
 
@@ -44,10 +44,11 @@ pub trait Ledger {
         agent: &str,
         since: DateTime<Utc>,
     ) -> Result<Vec<Event>>;
-    fn previous_user_message(
+    fn previous_message(
         &self,
         account: &str,
         agent: &str,
+        direction: MessageDirection,
         before: DateTime<Utc>,
     ) -> Result<Option<Event>>;
 }
@@ -86,13 +87,14 @@ impl Ledger for Store {
         Store::extractions_since(self, account, agent, since)
     }
 
-    fn previous_user_message(
+    fn previous_message(
         &self,
         account: &str,
         agent: &str,
+        direction: MessageDirection,
         before: DateTime<Utc>,
     ) -> Result<Option<Event>> {
-        Store::previous_user_message(self, account, agent, before)
+        Store::previous_message(self, account, agent, direction, before)
     }
 }
 
@@ -201,13 +203,15 @@ impl Ledger for Writer {
         self.reader.extractions_since(account, agent, since)
     }
 
-    fn previous_user_message(
+    fn previous_message(
         &self,
         account: &str,
         agent: &str,
+        direction: MessageDirection,
         before: DateTime<Utc>,
     ) -> Result<Option<Event>> {
-        self.reader.previous_user_message(account, agent, before)
+        self.reader
+            .previous_message(account, agent, direction, before)
     }
 }
 

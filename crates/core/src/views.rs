@@ -302,10 +302,24 @@ pub fn incident(
             .map(|message| message.snippet)
             .filter(|snippet| !snippet.is_empty())
     };
+    // Quote the message that started the task, not a follow-up such as "Yes": a task's
+    // id is the id of the message that created it.
     let request = basis
         .as_ref()
         .and_then(|basis| basis.request)
-        .and_then(|event| request_view(event, quote(event)));
+        .and_then(|event| {
+            let original = match &event.payload {
+                EventPayload::Request(request) => messages
+                    .message(&EventKey {
+                        resource: request.task.clone(),
+                        ..event.key.clone()
+                    })
+                    .map(|message| message.snippet)
+                    .filter(|snippet| !snippet.is_empty()),
+                _ => None,
+            };
+            request_view(event, original.or_else(|| quote(event)))
+        });
     let mut reports: Vec<_> = basis
         .as_ref()
         .map(|basis| basis.reports.clone())

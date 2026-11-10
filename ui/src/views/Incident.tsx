@@ -32,6 +32,10 @@ const kindLabel: Record<IncidentDetail["kind"], string> = {
 };
 
 /** One or two sentences that say what happened, in the person's terms. */
+function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function lede(incident: IncidentDetail, agent: string): string {
   const unrequested = incident.effect?.people.filter((person) => person.unrequested) ?? [];
   const asked = incident.request?.message;
@@ -49,7 +53,7 @@ function lede(incident: IncidentDetail, agent: string): string {
     case "approval_missing":
       return `${intro}${intro ? " " : ""}You asked to approve it first, and hadn’t yet.`;
     case "report_not_observed":
-      return `${agent} said it was done, but nothing matching appeared in your account.`;
+      return `${capitalized(agent)} said it was done, but nothing matching appeared in your account.`;
     default:
       break;
   }
@@ -128,7 +132,7 @@ function RequestColumn({ incident, agent }: { incident: IncidentDetail; agent: s
 function ReportColumn({ incident, agent }: { incident: IncidentDetail; agent: string }) {
   return (
     <article className="card step">
-      <p className="label">2 · {agent} said</p>
+      <p className="label">2 · {capitalized(agent)} said</p>
       {incident.reports.length === 0 ? (
         <p className="muted">{agent} didn’t report this.</p>
       ) : (
@@ -405,7 +409,13 @@ export function Incident({ id }: { id: string }) {
   }
   const data = incident.data;
   if (!data) return null;
-  const agentName = data.agent ?? data.actor.agents[0] ?? "your agent";
+  // With one watched agent, name it even when Picket can't tell who acted.
+  const watched = agents.data?.agents.filter((agent) => agent.enabled) ?? [];
+  const agentName =
+    data.agent ??
+    data.actor.agents[0] ??
+    (watched.length === 1 ? watched[0]?.name : undefined) ??
+    "your agent";
   const agentId = agents.data?.agents.find((agent) => agent.name === agentName)?.id ?? null;
   const open = data.status === "open";
   return (

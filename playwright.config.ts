@@ -12,13 +12,21 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  // Cover native window sizes and Chromium/WebKit behavior.
+  // Cover the default and minimum native window sizes in both themes, and WebKit behavior.
   projects: [
     { name: "desktop", use: { browserName: "chromium", viewport: { width: 1040, height: 740 } } },
+    {
+      name: "desktop-dark",
+      use: { browserName: "chromium", viewport: { width: 1040, height: 740 }, colorScheme: "dark" },
+    },
     { name: "webkit", use: { browserName: "webkit", viewport: { width: 1040, height: 740 } } },
     {
       name: "compact",
       use: { browserName: "chromium", viewport: { width: 640, height: 580 }, colorScheme: "dark" },
+    },
+    {
+      name: "compact-light",
+      use: { browserName: "chromium", viewport: { width: 640, height: 580 } },
     },
   ],
   // Reuse the local server for iteration but isolate every CI run.
