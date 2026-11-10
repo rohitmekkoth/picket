@@ -515,12 +515,13 @@ impl Store {
         rows.map(|row| Ok(serde_json::from_slice(&row?)?)).collect()
     }
 
-    /// The user's latest message to `agent` before `before`, for reading a reply in
-    /// context.
-    pub fn previous_user_message(
+    /// The latest message in one direction of the chat with `agent` before `before`,
+    /// for reading a message in context.
+    pub fn previous_message(
         &self,
         account: &str,
         agent: &str,
+        direction: crate::event::MessageDirection,
         before: DateTime<Utc>,
     ) -> Result<Option<Event>> {
         let mut statement = self.connection.prepare(
@@ -533,7 +534,7 @@ impl Store {
             let event: Event = serde_json::from_slice(&row?)?;
             if let EventPayload::Message(message) = &event.payload
                 && message.agent == agent
-                && message.direction == crate::event::MessageDirection::FromUser
+                && message.direction == direction
                 && event.occurred_at < before
                 && latest
                     .as_ref()

@@ -299,6 +299,79 @@ fn history_older_than_a_day_is_skipped_so_a_new_request_is_read_at_once() -> Res
 }
 
 #[test]
+fn a_new_request_does_not_inherit_a_prohibition_from_the_task_under_discussion() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    let mut hold = request("new_task", "unknown", false);
+    hold["actions"] = json!([]);
+    hold["prohibited"] = json!(["email_send"]);
+    fixture.say(
+        "m1",
+        1,
+        MessageDirection::FromUser,
+        "Hold off on emailing Sam",
+        hold,
+    )?;
+    fixture.extract(2)?;
+    // Live: the model copied the earlier "don't send" onto an unrelated request.
+    let mut copied = request("new_task", "unknown", false);
+    copied["names"] = json!(["Dana"]);
+    copied["prohibited"] = json!(["email_send"]);
+    fixture.say(
+        "m2",
+        3,
+        MessageDirection::FromUser,
+        "Email Dana saying the invoice is ready",
+        copied,
+    )?;
+    fixture.extract(4)?;
+    let requests = fixture.requests()?;
+    let latest = requests.last().ok_or("request missing")?;
+    assert!(latest.prohibited_actions.is_empty());
+    assert_eq!(
+        latest.actions,
+        picket_core::event::Field::Known(vec![Action::EmailSend])
+    );
+    Ok(())
+}
+
+#[test]
+fn approving_a_proposed_send_approves_its_recipient_but_not_the_sender() -> Result<()> {
+    let mut fixture = Fixture::new()?;
+    let mut named = request("new_task", "unknown", false);
+    named["names"] = json!(["Sam Tester"]);
+    fixture.say(
+        "m1",
+        1,
+        MessageDirection::FromUser,
+        "Email Sam Tester saying the report is ready",
+        named,
+    )?;
+    fixture.say(
+        "m2",
+        2,
+        MessageDirection::FromAgent,
+        "Send this from me@example.test to sam@tester.example?",
+        json!({"claims": []}),
+    )?;
+    fixture.say(
+        "m3",
+        3,
+        MessageDirection::FromUser,
+        "Yes",
+        request("revise_task", "unknown", true),
+    )?;
+    fixture.extract(4)?;
+    let requests = fixture.requests()?;
+    let latest = requests.last().ok_or("request missing")?;
+    assert!(latest.approved);
+    assert_eq!(
+        latest.targets,
+        picket_core::event::Field::Known(vec!["sam@tester.example".to_owned()])
+    );
+    Ok(())
+}
+
+#[test]
 fn invented_recipients_are_dropped_and_times_resolve_in_local_time() -> Result<()> {
     let mut fixture = Fixture::new()?;
     let mut invented = request("new_task", "not_required", false);

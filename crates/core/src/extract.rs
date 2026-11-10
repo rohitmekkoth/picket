@@ -39,6 +39,8 @@ const FAILURE_HORIZON: Duration = Duration::days(7);
 const EXTRACTION_HORIZON: Duration = Duration::hours(24);
 /// Recorded as the model of a skipped message, which no model read.
 const NOT_READ: &str = "not-read";
+/// How recent the agent's message must be for an approval to adopt its recipients.
+const PROPOSAL_HORIZON: Duration = Duration::hours(1);
 /// How long after its latest request a task stays under discussion for follow-ups.
 const TASK_HORIZON: Duration = Duration::days(14);
 
@@ -130,19 +132,38 @@ pub fn extract_pending(
         // user's most recent request created or revised. Older tasks are not offered,
         // so a short reply cannot be attached to one of them.
         let open = current_task(ledger, account, &agent.id, message.occurred_at)?;
-        let previous = match observed.direction {
-            MessageDirection::FromAgent => {
-                ledger.previous_user_message(account, &agent.id, message.occurred_at)?
-            }
-            MessageDirection::FromUser => None,
+        let (previous, proposal) = match observed.direction {
+            MessageDirection::FromAgent => (
+                ledger.previous_message(
+                    account,
+                    &agent.id,
+                    MessageDirection::FromUser,
+                    message.occurred_at,
+                )?,
+                None,
+            ),
+            MessageDirection::FromUser => (
+                None,
+                ledger.previous_message(
+                    account,
+                    &agent.id,
+                    MessageDirection::FromAgent,
+                    message.occurred_at,
+                )?,
+            ),
         };
         let context_text = previous
             .as_ref()
             .and_then(|previous| text(&previous.key.resource));
+        let proposal_text = proposal
+            .as_ref()
+            .filter(|proposal| message.occurred_at - proposal.occurred_at < PROPOSAL_HORIZON)
+            .and_then(|proposal| text(&proposal.key.resource));
         let context_task = open.keys().next().cloned();
         let context = Context {
             text: context_text.as_deref(),
             task: context_task.as_deref(),
+            proposal: proposal_text.as_deref(),
         };
         let events = match extract_one(
             model,
@@ -360,6 +381,9 @@ pub struct Input<'a> {
 pub struct Context<'a> {
     pub text: Option<&'a str>,
     pub task: Option<&'a str>,
+    /// For a user message, the agent's preceding message. Never shown to the model; an
+    /// approval adopts only the addresses it proposed sending to.
+    pub proposal: Option<&'a str>,
 }
 
 /// The validated extraction of one message: at most one request from the user, or
@@ -643,9 +667,13 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
         RawApproval::NotRequired if says(text, &NO_APPROVAL_CUES) => Field::Known(false),
         _ => Field::Unknown,
     };
+    // A prohibition needs restricting words in this message; otherwise the model is
+    // copying one from the task under discussion onto a new request.
+    let restricts = says(text, &RESTRICT_CUES);
     let mut prohibited: Vec<_> = raw
         .prohibited
         .iter()
+        .filter(|_| restricts)
         .filter_map(|value| action(value))
         .collect();
     // Wording can only ever restrict: "don't send" forbids sending even if the model
@@ -682,6 +710,26 @@ fn request_from(raw: RawRequest, input: &Input, text: &str) -> Option<Request> {
     }
     if approves {
         request.approved = true;
+        // "Yes" to "Send this to dana@example.com?" approves that recipient.
+        let proposed = input
+            .context
+            .proposal
+            .map(proposed_recipients)
+            .unwrap_or_default();
+        if !proposed.is_empty() {
+            request.targets = match request.targets {
+                Field::Known(mut known) => {
+                    for address in proposed {
+                        if !known.contains(&address) {
+                            known.push(address);
+                        }
+                    }
+                    Field::Known(known)
+                }
+                Field::ExplicitAny => Field::ExplicitAny,
+                Field::Unknown | Field::Ambiguous => Field::Known(proposed),
+            };
+        }
     }
     if cancels {
         request.valid_until = Some(at);
@@ -730,6 +778,56 @@ const NO_SEND_CUES: [&str; 12] = [
     "don't send yet",
     "wait to send",
 ];
+/// Words without which a message cannot forbid anything.
+const RESTRICT_CUES: [&str; 18] = [
+    "not",
+    "don't",
+    "dont",
+    "do not",
+    "never",
+    "no",
+    "without",
+    "hold",
+    "wait",
+    "only",
+    "stop",
+    "avoid",
+    "except",
+    "nothing",
+    "cancel",
+    "shouldn't",
+    "can't",
+    "won't",
+];
+
+/// Addresses an agent message proposes sending to: those after "to", "cc" or "bcc"
+/// and before any "from", so the sending account is not adopted as a recipient.
+fn proposed_recipients(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut recipient = false;
+    for token in text.split_whitespace() {
+        let word = token
+            .trim_matches(|character: char| !(character.is_alphanumeric() || character == '@'))
+            .to_lowercase();
+        match word.as_str() {
+            "to" | "cc" | "bcc" => recipient = true,
+            "from" => recipient = false,
+            _ if recipient
+                && word.contains('@')
+                && word
+                    .rsplit('@')
+                    .next()
+                    .is_some_and(|domain| domain.contains('.'))
+                && !found.contains(&word) =>
+            {
+                found.push(word);
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 /// Wording that places a claimed email in the user's own account.
 const USER_ACCOUNT_CUES: [&str; 6] = [
     "from your",

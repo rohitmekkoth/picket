@@ -35,6 +35,8 @@ struct Case {
     context: Option<String>,
     #[serde(default)]
     context_task: Option<String>,
+    #[serde(default)]
+    proposal: Option<String>,
     expect: Expect,
 }
 
@@ -44,6 +46,8 @@ struct OpenTask {
     actions: Vec<String>,
     #[serde(default)]
     names: Vec<String>,
+    #[serde(default)]
+    prohibited: Vec<String>,
     approval: String,
 }
 
@@ -192,6 +196,7 @@ pub fn evaluate(model: &mut dyn LocalModel, suite: &Suite) -> Result<Report, Str
             context: Context {
                 text: case.context.as_deref(),
                 task: case.context_task.as_deref(),
+                proposal: case.proposal.as_deref(),
             },
         };
         let errors = report.safety_errors.len() + report.utility_misses.len();
@@ -231,7 +236,11 @@ fn open_request(task: &OpenTask) -> Request {
         ),
         targets: Field::Known(Vec::new()),
         calendar_start: Field::Unknown,
-        prohibited_actions: Vec::new(),
+        prohibited_actions: task
+            .prohibited
+            .iter()
+            .filter_map(|value| action(value))
+            .collect(),
         max_actions: Field::Unknown,
         valid_until: None,
         requires_approval: approval(&task.approval),
