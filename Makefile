@@ -31,8 +31,17 @@ e2e:
 eval:
 	$(CARGO) run -p picket-cli --locked -- eval --mock
 
+# Release signing identity. With it in the keychain, builds keep one code signature,
+# so macOS privacy grants such as Full Disk Access survive rebuilds; without it they
+# are signed ad hoc. See docs/setup/development.md.
+SIGNING_IDENTITY := Picket Self-Signed Code Signing
+
 build:
-	pnpm build
+	@if security find-identity -p codesigning 2>/dev/null | grep -q "$(SIGNING_IDENTITY)"; then \
+		APPLE_SIGNING_IDENTITY="$(SIGNING_IDENTITY)" pnpm build; \
+	else \
+		pnpm build; \
+	fi
 
 # Packaged lifecycle check that requires macOS Accessibility permission.
 smoke-macos: build

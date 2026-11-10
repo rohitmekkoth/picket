@@ -241,3 +241,12 @@ Implementation notes, 2026-10-27:
 - Recipients by display name: Instinct confirms each send with the exact address, and Gmail headers often carry no display name, so a contact named only by name looked unrequested. A yes to the agent's preceding message (within an hour) now adds the addresses it proposed after "to", "cc" or "bcc", never the sending account. The agent text is parsed in Rust only and never reaches the model, so it cannot grant anything the person did not answer yes to.
 - Incidents quote the message that started the task, not the latest follow-up such as "Yes".
 - Owner confirmed the second live run on 2026-11-10: the incident showed the original request, Instinct's report and the recipient as requested.
+
+## M9 release, 2026-11-10
+
+- Signing (owner): a self-signed code-signing certificate instead of a Developer ID for v1. macOS keys privacy grants to the designated requirement (bundle id plus certificate leaf), which a fixed certificate keeps stable, so Full Disk Access survives updates; an ad hoc signature changes every build. Cost: no notarization, so first launch needs Open Anyway. A Developer ID ($99 a year) removes that later without changing anything else. The certificate lives only in the git-ignored `local/signing/` and in GitHub Actions secrets; the release workflow fails unless the app is signed by its fingerprint.
+- No in-app updater in v1. The design promises no update checks and an allowlist of Google and the model host; an updater would contact GitHub on every launch. Homebrew users update with `brew upgrade`; DMG users download again. Supersedes the 2026-11-04 suggestion to add the Tauri updater.
+- Distribution: GitHub Releases on the public repository and a cask in `rohitmekkoth/homebrew-tap`, arm64 only (`brew install --cask rohitmekkoth/tap/picket`). Version 1.0.0.
+- Google: Picket's client stays published but unverified (owner accepts the 100-user cap; restricted-scope verification needs a paid security assessment).
+- License (owner, 2026-11-10): MIT. Possible because the Messages decoder is Picket's own, not the GPL `imessage-database`. `cargo deny` license policy passes.
+- Verified: after the one Full Disk Access grant to the self-signed build, a rebuild with a new version kept the grant (no permission-missing coverage after relaunch).

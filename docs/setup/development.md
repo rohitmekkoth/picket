@@ -29,7 +29,7 @@ Do not commit or paste credentials, account responses, or real message content i
 
 `make check`, `make test`, `make e2e`, and `make audit` cover the present foundation. Browser tests verify layout, keyboard interaction, browser-preview disclosure, lack of external UI requests, and console errors. `make smoke-macos` builds and launches the packaged app, checks its Rust IPC status, closes it to the tray, confirms the tray remains present, restores the existing process through a second launch, and quits it. Grant Accessibility access to the invoking terminal before running that macOS-only check. A direct tray click needs a brief manual check because macOS does not expose a real tray click through the accessibility action used by the script.
 
-These checks do not prove future macOS permissions, notifications, direct tray clicking, or real account integration. The development app uses an ad hoc code signature so its bundle can be validated consistently. A public release still requires a Developer ID identity and notarization.
+These checks do not prove future macOS permissions, notifications, direct tray clicking, or real account integration. `make build` signs with Picket's self-signed release certificate when it is in the login keychain, so macOS privacy grants such as Full Disk Access survive rebuilds; otherwise it signs ad hoc. The certificate, its password and the Homebrew tap deploy key live only in the git-ignored `local/signing/` and in GitHub Actions secrets. Releases are not notarized; a Developer ID is a later upgrade.
 
 Playwright artifacts are ignored under `test-results/`; failures keep traces and screenshots. CI runs without retries so flakes remain visible. CI runs on pushes to `main` and on pull requests; open a draft pull request when starting a branch so each pushed increment is checked. The portable core and CLI run on Linux; the full desktop workspace compiles and tests on macOS.
 
@@ -41,7 +41,7 @@ Only dependencies used by the foundation are installed into its manifests. Add c
 
 GitHub Actions have immutable commit pins; Dependabot tracks Actions, Cargo, and npm changes. Cargo-deny rejects disallowed licenses, known vulnerabilities, yanked crates, and unknown sources. Duplicate transitive versions are permitted because the native stack requires them. Unmaintained advisories are enforced for workspace crates; transitive maintenance warnings need review when choosing/upgrading native dependencies.
 
-Release automation, attestations, DMGs, and the Homebrew tap are M9 work. The current workflow only checks and builds; it never publishes a release.
+Pushing a `v*` tag that matches the app version runs `.github/workflows/release.yml`: it builds the signed arm64 app and DMG, verifies the certificate fingerprint, publishes them with `SHA256SUMS` and build provenance, and updates the cask in `rohitmekkoth/homebrew-tap` from `packaging/homebrew/picket.rb`. Release notes come from `docs/release-notes.md`. Secrets it needs: `PICKET_SIGNING_P12` (base64), `PICKET_SIGNING_P12_PASSWORD`, `PICKET_GOOGLE_CLIENT_ID`, `PICKET_GOOGLE_CLIENT_SECRET`, `HOMEBREW_TAP_DEPLOY_KEY`. There is no in-app updater, keeping the design's promise of no update checks; Homebrew users update with `brew upgrade`.
 
 ## Reference documentation
 

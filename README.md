@@ -1,62 +1,87 @@
 # Picket
 
-Picket is a macOS app for an independent record of what personal AI agents do. It will compare what you requested, what an agent claimed, and what actually changed in Gmail and Google Calendar. The planned product is local, read-only, and requires no paid model API.
+Picket keeps an independent record of what your AI agent does. It compares what you asked the agent in iMessage, what the agent said it did, and what actually happened in your Gmail and Google Calendar, and notifies you when they don't match. Everything runs and stays on your Mac: no Picket server, account or telemetry, and the language model that reads your requests runs locally.
 
-**Current status: development foundation only.** The Tauri shell, menu-bar entry, React interface, portable Rust core boundary, CLI diagnostics, and build/test tooling are available. Collection, Google authentication, Messages access, the engine, model runtime, and notifications are not implemented. This build does not monitor or protect an account.
+v1 watches one agent, Instinct, over iMessage.
 
-## Start developing
+| Overview | Incident |
+| --- | --- |
+| ![Overview: what needs a look today](docs/images/overview.png) | ![Incident: request, report and what happened side by side](docs/images/incident.png) |
 
-On an Apple Silicon Mac with Xcode Command Line Tools:
+Screens show synthetic test data.
+
+## Install
+
+Requires an Apple silicon Mac with macOS 13 or later.
+
+```sh
+brew install --cask rohitmekkoth/tap/picket
+```
+
+Or download the DMG from [Releases](https://github.com/rohitmekkoth/picket/releases) and drag Picket to Applications.
+
+Picket is signed with its own certificate, not an Apple Developer ID, so macOS blocks the first launch. Open Picket once, then choose **Open Anyway** in System Settings > Privacy & Security. To check a download: `shasum -a 256 -c SHA256SUMS`, or `gh attestation verify <file> --repo rohitmekkoth/picket`.
+
+## Setup (about 5 minutes)
+
+The first launch walks you through:
+
+1. **Google:** sign in with Google. Google hasn't reviewed Picket yet, so it shows a warning; choose **Advanced**, then **Go to Picket**. At most 100 people can use this sign-in.
+2. **Your agent:** add Instinct's phone number or Apple ID email.
+3. **Messages:** turn on Full Disk Access for Picket in System Settings > Privacy & Security, so it can read your chat with Instinct. Picket opens the Messages database read-only and keeps only that chat.
+4. **Alerts:** open at login and the daily summary time.
+5. **Model:** download the 2.7 GB on-device model.
+
+## What Picket can and can't see
+
+| Permission | Why | Limits |
+| --- | --- | --- |
+| Gmail metadata (`gmail.metadata`) | Who emails were to and from, when, and their subject | Never message bodies or attachments; cannot send or change anything |
+| Calendar events, read only (`calendar.events.readonly`) | Changes to your primary calendar | Cannot create, change or delete events |
+| Full Disk Access | Read your iMessage chat with your agent | Read only; other chats are ignored; message text is never stored |
+
+Picket records what it observes in a tamper-evident log in `~/Library/Application Support/dev.picket.desktop/`. Settings > **Uninstall and wipe** removes the log, the model, the Google sign-in and the login item. See [PRIVACY.md](PRIVACY.md).
+
+**Known limits.** Picket says the agent did something only when the agent reports it and the report matches; otherwise it says it can't tell who did it. Request reading handles plain wording; unusual phrasing can be missed, and Picket then says it couldn't tell rather than raising an alarm. Only Gmail and the primary Google Calendar are watched.
+
+## Evaluation
+
+The engine is checked on 288 fixed synthetic cases on every change (`make eval`). These are correlated, constructed cases that catch regressions; they are not a measure of real-world accuracy.
+
+| Mode | Cases | Agent identified | Linked | Conflicts found | False or benign alerts | Gaps reported |
+| --- | --- | --- | --- | --- | --- | --- |
+| Effects only | 112 | - | - | - | 0/112 | - |
+| Agent instrumented | 96 | 96/96 | 96/96 | 64/64 | 0/32 | - |
+| Policy | 32 | - | - | 16/16 high | 0/16 | - |
+| Calendar | 16 | - | - | - | 0/16 | - |
+| Coverage | 32 | - | - | - | - | 16/16 |
+
+Request reading with the on-device model (Qwen3.5 4B, Apple M3 Max): 0 safety errors on 49 tuning cases (8 missed fields) and 32 follow-up cases (3 missed), about 4 seconds per message. These sets were used for tuning, so they are not independent measurements.
+
+## Develop
+
+On an Apple silicon Mac with Xcode Command Line Tools:
 
 ```sh
 brew install rustup pnpm cmake gh cargo-deny gitleaks actionlint
-export PATH="$(brew --prefix rustup)/bin:$PATH"
-rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy --component rust-src --component rust-analyzer
+rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
 pnpm install --frozen-lockfile
-pnpm check:env
-pnpm tauri dev
+make dev
 ```
-
-Node is pinned in `.node-version`, pnpm in `package.json`, and Rust in `rust-toolchain.toml`. Install the pinned Node version through your preferred version manager if needed. `gh` is only needed for repository and CI administration. Opening this checkout does not require connecting Google or granting Full Disk Access.
-
-Closing the window keeps Picket in the menu bar. Click the menu-bar icon to reopen it, or use its context menu to open or quit. `pnpm dev:ui` runs a browser preview; it explicitly reports that it is not connected to the native core. The development server binds only to `127.0.0.1:1420`; packaged builds have no HTTP server.
-
-## Daily commands
 
 | Command | Purpose |
 | --- | --- |
-| `make doctor` | Verify installed development tools |
-| `make dev` | Desktop app and UI hot reload |
-| `make fmt` | Rust and frontend formatting |
 | `make check` | Formatting, linting, type checks, UI tests and builds |
-| `make test` | Rust workspace and UI unit/integration tests |
-| `pnpm exec playwright install chromium webkit` | Install the smoke-test browser once |
-| `make e2e` | Browser smoke tests at desktop and compact sizes |
-| `make audit` | Rust dependency policy and production npm audit |
-| `make build` | Build the release-mode `.app` |
-| `make smoke-macos` | Build and exercise the packaged macOS app |
-| `cargo run -p picket-cli -- doctor` | Print local runtime information as JSON |
-| `cargo run -p picket-cli -- review --database <db> --since <time>` | Print a text-free timeline of captured, extracted and observed inputs with their assessment |
+| `make test` | Rust workspace and UI tests |
+| `make eval` | The synthetic engine evaluation |
+| `make e2e` | Browser screen tests in both themes at the default and minimum window sizes |
+| `make audit` | Dependency policy and production npm audit |
+| `make build` | The release `.app` in `target/release/bundle/macos/` |
 
-The app bundle is written to `target/release/bundle/macos/Picket.app`. It is ad hoc signed for local development, without a Developer ID signature or notarization. No installer, Homebrew cask, evaluation results, or release pipeline is claimed yet.
+Start with the [development handoff](HANDOFF.md), then the [design](docs/design.md), [architecture](docs/architecture.md), [development notes](docs/setup/development.md) and [decisions](docs/decisions.md). Never commit credentials, messages, mailbox data, databases or model files.
 
-## Layout
+Report security issues as described in [SECURITY.md](SECURITY.md).
 
-```text
-crates/core/       Portable domain logic; no desktop dependencies
-crates/app/        Tauri shell, tray, command boundary, app configuration
-crates/cli/        Diagnostic CLI; future verify/eval/export commands
-ui/               React 19, strict TypeScript, Vite, plain CSS, TanStack Query
-e2e/              Browser smoke tests
-docs/             Setup, architecture, and decision records
-scripts/          Toolchain diagnostics and Tauri launcher
-.github/          CI and dependency updates
-```
+## License
 
-New Codex sessions should start with the [development handoff](HANDOFF.md). Read the [product design](docs/design.md) for the complete scope and planned milestones, then review the [development notes](docs/setup/development.md), [architecture](docs/architecture.md), and [decisions](docs/decisions.md). Runtime data and private local notes are excluded from Git.
-
-## Privacy and contributions
-
-Do not commit credentials, personal messages, mailbox exports, databases, or model weights. `.gitignore` excludes common runtime artifacts. The current shell logs startup diagnostics to stderr only; future data collection must implement the design's redaction and rotation policy before handling account data.
-
-The repository is private while the foundation is built. The public license is pending the dependency review documented in [decisions](docs/decisions.md). See [SECURITY.md](SECURITY.md) for reporting guidance.
+[MIT](LICENSE)

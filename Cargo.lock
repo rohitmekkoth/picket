@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "picket-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "iana-time-zone",
@@ -3186,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "picket-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "picket-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "picket-model"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "llama-cpp-2",
  "picket-core",
