@@ -10,7 +10,7 @@ publish.workspace = true
 picket-core.workspace = true
 # OpenMP is unavailable with Apple clang; `common` provides JSON-schema grammars.
 llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["common"] }
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 serde_json.workspace = true
 thiserror = "2"
 
