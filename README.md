@@ -1,87 +1,96 @@
 # Picket
 
-Picket keeps an independent record of what your AI agent does. It compares what you asked the agent in iMessage, what the agent said it did, and what actually happened in your Gmail and Google Calendar, and notifies you when they don't match. Everything runs and stays on your Mac: no Picket server, account or telemetry, and the language model that reads your requests runs locally.
+Picket keeps an independent record of what your AI agent does. It compares what you asked the agent in iMessage, what the agent said it did, and what actually happened in your Gmail and Google Calendar, and notifies you when they don't match.
 
-v1 watches one agent, Instinct, over iMessage.
+Everything stays on your Mac. There is no Picket server, account or tracking, and the language model that reads your requests runs on your Mac.
 
-| Overview | Incident |
+Picket 1.0 watches one agent, **Instinct**, over iMessage.
+
+| Overview | An incident |
 | --- | --- |
-| ![Overview: what needs a look today](docs/images/overview.png) | ![Incident: request, report and what happened side by side](docs/images/incident.png) |
+| ![Overview: what needs a look today](docs/images/overview.png) | ![Incident: your request, the agent's reply and what happened, side by side](docs/images/incident.png) |
 
-Screens show synthetic test data.
+Screens show made-up example data.
+
+## Before you start
+
+- A Mac with Apple silicon (M1 or later) and macOS 13 Ventura or later.
+- About 3 GB of free space, mostly for the on-device model.
+- **Messages on this Mac** signed in to the same Apple ID you use to text Instinct, with your chat with Instinct showing up here. Picket reads that chat from this Mac.
+- The **Google account Instinct works in**. Picket watches the account you sign in with.
+- Instinct's phone number or Apple ID email (the one it texts you from).
 
 ## Install
 
-Requires an Apple silicon Mac with macOS 13 or later.
+**With Homebrew** (recommended, and how you'll get updates). If you don't have Homebrew, install it first by following [brew.sh](https://brew.sh). Then:
 
 ```sh
 brew install --cask rohitmekkoth/tap/picket
 ```
 
-Or download the DMG from [Releases](https://github.com/rohitmekkoth/picket/releases) and drag Picket to Applications.
+**Or download it:** get `Picket_1.0.0_aarch64.dmg` from [Releases](https://github.com/rohitmekkoth/picket/releases), open it, and drag Picket to Applications.
 
-Picket is signed with its own certificate, not an Apple Developer ID, so macOS blocks the first launch. Open Picket once, then choose **Open Anyway** in System Settings > Privacy & Security. To check a download: `shasum -a 256 -c SHA256SUMS`, or `gh attestation verify <file> --repo rohitmekkoth/picket`.
+### First launch: allow Picket to open
+
+Picket is signed with its own certificate rather than one from Apple, so macOS blocks it the first time:
+
+1. Open Picket from Applications. macOS says it can't be opened; click **Done**.
+2. Open **System Settings > Privacy & Security**, scroll down, and click **Open Anyway** next to the message about Picket. Enter your Mac password.
+3. Click **Open** in the dialog that follows.
+
+You only do this once.
 
 ## Setup (about 5 minutes)
 
-The first launch walks you through:
+Picket opens a short setup. Every step can be skipped and finished later in Settings.
 
-1. **Google:** sign in with Google. Google hasn't reviewed Picket yet, so it shows a warning; choose **Advanced**, then **Go to Picket**. At most 100 people can use this sign-in.
-2. **Your agent:** add Instinct's phone number or Apple ID email.
-3. **Messages:** turn on Full Disk Access for Picket in System Settings > Privacy & Security, so it can read your chat with Instinct. Picket opens the Messages database read-only and keeps only that chat.
-4. **Alerts:** open at login and the daily summary time.
-5. **Model:** download the 2.7 GB on-device model.
+1. **Welcome.** What Picket sees and what it never does. Click **Get started**.
+2. **Google.** Click **Sign in with Google** and choose the account Instinct works in. Google hasn't reviewed Picket yet, so it shows "Google hasn't verified this app": click **Advanced**, then **Go to Picket**, then allow both read-only permissions. Back in Picket, the step shows **Connected**.
+3. **Your agent.** Enter Instinct's phone number or Apple ID email and click **Add agent**.
+4. **Messages.** Picket needs **Full Disk Access** to read your chat with Instinct:
+   1. Click **Open System Settings** (or go to **System Settings > Privacy & Security > Full Disk Access**).
+   2. Turn on **Picket**. If it isn't listed, click **+**, choose **Picket** in Applications, then turn it on.
+   3. Return to Picket. Within a few seconds it shows "Picket can read your chat with Instinct". No restart needed.
+5. **Alerts.** Keep **Open at login** on so Picket keeps watching, pick a **Daily summary** time, and click **Open Notifications** to set Picket's alert style to **Banners** or **Alerts**.
+6. **Model.** Click **Download model** for the 2.7 GB on-device model, then **Finish setup**. Picket starts watching right away; until the download finishes it can't read what you ask Instinct.
 
-## What Picket can and can't see
+## Using Picket
 
-| Permission | Why | Limits |
+- Picket lives in the menu bar. Closing the window keeps it running; click the menu-bar icon to open it again.
+- When something doesn't match, you get a notification. Click **Review** to see your request, Instinct's reply and what actually happened side by side, with the reason Picket flagged it. Mark it **This was fine** or **This wasn't OK**, or export a report.
+- **Rules** sets how loudly Picket tells you about each kind of problem (Urgent, Review, Summary or Off) and lets you add **boundaries**: people or companies never to contact, calendar changes, quiet hours, bursts, and new recipients.
+- **Activity** lists everything Picket saw in the last 30 days.
+
+## Privacy
+
+| Access | Why | What Picket can't do |
 | --- | --- | --- |
-| Gmail metadata (`gmail.metadata`) | Who emails were to and from, when, and their subject | Never message bodies or attachments; cannot send or change anything |
-| Calendar events, read only (`calendar.events.readonly`) | Changes to your primary calendar | Cannot create, change or delete events |
-| Full Disk Access | Read your iMessage chat with your agent | Read only; other chats are ignored; message text is never stored |
+| Gmail metadata | Who emails are to and from, when, and their subject | Read message bodies or attachments, or send, change or delete anything |
+| Google Calendar, read only | Changes to your primary calendar | Create, change or delete events |
+| Full Disk Access | Read your iMessage chat with Instinct | Read other chats; message text is read only while it's being understood, and never stored |
 
-Picket records what it observes in a tamper-evident log in `~/Library/Application Support/dev.picket.desktop/`. Settings > **Uninstall and wipe** removes the log, the model, the Google sign-in and the login item. See [PRIVACY.md](PRIVACY.md).
+Picket stores what it observes in a tamper-evident log in `~/Library/Application Support/dev.picket.desktop/`, only on your Mac. Turn on FileVault (System Settings > Privacy & Security) so it's encrypted at rest. Picket only connects to Google and, once, to Hugging Face for the model download; there is no telemetry and no update check. Details: [PRIVACY.md](PRIVACY.md).
 
-**Known limits.** Picket says the agent did something only when the agent reports it and the report matches; otherwise it says it can't tell who did it. Request reading handles plain wording; unusual phrasing can be missed, and Picket then says it couldn't tell rather than raising an alarm. Only Gmail and the primary Google Calendar are watched.
+The on-device model is Qwen3.5 4B (Apache-2.0), 2.7 GB, verified by checksum before use.
 
-## Evaluation
+## What Picket can't do yet
 
-The engine is checked on 288 fixed synthetic cases on every change (`make eval`). These are correlated, constructed cases that catch regressions; they are not a measure of real-world accuracy.
+- It says Instinct did something only when Instinct reports it and the report matches what happened. Otherwise it says it can't tell who did it, so boundaries can also flag emails you sent yourself; mark those as fine.
+- It understands plain requests well; unusual wording can be missed, and then Picket says it couldn't tell rather than raising an alarm.
+- It watches only Gmail and your **primary** Google Calendar, not other calendars or apps.
+- Google allows at most 100 people to use Picket's sign-in until Google reviews it.
+- Your Mac has to be on: while it's asleep Picket can't alert you, and it catches up when it wakes.
 
-| Mode | Cases | Agent identified | Linked | Conflicts found | False or benign alerts | Gaps reported |
-| --- | --- | --- | --- | --- | --- | --- |
-| Effects only | 112 | - | - | - | 0/112 | - |
-| Agent instrumented | 96 | 96/96 | 96/96 | 64/64 | 0/32 | - |
-| Policy | 32 | - | - | 16/16 high | 0/16 | - |
-| Calendar | 16 | - | - | - | 0/16 | - |
-| Coverage | 32 | - | - | - | - | 16/16 |
+## Update and uninstall
 
-Request reading with the on-device model (Qwen3.5 4B, Apple M3 Max): 0 safety errors on 49 tuning cases (8 missed fields) and 32 follow-up cases (3 missed), about 4 seconds per message. These sets were used for tuning, so they are not independent measurements.
+- **Update:** `brew upgrade --cask picket`, or download the new DMG. Your data and permissions are kept.
+- **Uninstall:** in Picket, **Settings > Uninstall and wipe** deletes Picket's data, the model, the Google sign-in and the login item. Then run `brew uninstall --cask picket` or drag Picket from Applications to the Trash.
+- If you removed the app without wiping, delete these by hand: `~/Library/Application Support/dev.picket.desktop/`, `~/Library/LaunchAgents/Picket.plist`, and the **Picket.Google** item in Keychain Access. You can also remove Picket's access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
-## Develop
+## Help
 
-On an Apple silicon Mac with Xcode Command Line Tools:
+- Questions and bugs: [open an issue](https://github.com/rohitmekkoth/picket/issues). Never paste message text, email details or files from Picket's data folder.
+- Security problems: report privately, see [SECURITY.md](SECURITY.md).
+- Building Picket or contributing: [DEVELOPING.md](DEVELOPING.md).
 
-```sh
-brew install rustup pnpm cmake gh cargo-deny gitleaks actionlint
-rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
-pnpm install --frozen-lockfile
-make dev
-```
-
-| Command | Purpose |
-| --- | --- |
-| `make check` | Formatting, linting, type checks, UI tests and builds |
-| `make test` | Rust workspace and UI tests |
-| `make eval` | The synthetic engine evaluation |
-| `make e2e` | Browser screen tests in both themes at the default and minimum window sizes |
-| `make audit` | Dependency policy and production npm audit |
-| `make build` | The release `.app` in `target/release/bundle/macos/` |
-
-Start with the [development handoff](HANDOFF.md), then the [design](docs/design.md), [architecture](docs/architecture.md), [development notes](docs/setup/development.md) and [decisions](docs/decisions.md). Never commit credentials, messages, mailbox data, databases or model files.
-
-Report security issues as described in [SECURITY.md](SECURITY.md).
-
-## License
-
-[MIT](LICENSE)
+Picket is [MIT licensed](LICENSE).

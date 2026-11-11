@@ -40,7 +40,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M6 - Messages:** Read-only agent-message capture (PR #15). OpenClaw is out of v1 scope; its adapter is kept on `feature/m6-openclaw`.
 - [x] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging; without the model, request capture is reported unavailable (no keyword fallback, see decisions). Closed for v1 on 2026-11-04 with known wording limits (see decisions).
 - [x] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and daily summary, export, and wipe. Closed 2026-11-10 after the live acceptance run (PRs #39-#43, #46-#48).
-- [x] **M9 - Release:** v1.0.0 published 2026-11-10: signed DMG and app zip with SHA256SUMS and build provenance on GitHub Releases, cask `rohitmekkoth/tap/picket`, MIT license, user README. Remaining: the fresh-Mac install test (owner, on another Mac).
+- [x] **M9 - Release:** v1.0.0 published 2026-11-10: signed DMG and app zip with SHA256SUMS and build provenance on GitHub Releases, cask `rohitmekkoth/tap/picket`, MIT license, user README (technical notes in DEVELOPING.md). Remaining: the fresh-Mac install test (owner, on another Mac).
 
 The milestone scopes and acceptance criteria in `docs/design.md`, with the alignment refinements and proposed release gates in `docs/alignment-engine-plan.md`, guide implementation. No accuracy targets have been measured yet.
 
