@@ -6,6 +6,19 @@ all-features = true
 [advisories]
 unmaintained = "workspace"
 yanked = "deny"
+# chrono and chrono-tz were marked unmaintained in November 2026 with no successor
+# release, so no dependency bump clears these. Picket uses both directly for event
+# timestamps and quiet-hours time zones, and oauth2 5.0 pulls chrono in transitively,
+# so dropping the direct dependencies alone would not silence them either. Neither
+# advisory reports a vulnerability.
+#
+# Revisit by 2027-02-17: move Picket's own code to jiff. chrono then remains only a
+# transitive dependency of oauth2, which `unmaintained = "workspace"` already allows,
+# and both entries below can go. See docs/decisions.md, "chrono unmaintained".
+ignore = [
+  "RUSTSEC-2026-0543", # chrono is unmaintained; no vulnerability reported
+  "RUSTSEC-2026-0555", # chrono-tz is unmaintained; no vulnerability reported
+]
 
 [licenses]
 confidence-threshold = 0.8
