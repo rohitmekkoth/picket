@@ -28,7 +28,7 @@ Screens show made-up example data.
 brew install --cask rohitmekkoth/tap/picket
 ```
 
-**Or download it:** get `Picket_1.0.0_aarch64.dmg` from [Releases](https://github.com/rohitmekkoth/picket/releases), open it, and drag Picket to Applications.
+**Or download it:** get the `.dmg` for the newest version from the [latest release](https://github.com/rohitmekkoth/picket/releases/latest), open it, and drag Picket to Applications.
 
 ### First launch: allow Picket to open
 
@@ -84,7 +84,7 @@ The on-device model is Qwen3.5 4B (Apache-2.0), 2.7 GB, verified by checksum bef
 ## Update and uninstall
 
 - **Update:** `brew upgrade --cask picket`, or download the new DMG. Your data and permissions are kept.
-- **Uninstall:** in Picket, **Settings > Uninstall and wipe** deletes Picket's data, the model, the Google sign-in and the login item. Then run `brew uninstall --cask picket` or drag Picket from Applications to the Trash.
+- **Uninstall:** in Picket, **Settings > Uninstall and wipe** deletes Picket's data, the model, the Google sign-in and the login item. Then remove the app itself, in one way only: if you installed with Homebrew run `brew uninstall --cask picket`, and otherwise drag Picket from Applications to the Trash. Deleting a Homebrew-installed app by hand first makes `brew uninstall` stop with "the App source '/Applications/Picket.app' is not there"; `brew uninstall --cask picket --force` finishes the job.
 - If you removed the app without wiping, delete these by hand: `~/Library/Application Support/dev.picket.desktop/`, `~/Library/LaunchAgents/Picket.plist`, and the **Picket.Google** item in Keychain Access. You can also remove Picket's access at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
 ## Help
