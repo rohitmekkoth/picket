@@ -73,6 +73,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
           PICKET_GOOGLE_CLIENT_ID: ${{ secrets.PICKET_GOOGLE_CLIENT_ID }}
           PICKET_GOOGLE_CLIENT_SECRET: ${{ secrets.PICKET_GOOGLE_CLIENT_SECRET }}
+          PICKET_REQUIRE_GOOGLE_CLIENT: "1"
         run: pnpm tauri build --bundles app,dmg
 
       - name: Verify the signature
