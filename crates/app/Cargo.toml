@@ -21,7 +21,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-notification = "=2.7.0"
+tauri-plugin-notification = "=2.8.1"
 tauri-plugin-single-instance = "2"
 thiserror = "2.0.21"
 tracing.workspace = true
