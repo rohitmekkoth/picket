@@ -40,7 +40,7 @@ Local M1 verification passed: `make check`, `make test`, `make e2e`, `make audit
 - [x] **M6 - Messages:** Read-only agent-message capture (PR #15). OpenClaw is out of v1 scope; its adapter is kept on `feature/m6-openclaw`.
 - [x] **M7 - Local AI:** Verified model download, bounded runtime, extraction and judging; without the model, request capture is reported unavailable (no keyword fallback, see decisions). Closed for v1 on 2026-11-04 with known wording limits (see decisions).
 - [x] **M8 - Product UI and alerts:** Setup wizard, incident review, settings, real notifications and daily summary, export, and wipe. Closed 2026-11-10 after the live acceptance run (PRs #39-#43, #46-#48).
-- [x] **M9 - Release:** v1.0.0 published 2026-11-10: signed DMG and app zip with SHA256SUMS and build provenance on GitHub Releases, cask `rohitmekkoth/tap/picket`, MIT license, user README (technical notes in DEVELOPING.md). v1.0.1 followed on 2026-11-17 with the Google client fix below.
+- [x] **M9 - Release:** v1.0.0 published 2026-11-10: signed DMG and app zip with SHA256SUMS and build provenance on GitHub Releases, cask `rohitmekkoth/tap/picket`, MIT license, user README (technical notes in DEVELOPING.md). v1.0.1 followed on 2026-11-17 with the Google client fix (see decisions, "v1.0.1 Google client fix"). The fresh-Mac install test then passed on another person's Mac: Homebrew install, Open Anyway, one-click Google sign-in through the unverified-app warning, and setup. That is the first sign-in by an account other than the owner's, so the unverified-app path and a third-party account are no longer untested; the 100-user cap remains far off.
 
 The milestone scopes and acceptance criteria in `docs/design.md`, with the alignment refinements and proposed release gates in `docs/alignment-engine-plan.md`, guide implementation. No accuracy targets have been measured yet.
 
@@ -86,10 +86,10 @@ The milestone scopes and acceptance criteria in `docs/design.md`, with the align
 
 v1.0.1 is released. Open items:
 
-1. Fresh-Mac install test (owner, on someone else's Mac): `brew install --cask rohitmekkoth/tap/picket`, Open Anyway, setup wizard, one Instinct request; time it against the design's 10 minutes. The first attempt failed at Connect Google and produced the v1.0.1 fix below; retry on v1.0.1. No account other than the owner's controlled one has ever completed sign-in, so the unverified-app warning and the 100-user cap are still unexercised by a third party.
+1. Dependabot, ten PRs opened 2026-11-11: eight are green and mergeable (biome 2.6.6, vitest 5.1.0, vite 8.3.6, jsdom 31, playwright 1.65.0, uuid 1.29.1, tauri-plugin-single-instance 2.5.5, pnpm/action-setup 6.1.1). Two need code changes: #59 (`mail-parser` 1.0 drops `MessageParser::with_address_headers`, used in `crates/core/src/google.rs`) and #57 (`sha2` 0.11 digests no longer implement `LowerHex`, so the six `format!("{:x}", ...)` sites need a hex encoder).
 2. Move off chrono (see decisions, "chrono unmaintained"). Replacing chrono and chrono-tz in Picket's own code with `jiff` leaves chrono a transitive dependency of oauth2 only, which `unmaintained = "workspace"` allows, so the two advisory ignores in `deny.toml` can be deleted. Revisit by 2027-02-17.
-3. Dependabot, ten PRs opened 2026-11-11: eight are green and mergeable (biome 2.6.6, vitest 5.1.0, vite 8.3.6, jsdom 31, playwright 1.65.0, uuid 1.29.1, tauri-plugin-single-instance 2.5.5, pnpm/action-setup 6.1.1). Two need code changes: #59 (`mail-parser` 1.0 drops `MessageParser::with_address_headers`, used in `crates/core/src/google.rs`) and #57 (`sha2` 0.11 digests no longer implement `LowerHex`, so the six `format!("{:x}", ...)` sites need a hex encoder).
-4. Consider branch protection on `main` requiring the three CI jobs.
+3. Consider branch protection on `main` requiring the three CI jobs.
+4. Playwright browser install stalls in CI. The `frontend` job's three five-minute retries all timed out on 2026-11-17 and the job had to be re-run; it then passed in 2m24s. Cache the browsers with `actions/cache` keyed on the Playwright version instead of retrying a slow download.
 
 To release a new version: bump `version` in `Cargo.toml` (workspace and the two internal pins), `crates/app/tauri.conf.json` and `package.json`, update `docs/release-notes.md`, merge, then push a matching `v*` tag. Signing material is in the git-ignored `local/signing/` (back it up; losing it changes the app identity and resets every user's Full Disk Access). See `docs/decisions.md`, "M9 release", and "After v1" below.
 
