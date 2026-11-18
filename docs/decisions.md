@@ -250,3 +250,10 @@ Implementation notes, 2026-10-27:
 - Google: Picket's client stays published but unverified (owner accepts the 100-user cap; restricted-scope verification needs a paid security assessment).
 - License (owner, 2026-11-10): MIT. Possible because the Messages decoder is Picket's own, not the GPL `imessage-database`. `cargo deny` license policy passes.
 - Verified: after the one Full Disk Access grant to the self-signed build, a rebuild with a new version kept the grant (no permission-missing coverage after relaunch).
+
+## chrono unmaintained, 2026-11-17
+
+- RUSTSEC-2026-0543 (chrono) and RUSTSEC-2026-0555 (chrono-tz) mark both crates unmaintained, with no safe upgrade and no reported vulnerability. They appeared after the v1.0.0 release and failed `cargo deny check`, so every push was red.
+- Owner decision: add the two advisory ids to `deny.toml` as named ignores with a revisit date, rather than hold the v1.0.1 sign-in hotfix behind a date-library migration. The ignores are specific advisory ids, not a relaxed policy: `unmaintained` stays `"workspace"` and `yanked` stays `"deny"`, so any new advisory still fails.
+- Rejected for now: migrating to `jiff` first. It is the better end state, because `oauth2` 5.0 pulls chrono in transitively and `unmaintained = "workspace"` only flags direct workspace dependencies, so once Picket's own code stops using chrono both ignores can be deleted with no policy change. It touches event timestamps, quiet-hours time zones and many tests, which is not work to rush into a hotfix.
+- Revisit by 2027-02-17.

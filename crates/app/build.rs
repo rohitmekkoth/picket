@@ -2,29 +2,76 @@
 /// non-confidential). It comes from the environment, or from the git-ignored
 /// `local/google-client.env`, and is never committed or printed. Without it the app
 /// offers only the bring-your-own-client sign-in.
-fn google_client() {
-    const KEYS: [&str; 2] = ["PICKET_GOOGLE_CLIENT_ID", "PICKET_GOOGLE_CLIENT_SECRET"];
+///
+/// Values are trimmed from both sources: v1.0.0 shipped a client ID with a leading
+/// space from a CI secret, which Google rejects as "OAuth client was not found". A
+/// value that is still malformed after trimming fails the build instead of shipping a
+/// sign-in that cannot work, and `PICKET_REQUIRE_GOOGLE_CLIENT=1` (set by the release
+/// workflow) also fails a build that has no client at all.
+fn google_client() -> Result<(), String> {
+    const ID: &str = "PICKET_GOOGLE_CLIENT_ID";
+    const SECRET: &str = "PICKET_GOOGLE_CLIENT_SECRET";
+    const REQUIRE: &str = "PICKET_REQUIRE_GOOGLE_CLIENT";
     let file =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/google-client.env");
     println!("cargo:rerun-if-changed={}", file.display());
+    println!("cargo:rerun-if-env-changed={REQUIRE}");
     let contents = std::fs::read_to_string(&file).unwrap_or_default();
-    for key in KEYS {
+    let read = |key: &str| {
         println!("cargo:rerun-if-env-changed={key}");
         let from_file = contents.lines().find_map(|line| {
             line.trim()
                 .strip_prefix(key)
                 .and_then(|rest| rest.strip_prefix('='))
-                .map(|value| value.trim().to_owned())
+                .map(str::to_owned)
         });
         let value = std::env::var(key).ok().or(from_file).unwrap_or_default();
-        if !value.is_empty() && !value.chars().any(char::is_control) {
-            println!("cargo:rustc-env={key}={value}");
+        value.trim().trim_matches(['"', '\'']).trim().to_owned()
+    };
+    let id = read(ID);
+    let secret = read(SECRET);
+    if id.is_empty() {
+        if std::env::var(REQUIRE).is_ok_and(|value| value == "1") {
+            return Err(format!("{REQUIRE}=1 but {ID} is not set"));
         }
+        return Ok(());
     }
+    if !valid_client_id(&id) {
+        return Err(format!(
+            "{ID} is not a Google OAuth client ID (<digits>-<letters and digits>.apps.googleusercontent.com)"
+        ));
+    }
+    if secret.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("{SECRET} contains whitespace"));
+    }
+    println!("cargo:rustc-env={ID}={id}");
+    if !secret.is_empty() {
+        println!("cargo:rustc-env={SECRET}={secret}");
+    }
+    Ok(())
+}
+
+fn valid_client_id(id: &str) -> bool {
+    let Some((project, rest)) = id.split_once('-') else {
+        return false;
+    };
+    let Some(name) = rest.strip_suffix(".apps.googleusercontent.com") else {
+        return false;
+    };
+    !project.is_empty()
+        && project.bytes().all(|b| b.is_ascii_digit())
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 fn main() {
-    google_client();
+    if let Err(error) = google_client() {
+        // Never print the values themselves; only which one is wrong.
+        println!("cargo::error={error}");
+        return;
+    }
     // Generate the narrow capability for commands exposed to the webview.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
