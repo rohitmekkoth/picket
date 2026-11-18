@@ -1,5 +1,11 @@
 Picket keeps an independent, local record of what your AI agent does in Gmail and Google Calendar, compares it with what you asked the agent in iMessage, and tells you when something does not match.
 
+## Fixed in 1.0.1
+
+Connecting a Google account failed in 1.0.0. Google answered "OAuth client was not found" and sign-in stopped before the account picker, because the sign-in identifier built into the app carried a stray leading space. 1.0.1 is the same app with that corrected, and the build now rejects a malformed identifier instead of shipping one.
+
+If you installed 1.0.0, update and connect Google again. Nothing on your Mac needs to be reset.
+
 ## Install
 
 - Homebrew: `brew install --cask rohitmekkoth/tap/picket`
